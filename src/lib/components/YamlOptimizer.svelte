@@ -1,0 +1,174 @@
+<script lang="ts">
+  import FilePanel from "./FilePanel.svelte";
+  import { getPlatform } from "../platform";
+  import { optimizeManifest, type OptimizeResult } from "../core/yaml-optimizer";
+
+  let input = $state("");
+  let fileName = $state("");
+  let result = $state<OptimizeResult | null>(null);
+  let saveMsg = $state("");
+
+  const canOptimize = $derived(input.trim().length > 0);
+
+  function optimize() {
+    result = optimizeManifest(input);
+    saveMsg = "";
+  }
+
+  async function download() {
+    if (!result?.output) return;
+    const name = (fileName || "manifest.yaml").replace(/\.(ya?ml)$/i, "") + ".optimized.yaml";
+    saveMsg = "";
+    try {
+      const ok = await getPlatform().saveTextFile(name, result.output);
+      saveMsg = ok ? "Optimized manifest saved." : "Save cancelled.";
+    } catch (e) {
+      saveMsg = e instanceof Error ? e.message : String(e);
+    }
+  }
+</script>
+
+<section>
+  <p class="intro muted">
+    Load or paste a Kubernetes manifest (single or multi-document). CoreTools validates it,
+    strips server-managed and redundant fields, and produces a clean, apply-ready result.
+  </p>
+
+  <FilePanel
+    label="Kubernetes manifest"
+    bind:value={input}
+    bind:fileName
+    placeholder="Paste YAML here, or load a .yaml file…"
+    rows={16}
+  />
+
+  <div class="bar">
+    <button class="primary" onclick={optimize} disabled={!canOptimize}>Optimize</button>
+    {#if result}
+      <span class="muted">
+        {result.documents} document{result.documents === 1 ? "" : "s"}
+        · {result.changes.length} field{result.changes.length === 1 ? "" : "s"} removed
+      </span>
+    {/if}
+  </div>
+
+  {#if result}
+    {#if result.errors.length}
+      <div class="errors">
+        <strong>Validation issues</strong>
+        <ul>
+          {#each result.errors as e}<li>{e}</li>{/each}
+        </ul>
+      </div>
+    {/if}
+
+    {#if result.output}
+      <div class="results">
+        <div class="output">
+          <div class="head">
+            <span class="label">Optimized manifest</span>
+            <button class="primary" onclick={download}>Download…</button>
+          </div>
+          <pre class="mono code">{result.output}</pre>
+          {#if saveMsg}<p class="muted save">{saveMsg}</p>{/if}
+        </div>
+
+        <div class="changelog">
+          <span class="label">Changes applied</span>
+          {#if result.changes.length}
+            <ul>
+              {#each result.changes as c}
+                <li>
+                  <code>{c.path}</code>
+                  <span class="reason muted">— {c.reason}</span>
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <p class="muted">Nothing to remove — the manifest was already clean.</p>
+          {/if}
+        </div>
+      </div>
+    {/if}
+  {/if}
+</section>
+
+<style>
+  .intro {
+    margin: 0 0 16px;
+    max-width: 74ch;
+  }
+  .bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 14px 0;
+  }
+  .errors {
+    border: 1px solid var(--danger);
+    background: var(--removed-bg);
+    color: var(--removed-fg);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    margin-bottom: 14px;
+    font-size: 13px;
+  }
+  .errors ul {
+    margin: 6px 0 0;
+    padding-left: 20px;
+  }
+  .results {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    gap: 16px;
+  }
+  @media (max-width: 900px) {
+    .results {
+      grid-template-columns: 1fr;
+    }
+  }
+  .head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+  }
+  .label {
+    font-weight: 600;
+  }
+  .code {
+    margin: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    overflow: auto;
+    max-height: 52vh;
+    font-size: 12.5px;
+    white-space: pre;
+  }
+  .save {
+    margin: 6px 0 0;
+    font-size: 12px;
+  }
+  .changelog ul {
+    margin: 6px 0 0;
+    padding: 0;
+    list-style: none;
+    max-height: 52vh;
+    overflow: auto;
+    font-size: 12.5px;
+  }
+  .changelog li {
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+    word-break: break-all;
+  }
+  .changelog code {
+    font-family: var(--mono);
+    color: var(--text);
+  }
+  .reason {
+    font-family: var(--sans);
+  }
+</style>

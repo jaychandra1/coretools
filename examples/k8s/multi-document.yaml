@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: prod
+  creationTimestamp: "2024-05-01T00:00:00Z"
+  resourceVersion: "55012"
+data:
+  LOG_LEVEL: info
+  FEATURE_FLAG: "true"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-svc
+  namespace: prod
+  uid: aa11bb22-cc33-dd44-ee55-ff6677889900
+spec:
+  selector:
+    app: app
+  ports:
+    - port: 80
+      targetPort: 8080
+status:
+  loadBalancer: {}
