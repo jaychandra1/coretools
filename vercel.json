@@ -3,7 +3,6 @@
   "installCommand": "npm install --include=dev",
   "buildCommand": "npm run build:web",
   "outputDirectory": "dist",
-  "framework": null,
   "trailingSlash": false,
   "headers": [
     {
