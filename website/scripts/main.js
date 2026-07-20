@@ -55,19 +55,30 @@
       }
 
       if (link) {
-        var hasReal = data.url && data.url !== "#";
-        link.setAttribute("href", data.url || "#");
+        var hasDirect = data.url && data.url !== "#";
         link.setAttribute(
           "aria-label",
           "Download CoreTools for " + (data.label || osKey)
         );
-        if (hasReal) {
-          // Suggest a sensible filename; harmless if server sets its own.
+        if (hasDirect) {
+          // Direct asset: one-click download.
+          link.setAttribute("href", data.url);
           link.setAttribute("download", "");
-          link.removeAttribute("aria-disabled");
+          link.setAttribute(
+            "title",
+            "Download CoreTools " + (data.ext || "") + " for " + data.label
+          );
         } else {
-          link.setAttribute("aria-disabled", "true");
-          link.setAttribute("title", "Download link not yet published");
+          // Fall back to the Releases page so the button always works.
+          link.setAttribute("href", cfg.releaseUrl || "#");
+          link.setAttribute("rel", "noopener");
+          link.setAttribute(
+            "title",
+            "Opens GitHub Releases — download the " +
+              (data.ext || "") +
+              " asset for " +
+              data.label
+          );
         }
       }
 
@@ -99,6 +110,10 @@
 
     document.querySelectorAll("[data-release-link]").forEach(function (a) {
       a.setAttribute("href", cfg.releaseUrl || "#");
+    });
+
+    document.querySelectorAll("[data-webapp-link]").forEach(function (a) {
+      a.setAttribute("href", cfg.webAppUrl || "/app/");
     });
   }
 

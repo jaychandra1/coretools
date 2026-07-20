@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "vite",
     "build": "svelte-check --tsconfig ./tsconfig.json && vite build",
+    "build:web": "vite build --mode web && node scripts/build-web.mjs",
+    "icon": "node scripts/generate-icon.mjs && tauri icon src-tauri/app-icon.png",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test": "vitest run",
