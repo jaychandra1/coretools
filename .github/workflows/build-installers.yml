@@ -102,6 +102,8 @@ jobs:
 
   publish:
     needs: build
+    # Publish whatever built successfully, even if one platform's build failed.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: write # needed to commit the installers back to the repo
@@ -115,6 +117,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: incoming
+        continue-on-error: true
 
       - name: Move installers into website/downloads
         run: |
@@ -130,6 +133,9 @@ jobs:
           if git diff --staged --quiet; then
             echo "No installer changes to publish."
           else
-            git commit -m "chore: publish desktop installers [skip ci]"
+            # "[skip actions]" stops GitHub Actions from re-triggering (loop
+            # safety, together with paths-ignore) but — unlike "[skip ci]" —
+            # does NOT stop Vercel from deploying the new installers.
+            git commit -m "chore: publish desktop installers [skip actions]"
             git push
           fi

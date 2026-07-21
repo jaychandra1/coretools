@@ -480,6 +480,18 @@ code {
 .download-card .btn {
   margin-top: auto;
 }
+/* Installer not yet published by CI: render the button as a muted, non-primary
+   "coming soon" control that links to the in-browser app instead. */
+.download-card .btn.is-unavailable {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text-muted);
+  font-weight: 500;
+  cursor: default;
+}
+.download-card .btn.is-unavailable:hover {
+  background: var(--surface-2);
+}
 .dl-ext {
   font-family: var(--mono);
   font-weight: 500;

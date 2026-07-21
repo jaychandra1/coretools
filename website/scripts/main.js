@@ -55,30 +55,20 @@
       }
 
       if (link) {
-        var hasDirect = data.url && data.url !== "#";
         link.setAttribute(
           "aria-label",
           "Download CoreTools for " + (data.label || osKey)
         );
-        if (hasDirect) {
-          // Direct asset: one-click download.
+        if (data.url) {
           link.setAttribute("href", data.url);
           link.setAttribute("download", "");
           link.setAttribute(
             "title",
             "Download CoreTools " + (data.ext || "") + " for " + data.label
           );
-        } else {
-          // Fall back to the Releases page so the button always works.
-          link.setAttribute("href", cfg.releaseUrl || "#");
-          link.setAttribute("rel", "noopener");
-          link.setAttribute(
-            "title",
-            "Opens GitHub Releases — download the " +
-              (data.ext || "") +
-              " asset for " +
-              data.label
-          );
+          // The installer is committed by CI and may not exist yet. Verify it
+          // is actually served before letting a visitor click into a 404.
+          verifyAvailable(link, data);
         }
       }
 
@@ -93,6 +83,48 @@
         }
       }
     });
+  }
+
+  /**
+   * Mark a download button as not-yet-available (the CI build hasn't published
+   * this installer). Prevents the "File wasn't available on site" error and
+   * steers the visitor to the in-browser version instead.
+   */
+  function markUnavailable(link, data) {
+    link.classList.add("is-unavailable");
+    link.setAttribute("aria-disabled", "true");
+    link.removeAttribute("download");
+    link.setAttribute("href", cfg.webAppUrl || "/app/");
+    link.setAttribute(
+      "title",
+      "The " + (data.label || "") + " installer is being built — use it in your browser for now"
+    );
+    var label = link.querySelector(".dl-label");
+    if (label) label.textContent = "Coming soon";
+    else link.textContent = "Coming soon";
+    link.addEventListener("click", function (e) {
+      // Send them to the web app instead of a dead download.
+      e.preventDefault();
+      window.location.href = cfg.webAppUrl || "/app/";
+    });
+  }
+
+  /**
+   * HEAD-check a same-origin installer URL. Same-origin only, so it is allowed
+   * by the site's strict connect-src 'self' CSP and never leaves the site.
+   */
+  function verifyAvailable(link, data) {
+    var url = data.url || "";
+    // Only check same-site paths; external URLs can't be probed under the CSP.
+    if (url.charAt(0) !== "/") return;
+    if (!window.fetch) return;
+    fetch(url, { method: "HEAD" })
+      .then(function (res) {
+        if (!res.ok) markUnavailable(link, data);
+      })
+      .catch(function () {
+        markUnavailable(link, data);
+      });
   }
 
   function updateHero(detected) {
