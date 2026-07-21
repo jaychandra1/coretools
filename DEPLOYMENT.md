@@ -63,43 +63,52 @@ dist/app/assets/…
 
 ## 2. The downloadable installers ("setup files")
 
-A real `.msi` / `.dmg` / `.AppImage` is produced by **`tauri build`**, which
-needs **Rust** and must run **on each target OS**. This can't happen on Vercel
-(web-only). Two supported ways to produce them:
+A real `.exe` / `.dmg` / `.AppImage` is compiled native code produced by
+**`tauri build`**, which needs **Rust** and must run **on each target OS**. This
+can't happen on Vercel (web-only) — Vercel only builds web assets.
 
-### Option A — Automated builds via GitHub Actions (recommended)
+### How installers reach the site (automated, no GitHub Releases)
 
-`.github/workflows/release.yml` builds installers for **Windows, macOS, and
-Linux** and attaches them to a GitHub Release. No local Rust needed.
+`.github/workflows/build-installers.yml` runs on every push to `master`:
+
+1. Builds the app on **Windows, macOS, and Linux** runners (real machines).
+2. Renames each installer to a **stable name** and commits them into
+   `website/downloads/`:
+   - `CoreTools-Windows-Setup.exe`
+   - `CoreTools-macOS.dmg`
+   - `CoreTools-Linux.AppImage`
+3. That commit triggers a Vercel redeploy, so the files are served at
+   `https://<your-site>/downloads/CoreTools-Windows-Setup.exe` (etc.).
+
+The site's download buttons already point at these same-site paths (see
+`website/scripts/downloads.js`), so visitors download **straight from your
+domain** — GitHub Releases is never involved. Because the names are stable, the
+buttons keep working across versions with no edits.
 
 ```bash
-# 1. Push the code (including the workflow):
+# Trigger it just by pushing (or run it from the Actions tab):
 git push
-
-# 2. Tag a version and push the tag — this triggers the build:
-git tag v0.1.0
-git push origin v0.1.0
 ```
 
-Then:
-
-3. Watch the **Actions** tab until all three jobs finish (~5–15 min).
-4. Go to **Releases** — a **draft** release `CoreTools v0.1.0` will hold the
-   built assets. Review and click **Publish**.
-5. Done. The website's download buttons already point at
-   `…/releases/latest`, so visitors can immediately grab their installer.
+Watch the **Actions** tab; when the `publish` job finishes it commits the
+installers and Vercel redeploys. First run takes ~10–15 min.
 
 > The workflow regenerates icons (`npm run icon`) before building, so no icon
-> files need to be committed for CI to succeed.
+> files need to be committed for CI to succeed. The auto-commit uses
+> `[skip ci]` and the trigger ignores `website/downloads/**`, so it never loops.
 
-**For one-click, per-OS direct downloads** (optional), copy each published asset
-URL into `website/scripts/downloads.js` → `platforms.<os>.url`, e.g.:
+**Trade-offs to know:**
 
-```js
-windows: { …, url: "https://github.com/jaychandra1/coretools/releases/download/v0.1.0/CoreTools_0.1.0_x64_en-US.msi" }
-```
+- **CI minutes.** macOS runners bill at **10×** minutes. Building on *every*
+  push can use your free quota quickly. To build less often, change the trigger
+  in the workflow from `push` to tags only (`on: push: tags: ['v*']`) and build
+  by running `git tag v0.1.0 && git push origin v0.1.0`.
+- **Repo/deploy size.** Committing binaries grows git history over time. If that
+  becomes a problem, host them on **Vercel Blob** instead (upload from the
+  workflow, point `downloads.js` at the Blob URLs) — same "download from your
+  site" experience without the git bloat.
 
-### Option B — Build a Windows installer locally (fastest, Windows only)
+### Faster: build a Windows installer locally (Windows only)
 
 On this machine you can build the Windows installer yourself:
 
@@ -120,7 +129,9 @@ src-tauri/target/release/bundle/nsis/CoreTools_0.1.0_x64-setup.exe
 ```
 
 Double-click either to install. (This machine can only build the **Windows**
-installer; macOS/Linux builds require those OSes — use Option A for all three.)
+installer; macOS/Linux builds require those OSes — use the automated workflow
+above for all three.) You can drop a locally-built installer into
+`website/downloads/` under the stable name to publish it manually.
 
 ## 3. Code signing (optional but recommended)
 
@@ -135,8 +146,9 @@ Until then, users can still install by accepting the OS prompt.
 
 ## Summary checklist
 
-- [ ] `git push` the changes → Vercel serves `/` (site) and `/app` (tool).
-- [ ] `git tag v0.1.0 && git push origin v0.1.0` → Actions builds installers.
-- [ ] Publish the draft GitHub Release.
-- [ ] (Optional) paste direct asset URLs into `website/scripts/downloads.js`.
-- [ ] (Optional) set up code signing.
+- [ ] `git push` the changes → Vercel serves `/` (site) and `/app` (tool), and
+      the installer workflow starts building.
+- [ ] Wait for the **Actions** run to finish → it commits installers into
+      `website/downloads/` → Vercel redeploys → download buttons work.
+- [ ] (Optional) switch the workflow to tag-only triggers to save CI minutes.
+- [ ] (Optional) set up code signing to remove OS "unknown publisher" warnings.
