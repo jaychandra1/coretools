@@ -2,7 +2,7 @@
 name = "coretools"
 version = "0.1.0"
 description = "Offline file diff & merge and Kubernetes YAML optimizer"
-authors = ["CoreTools"]
+authors = ["JDG Initiates"]
 edition = "2021"
 rust-version = "1.70"
 

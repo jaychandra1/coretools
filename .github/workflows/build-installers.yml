@@ -125,6 +125,18 @@ jobs:
           find incoming -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' \) -exec mv {} website/downloads/ \;
           ls -lh website/downloads
 
+      - name: Generate SHA-256 checksums
+        run: |
+          cd website/downloads
+          rm -f SHA256SUMS.txt
+          # Checksum whatever installers are present (a failed platform build
+          # must not block publishing the others).
+          files=$(find . -maxdepth 1 -type f \( -name '*.exe' -o -name '*.dmg' -o -name '*.AppImage' \) -printf '%f\n' | sort)
+          if [ -n "$files" ]; then
+            echo "$files" | xargs sha256sum > SHA256SUMS.txt
+            cat SHA256SUMS.txt
+          fi
+
       - name: Commit and push
         run: |
           git config user.name "github-actions[bot]"

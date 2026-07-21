@@ -26,7 +26,7 @@ mkdirSync(dist, { recursive: true });
 // Copy the static marketing assets to the dist root. `dist/app` is left intact.
 // `downloads` holds the installer files committed by the build-installers
 // workflow — they must be copied so they are actually served at /downloads/.
-for (const entry of ["index.html", "styles", "scripts", "downloads"]) {
+for (const entry of ["index.html", "styles", "scripts", "assets", "downloads"]) {
   const from = join(website, entry);
   if (existsSync(from)) {
     cpSync(from, join(dist, entry), { recursive: true });

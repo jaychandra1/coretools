@@ -1,0 +1,3 @@
+f8e86cde3eda0d4f22026a56ff7a1a6768fbb5da34a30f19128e1258d9147836 *CoreTools-Windows-Setup.exe
+f08adec3c34371cb4d4bdf323352f80e28388a5fd795a53d683ed75a39c8e7e4 *CoreTools-macOS.dmg
+331cf9ee39568f9ca908733f0677ccdc71e58c44979797ed55fc675deac14825 *CoreTools-Linux.AppImage

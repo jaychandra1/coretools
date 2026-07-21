@@ -28,6 +28,8 @@
     "active": true,
     "targets": "all",
     "category": "DeveloperTool",
+    "publisher": "JDG Initiates",
+    "copyright": "© 2026 JDG Initiates",
     "shortDescription": "Offline file diff & Kubernetes YAML optimizer",
     "icon": [
       "icons/32x32.png",

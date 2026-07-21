@@ -3,28 +3,33 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>CoreTools — Lightweight, Secure, and Private Desktop Tools</title>
+    <title>CoreTools</title>
     <meta
       name="description"
-      content="CoreTools is a lightweight, fully offline desktop toolkit: a File Difference Checker and a Kubernetes YAML Optimizer. No trackers, no data transfer, complete privacy."
+      content="CoreTools — a fully offline desktop toolkit by JDG Initiates. File diff & merge, Kubernetes YAML optimizing, and sentence polishing. No trackers, no data transfer, complete privacy."
     />
-    <meta name="theme-color" content="#2f6df6" />
-    <meta name="color-scheme" content="light dark" />
+    <meta name="author" content="JDG Initiates" />
+    <meta name="theme-color" content="#0b0d12" />
+    <meta name="color-scheme" content="dark" />
 
-    <!-- Open Graph (self-hosted preview text only; no third-party embeds) -->
     <meta property="og:title" content="CoreTools" />
-    <meta
-      property="og:description"
-      content="Lightweight, Secure, and Private Desktop Tools."
-    />
+    <meta property="og:description" content="Offline desktop tools. Private by design." />
     <meta property="og:type" content="website" />
 
     <!-- Inline SVG favicon — no external asset request -->
     <link
       rel="icon"
-      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232f6df6'/><rect x='7' y='7' width='8' height='18' rx='1.5' fill='white'/><rect x='17' y='7' width='8' height='18' rx='1.5' fill='white' opacity='0.55'/></svg>"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%238b5cf6'/><rect x='7' y='7' width='8' height='18' rx='1.5' fill='white'/><rect x='17' y='7' width='8' height='18' rx='1.5' fill='white' opacity='0.55'/></svg>"
     />
 
+    <!-- Self-hosted Inter (variable, latin). No CDN, no third-party request. -->
+    <link
+      rel="preload"
+      href="assets/fonts/inter-var-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
     <link rel="stylesheet" href="styles/main.css" />
   </head>
   <body>
@@ -37,8 +42,8 @@
           <span class="brand-mark" aria-hidden="true">
             <svg viewBox="0 0 32 32" width="26" height="26">
               <rect width="32" height="32" rx="7" fill="currentColor" />
-              <rect x="7" y="7" width="8" height="18" rx="1.5" fill="#fff" />
-              <rect x="17" y="7" width="8" height="18" rx="1.5" fill="#fff" opacity="0.55" />
+              <rect x="7" y="7" width="8" height="18" rx="1.5" fill="#0b0d12" />
+              <rect x="17" y="7" width="8" height="18" rx="1.5" fill="#0b0d12" opacity="0.55" />
             </svg>
           </span>
           <span class="brand-name">CoreTools</span>
@@ -57,40 +62,34 @@
 
       <!-- ============================ HERO ============================ -->
       <section class="hero">
+        <div class="hero-glow" aria-hidden="true"></div>
         <div class="container hero-inner">
-          <p class="eyebrow">Free · Open · Offline</p>
-          <h1>Lightweight, Secure, and Private Desktop Tools</h1>
-          <p class="hero-sub">
-            CoreTools is a fast, fully offline desktop toolkit for developers and
-            operators. Compare and merge files, and optimize Kubernetes
-            manifests — all processed locally, with nothing ever leaving your
-            machine.
+          <p class="hero-chip reveal">
+            <span class="dot" aria-hidden="true"></span>
+            <span data-version>v0.1.0</span>&nbsp;· Offline by design
           </p>
-          <div class="hero-actions">
+          <h1 class="wordmark reveal">CoreTools</h1>
+          <div class="hero-actions reveal">
             <a class="btn btn-primary btn-lg" href="#download">
-              Download CoreTools
+              Download
               <span class="btn-note" data-detected-os>for your platform</span>
             </a>
-            <a class="btn btn-lg btn-ghost" data-webapp-link href="/app/">
-              Use in browser
-            </a>
+            <a class="btn btn-lg btn-ghost" data-webapp-link href="/app/">Use in browser</a>
           </div>
-          <p class="hero-meta">
-            <span data-version>v0.1.0</span> · Windows, macOS &amp; Linux · No account required
-          </p>
+          <p class="hero-meta reveal">Windows · macOS · Linux &nbsp;—&nbsp; free, no account required</p>
         </div>
       </section>
 
       <!-- ========================== FEATURES ========================== -->
       <section id="features" class="section">
         <div class="container">
-          <div class="section-head">
-            <h2>Two focused tools, zero clutter</h2>
-            <p>Purpose-built utilities that do one job well and stay out of your way.</p>
+          <div class="section-head reveal">
+            <p class="eyebrow">Features</p>
+            <h2>Three focused tools, zero clutter</h2>
           </div>
 
           <div class="feature-grid">
-            <article class="card feature">
+            <article class="card feature reveal">
               <div class="feature-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M8 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3" />
@@ -102,18 +101,17 @@
               </div>
               <h3>File Difference Checker</h3>
               <p>
-                Load two versions of a file and review every difference side by
-                side. Choose which side to keep for each change, then export a
-                clean merged result.
+                Compare two versions of any file side by side, decide which side
+                to keep for every change, and export a clean merged result.
               </p>
               <ul class="feature-list">
                 <li>Line-by-line diff with clear highlighting</li>
-                <li>Per-change "keep original / keep modified" controls</li>
+                <li>Per-change keep / discard controls</li>
                 <li>One-click merged output export</li>
               </ul>
             </article>
 
-            <article class="card feature">
+            <article class="card feature reveal">
               <div class="feature-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M12 2 3 7v10l9 5 9-5V7z" />
@@ -124,15 +122,76 @@
               </div>
               <h3>Kubernetes YAML Optimizer</h3>
               <p>
-                Paste or load a manifest and get a clean, apply-ready result.
-                CoreTools validates the schema and strips redundant,
-                server-managed noise to industry best practices.
+                Paste a manifest and get a clean, apply-ready result. Validates
+                the schema and strips server-managed noise to best practices.
               </p>
               <ul class="feature-list">
-                <li>Removes server-managed fields &amp; <code>status</code> blocks</li>
-                <li>Strips tooling annotations, nulls &amp; empty values</li>
+                <li>Removes server-managed fields &amp; <code>status</code></li>
+                <li>Strips tooling annotations &amp; empty values</li>
                 <li>Transparent changelog of every removal</li>
               </ul>
+            </article>
+
+            <!-- ================== SENTENCE POLISHER (live) ================== -->
+            <article class="card feature polisher reveal" id="polisher">
+              <div class="polisher-head">
+                <div>
+                  <div class="feature-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12 20h9" />
+                      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+                      <path d="m14 6 3 3" opacity="0.6" />
+                    </svg>
+                  </div>
+                  <h3>Sentence Polisher</h3>
+                  <p>
+                    Rewrite any sentence in the style you need — right here, right
+                    now. Runs entirely in your browser; nothing you type ever
+                    leaves this page.
+                  </p>
+                </div>
+                <span class="live-badge"><span class="dot" aria-hidden="true"></span>Try it live</span>
+              </div>
+
+              <div class="polisher-body">
+                <label class="polisher-label" for="polish-input">Your sentence</label>
+                <textarea
+                  id="polish-input"
+                  rows="3"
+                  maxlength="600"
+                  placeholder="e.g. hey, i think the report is gonna be late but its really good stuff"
+                  spellcheck="false"
+                ></textarea>
+
+                <div class="polisher-controls">
+                  <div class="segmented" role="radiogroup" aria-label="Rewrite style" data-style-group>
+                    <button type="button" role="radio" aria-checked="true" data-style="professional">
+                      Professional
+                    </button>
+                    <button type="button" role="radio" aria-checked="false" data-style="genz">
+                      Gen&nbsp;Z
+                    </button>
+                    <button type="button" role="radio" aria-checked="false" data-style="complete">
+                      Complete
+                    </button>
+                  </div>
+                  <button class="btn btn-primary" type="button" data-polish-btn>Polish ✦</button>
+                </div>
+
+                <div class="polisher-output" data-output-wrap hidden>
+                  <div class="output-head">
+                    <span class="polisher-label">Polished</span>
+                    <button class="btn btn-sm btn-ghost copy-btn" type="button" data-copy-btn>
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <rect x="9" y="9" width="13" height="13" rx="2" />
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                      </svg>
+                      <span data-copy-label>Copy</span>
+                    </button>
+                  </div>
+                  <p class="output-text" data-output-text></p>
+                </div>
+              </div>
             </article>
           </div>
         </div>
@@ -141,32 +200,32 @@
       <!-- ========================== PRIVACY ========================== -->
       <section id="privacy" class="section section-alt">
         <div class="container privacy-inner">
-          <div class="privacy-copy">
+          <div class="privacy-copy reveal">
             <p class="eyebrow">Privacy by design</p>
             <h2>Your data never leaves your device</h2>
             <p>
-              CoreTools is built to be trustworthy, not just convenient. There is
-              no network code, no telemetry, and no hidden background activity.
-              Everything you do stays on your machine.
+              CoreTools is fully offline: no external API calls, no telemetry,
+              no analytics, no hidden background activity. All processing is
+              in-memory — nothing is stored, cached, or transferred. Even this
+              website ships zero trackers and makes no third-party requests.
             </p>
           </div>
           <ul class="privacy-list">
-            <li>
-              <strong>Fully offline.</strong> No external API calls, no update
-              pings, no analytics — enforced by a strict Content Security Policy.
+            <li class="reveal">
+              <strong>Fully offline.</strong> No network code in the app — enforced
+              by a strict Content Security Policy.
             </li>
-            <li>
-              <strong>No data transfer.</strong> Nothing you load or generate is
-              ever uploaded, shared, or synced.
+            <li class="reveal">
+              <strong>No data transfer.</strong> Nothing you load, type, or generate
+              is ever uploaded, shared, or synced.
             </li>
-            <li>
-              <strong>No storage.</strong> All processing happens in memory. No
-              caches, logs, or temp files — files are written only when you
-              explicitly save them.
+            <li class="reveal">
+              <strong>No storage.</strong> All processing happens in memory. Files are
+              written only when you explicitly save them.
             </li>
-            <li>
-              <strong>Safe by construction.</strong> Sandboxed, data-only YAML
-              parsing with strict validation. No code execution, no eval.
+            <li class="reveal">
+              <strong>Safe by construction.</strong> Sandboxed, data-only parsing with
+              strict validation. No code execution, no eval.
             </li>
           </ul>
         </div>
@@ -175,18 +234,14 @@
       <!-- ========================== DOWNLOAD ========================== -->
       <section id="download" class="section">
         <div class="container">
-          <div class="section-head">
-            <h2>Download CoreTools</h2>
-            <p>
-              Free and lightweight. Pick your platform below — all builds are
-              served over HTTPS.
-            </p>
+          <div class="section-head reveal">
+            <p class="eyebrow">Download</p>
+            <h2>Get CoreTools</h2>
+            <p>Free and lightweight. Served securely over HTTPS from this site.</p>
           </div>
 
           <div class="download-grid" data-download-grid>
-            <!-- Cards are populated with links & metadata from scripts/downloads.js.
-                 They render with placeholder links even if JavaScript is disabled. -->
-            <article class="card download-card" data-os="windows">
+            <article class="card download-card reveal" data-os="windows">
               <div class="os-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor">
                   <path d="M3 5.5 10.5 4.4v7.1H3zM11.5 4.25 21 3v8.5h-9.5zM3 12.5h7.5v7.1L3 18.5zM11.5 12.5H21V21l-9.5-1.25z" />
@@ -195,12 +250,12 @@
               <h3>Windows</h3>
               <p class="os-note" data-os-note>Windows 10 / 11 (64-bit)</p>
               <a class="btn btn-primary btn-block" data-download-link href="#">
-                Download <span class="dl-ext" data-os-ext>.msi</span>
+                <span class="dl-label">Download</span> <span class="dl-ext" data-os-ext>.exe</span>
               </a>
               <p class="os-meta"><span data-os-size>—</span></p>
             </article>
 
-            <article class="card download-card" data-os="macos">
+            <article class="card download-card reveal" data-os="macos">
               <div class="os-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor">
                   <path d="M16.4 12.7c0-2.1 1.7-3.1 1.8-3.2-1-1.4-2.5-1.6-3-1.7-1.3-.1-2.5.8-3.1.8-.7 0-1.6-.7-2.7-.7-1.4 0-2.6.8-3.3 2C3.6 12.5 4.8 16 6.2 18c.7.9 1.4 2 2.5 2 1 0 1.4-.6 2.6-.6s1.6.6 2.7.6 1.8-.9 2.5-1.9c.8-1.1 1.1-2.2 1.1-2.3-.1 0-2.1-.8-2.1-3.1zM14.3 6.2c.6-.7 1-1.7.9-2.7-.9 0-1.9.6-2.5 1.3-.5.6-1 1.6-.9 2.6 1 .1 1.9-.5 2.5-1.2z" />
@@ -209,32 +264,50 @@
               <h3>macOS</h3>
               <p class="os-note" data-os-note>macOS 11+ (Universal)</p>
               <a class="btn btn-primary btn-block" data-download-link href="#">
-                Download <span class="dl-ext" data-os-ext>.dmg</span>
+                <span class="dl-label">Download</span> <span class="dl-ext" data-os-ext>.dmg</span>
               </a>
               <p class="os-meta"><span data-os-size>—</span></p>
             </article>
 
-            <article class="card download-card" data-os="linux">
+            <article class="card download-card reveal" data-os="linux">
               <div class="os-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" width="30" height="30" fill="currentColor">
                   <path d="M12 2c-1.9 0-3 1.7-3 3.6 0 1.2.1 2.1-.5 3.1C7.7 10 6 11.6 6 14.3c0 .8.2 1.4.2 2-.5.5-1.2 1.2-1.2 2 0 .9 1 1.2 2.2 1.6 1.2.4 2.3 1.1 3.3 1.1s1.4-.6 2.4-.6 1.6.6 2.6.5c1.2-.1 1.8-1 2.9-1.5 1-.5 2.4-.8 2.4-1.7 0-.8-.8-1.4-1.3-1.9.1-.6.2-1.2.2-2 0-2.7-1.7-4.3-2.5-5.6-.6-1-.5-1.9-.5-3.1C18.9 3.7 17.8 2 15.9 2c-1.5 0-1.9 1-3.9 1zm-1.6 4.2c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9zm3.2 0c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9z" />
                 </svg>
               </div>
               <h3>Linux</h3>
-              <p class="os-note" data-os-note>AppImage / .deb</p>
+              <p class="os-note" data-os-note>Linux (x86-64)</p>
               <a class="btn btn-primary btn-block" data-download-link href="#">
-                Download <span class="dl-ext" data-os-ext>.AppImage</span>
+                <span class="dl-label">Download</span> <span class="dl-ext" data-os-ext>.AppImage</span>
               </a>
               <p class="os-meta"><span data-os-size>—</span></p>
             </article>
           </div>
 
-          <p class="download-foot muted">
+          <details class="checksums reveal" data-checksums-wrap>
+            <summary>
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                <path d="m9 12 2 2 4-4" />
+              </svg>
+              Verify your download (SHA-256 checksums)
+            </summary>
+            <div class="checksums-body">
+              <ul class="checksum-list" data-checksums>
+                <li class="muted">Checksums load from this site — no third parties.</li>
+              </ul>
+              <p class="muted verify-how">
+                Verify with <code>certutil -hashfile &lt;file&gt; SHA256</code> (Windows),
+                <code>shasum -a 256 &lt;file&gt;</code> (macOS), or
+                <code>sha256sum &lt;file&gt;</code> (Linux) and compare the output.
+              </p>
+            </div>
+          </details>
+
+          <p class="download-foot muted reveal">
             Don't want to install?
             <a data-webapp-link href="/app/">Use CoreTools in your browser</a>
             — same tools, nothing to download.
-            <br />
-            All installers are served over HTTPS directly from this site.
           </p>
         </div>
       </section>
@@ -247,14 +320,14 @@
           <span class="brand-mark small" aria-hidden="true">
             <svg viewBox="0 0 32 32" width="20" height="20">
               <rect width="32" height="32" rx="7" fill="currentColor" />
-              <rect x="7" y="7" width="8" height="18" rx="1.5" fill="#fff" />
-              <rect x="17" y="7" width="8" height="18" rx="1.5" fill="#fff" opacity="0.55" />
+              <rect x="7" y="7" width="8" height="18" rx="1.5" fill="#0b0d12" />
+              <rect x="17" y="7" width="8" height="18" rx="1.5" fill="#0b0d12" opacity="0.55" />
             </svg>
           </span>
           <span>CoreTools</span>
         </div>
         <p class="footer-copy">
-          © <span data-year>2026</span> CoreTools. Released under the MIT License.
+          © <span data-year>2026</span> <strong>JDG Initiates</strong> · MIT License
         </p>
         <p class="footer-contact">
           <a href="mailto:hello@coretools.app">hello@coretools.app</a>
@@ -263,6 +336,7 @@
     </footer>
 
     <script src="scripts/downloads.js"></script>
+    <script src="scripts/polisher.js" defer></script>
     <script src="scripts/main.js" defer></script>
   </body>
 </html>
