@@ -1,5 +1,6 @@
 <script lang="ts">
   import { polish, type PolishMode } from "../core/polisher";
+  import { checkGrammar, type GrammarIssue } from "../core/grammar";
 
   const MODES: { id: PolishMode; label: string; hint: string }[] = [
     { id: "professional", label: "Professional", hint: "Formal, polished business English" },
@@ -10,20 +11,26 @@
   let input = $state("");
   let mode = $state<PolishMode>("professional");
   let output = $state("");
+  let issues = $state<GrammarIssue[]>([]);
+  let checked = $state(false);
   let copied = $state(false);
 
   const canPolish = $derived(input.trim().length > 0);
   const activeHint = $derived(MODES.find((m) => m.id === mode)?.hint ?? "");
 
   function run() {
-    output = polish(input, mode);
+    // 1. Validate grammar first; 2. rewrite the corrected sentence.
+    const grammar = checkGrammar(input);
+    issues = grammar.issues;
+    output = polish(grammar.corrected, mode);
+    checked = Boolean(output);
     copied = false;
   }
 
   function setMode(next: PolishMode) {
     mode = next;
     // Re-polish immediately when the style changes and output is visible.
-    if (output) run();
+    if (checked) run();
   }
 
   function onKeydown(e: KeyboardEvent) {
@@ -65,8 +72,8 @@
 
 <section>
   <p class="intro muted">
-    Rewrite any sentence in the style you need. Everything runs locally —
-    nothing you type ever leaves this app.
+    Check grammar and rewrite any sentence in the style you need. Everything
+    runs locally — nothing you type ever leaves this app.
   </p>
 
   <label class="label" for="polish-input">Your sentence</label>
@@ -75,7 +82,7 @@
     bind:value={input}
     rows={4}
     maxlength={600}
-    placeholder="e.g. hey, i think the report is gonna be late but its really good stuff"
+    placeholder="e.g. hey, i dont think the report is gonna be late becuase its really good stuff"
     spellcheck="false"
     onkeydown={onKeydown}
   ></textarea>
@@ -95,19 +102,44 @@
         </button>
       {/each}
     </div>
-    <button class="primary" onclick={run} disabled={!canPolish}>Polish</button>
+    <button class="primary" onclick={run} disabled={!canPolish}>Check &amp; Polish</button>
   </div>
-  <p class="hint muted">{activeHint} · Ctrl+Enter to polish</p>
+  <p class="hint muted">{activeHint} · Ctrl+Enter to run</p>
 
-  {#if output}
-    <div class="output">
-      <div class="output-head">
-        <span class="label out-label">Polished</span>
-        <button class="copy" class:copied onclick={copy}>
-          {copied ? "Copied ✓" : "Copy"}
-        </button>
+  {#if checked}
+    <div class="results">
+      <div class="output">
+        <div class="output-head">
+          <span class="label out-label">Polished</span>
+          <button class="copy" class:copied onclick={copy}>
+            {copied ? "Copied ✓" : "Copy"}
+          </button>
+        </div>
+        <p class="output-text">{output}</p>
       </div>
-      <p class="output-text">{output}</p>
+
+      <div class="grammar">
+        <span class="label">
+          Grammar check
+          {#if issues.length}
+            <span class="count">{issues.length} fix{issues.length === 1 ? "" : "es"}</span>
+          {/if}
+        </span>
+        {#if issues.length}
+          <ul class="issue-list">
+            {#each issues as issue}
+              <li>
+                <code class="from">{issue.from}</code>
+                <span class="arrow" aria-hidden="true">→</span>
+                <code class="to">{issue.to}</code>
+                <span class="reason muted">{issue.reason}</span>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="clean">✓ No grammar issues detected.</p>
+        {/if}
+      </div>
     </div>
   {/if}
 </section>
@@ -167,8 +199,34 @@
     font-size: 12px;
     margin: 8px 0 0;
   }
-  .output {
+  .results {
+    display: grid;
+    grid-template-columns: 1.3fr 1fr;
+    gap: 16px;
     margin-top: 18px;
+    animation: rise 0.3s ease;
+  }
+  @media (max-width: 820px) {
+    .results {
+      grid-template-columns: 1fr;
+    }
+  }
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .results {
+      animation: none;
+    }
+  }
+  .output {
     background: var(--surface);
     border: 1px solid var(--accent);
     border-radius: var(--radius);
@@ -197,5 +255,63 @@
     margin: 10px 0 2px;
     font-size: 15px;
     line-height: 1.6;
+  }
+  .grammar {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+  .count {
+    display: inline-block;
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-radius: 999px;
+    padding: 1px 9px;
+    margin-left: 6px;
+    font-size: 11px;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .issue-list {
+    list-style: none;
+    margin: 10px 0 0;
+    padding: 0;
+    display: grid;
+    gap: 8px;
+    max-height: 260px;
+    overflow: auto;
+  }
+  .issue-list li {
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .issue-list code {
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 1px 6px;
+    border-radius: 5px;
+  }
+  .from {
+    background: var(--removed-bg);
+    color: var(--removed-fg);
+    text-decoration: line-through;
+  }
+  .to {
+    background: var(--added-bg);
+    color: var(--added-fg);
+  }
+  .arrow {
+    color: var(--text-muted);
+    margin: 0 2px;
+  }
+  .reason {
+    font-size: 12px;
+    margin-left: 6px;
+  }
+  .clean {
+    margin: 10px 0 0;
+    font-size: 13.5px;
+    color: var(--added-fg);
   }
 </style>

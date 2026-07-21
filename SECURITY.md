@@ -64,6 +64,21 @@ The Kubernetes optimizer (`src/lib/core/yaml-optimizer.ts`) parses with the
   scaffolding (`apiVersion`, `kind`, `metadata.name`/`generateName`) before it is
   accepted. Validation problems are reported, not swallowed.
 
+### Grammar checking & rewriting are equally sandboxed
+
+The Grammar-Polisher (`src/lib/core/grammar.ts`, `src/lib/core/polisher.ts`)
+is a **deterministic, rule-based engine**: fixed word tables and regular
+expressions, no language-model calls, no external service, no `eval`, no
+dynamic code. Text is processed in memory and discarded; nothing typed is
+transmitted or stored anywhere.
+
+### Theme preference is never persisted
+
+The dark/light toggle keeps its state **in memory only**. It defaults to the
+OS preference on every launch and writes nothing to disk or local storage —
+consistent with the app-wide no-storage rule. The bundled Inter font ships
+inside the app, so even typography triggers no network request.
+
 ## 5. Safe file handling
 
 - Files are read as **UTF-8 text only**; there is no binary execution path.

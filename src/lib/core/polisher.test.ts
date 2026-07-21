@@ -30,6 +30,11 @@ describe("polish — professional", () => {
     const out = polish("this is just really very important", "professional");
     expect(out).toBe("This is important.");
   });
+
+  it("expands n't contractions", () => {
+    const out = polish("I don't think he doesn't know", "professional");
+    expect(out).toBe("I do not think he does not know.");
+  });
 });
 
 describe("polish — genz", () => {

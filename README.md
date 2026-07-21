@@ -5,12 +5,18 @@ with **Tauri v2 + Svelte 5 + TypeScript**.
 
 It bundles three focused utilities:
 
-1. **File Difference Checker** — compare two versions of a file, review each
-   difference, choose which side to keep per-change, and export a merged file.
-2. **Kubernetes YAML Optimizer** — validate a manifest, strip server-managed and
+1. **Diff-Checker** — compare two versions of a file, review each difference,
+   choose which side to keep per-change, and export a merged file.
+2. **YML-Validator** — validate a Kubernetes manifest, strip server-managed and
    redundant fields, and download a clean, apply-ready result.
-3. **Sentence Polisher** — rewrite any sentence as Professional, Gen Z, or
-   Complete, with instant output and one-click copy (rule-based, fully local).
+3. **Grammar-Polisher** — check grammar (spelling, apostrophes, agreement,
+   articles, and more, with every fix explained), then rewrite the corrected
+   sentence as Professional, Gen Z, or Complete — with one-click copy.
+   Rule-based and fully local.
+
+The app ships with a premium dark/light theme (toggle in the header; the
+choice is kept in memory only — never persisted) and self-hosted Inter
+typography, so it makes zero network requests even for fonts.
 
 Everything runs locally in memory. There are **no network calls, no telemetry,
 and nothing is written to disk unless you explicitly save it.** See
@@ -33,7 +39,9 @@ coretools/
 │       │   ├── yaml-optimizer.ts   # safe K8s parse, validate & clean
 │       │   ├── yaml-optimizer.test.ts
 │       │   ├── polisher.ts         # rule-based sentence rewriting
-│       │   └── polisher.test.ts
+│       │   ├── polisher.test.ts
+│       │   ├── grammar.ts          # offline grammar checker
+│       │   └── grammar.test.ts
 │       ├── platform/           # Host abstraction (I/O boundary)
 │       │   ├── types.ts            # Platform interface
 │       │   ├── tauri.ts            # native dialogs + Rust commands
