@@ -132,66 +132,24 @@
               </ul>
             </article>
 
-            <!-- ================== SENTENCE POLISHER (live) ================== -->
-            <article class="card feature polisher reveal" id="polisher">
-              <div class="polisher-head">
-                <div>
-                  <div class="feature-icon" aria-hidden="true">
-                    <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M12 20h9" />
-                      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
-                      <path d="m14 6 3 3" opacity="0.6" />
-                    </svg>
-                  </div>
-                  <h3>Sentence Polisher</h3>
-                  <p>
-                    Rewrite any sentence in the style you need — right here, right
-                    now. Runs entirely in your browser; nothing you type ever
-                    leaves this page.
-                  </p>
-                </div>
-                <span class="live-badge"><span class="dot" aria-hidden="true"></span>Try it live</span>
+            <article class="card feature reveal">
+              <div class="feature-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M12 20h9" />
+                  <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
+                  <path d="m14 6 3 3" opacity="0.6" />
+                </svg>
               </div>
-
-              <div class="polisher-body">
-                <label class="polisher-label" for="polish-input">Your sentence</label>
-                <textarea
-                  id="polish-input"
-                  rows="3"
-                  maxlength="600"
-                  placeholder="e.g. hey, i think the report is gonna be late but its really good stuff"
-                  spellcheck="false"
-                ></textarea>
-
-                <div class="polisher-controls">
-                  <div class="segmented" role="radiogroup" aria-label="Rewrite style" data-style-group>
-                    <button type="button" role="radio" aria-checked="true" data-style="professional">
-                      Professional
-                    </button>
-                    <button type="button" role="radio" aria-checked="false" data-style="genz">
-                      Gen&nbsp;Z
-                    </button>
-                    <button type="button" role="radio" aria-checked="false" data-style="complete">
-                      Complete
-                    </button>
-                  </div>
-                  <button class="btn btn-primary" type="button" data-polish-btn>Polish ✦</button>
-                </div>
-
-                <div class="polisher-output" data-output-wrap hidden>
-                  <div class="output-head">
-                    <span class="polisher-label">Polished</span>
-                    <button class="btn btn-sm btn-ghost copy-btn" type="button" data-copy-btn>
-                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <rect x="9" y="9" width="13" height="13" rx="2" />
-                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                      </svg>
-                      <span data-copy-label>Copy</span>
-                    </button>
-                  </div>
-                  <p class="output-text" data-output-text></p>
-                </div>
-              </div>
+              <h3>Sentence Polisher</h3>
+              <p>
+                Rewrite any sentence in the style you need, with instant output
+                and one-click copy — entirely offline, inside the app.
+              </p>
+              <ul class="feature-list">
+                <li><strong>Professional</strong> — formal, polished business English</li>
+                <li><strong>Gen&nbsp;Z</strong> — casual, trendy phrasing</li>
+                <li><strong>Complete</strong> — balanced, clear, fully fleshed out</li>
+              </ul>
             </article>
           </div>
         </div>
@@ -336,7 +294,6 @@
     </footer>
 
     <script src="scripts/downloads.js"></script>
-    <script src="scripts/polisher.js" defer></script>
     <script src="scripts/main.js" defer></script>
   </body>
 </html>

@@ -1,9 +1,10 @@
 <script lang="ts">
   import DiffChecker from "./lib/components/DiffChecker.svelte";
   import YamlOptimizer from "./lib/components/YamlOptimizer.svelte";
+  import SentencePolisher from "./lib/components/SentencePolisher.svelte";
   import { getPlatform } from "./lib/platform";
 
-  type Tab = "diff" | "yaml";
+  type Tab = "diff" | "yaml" | "polish";
   let tab = $state<Tab>("diff");
 
   const platform = getPlatform();
@@ -30,13 +31,18 @@
     <button class:active={tab === "yaml"} onclick={() => (tab = "yaml")}>
       Kubernetes YAML Optimizer
     </button>
+    <button class:active={tab === "polish"} onclick={() => (tab = "polish")}>
+      Sentence Polisher
+    </button>
   </nav>
 
   <main>
     {#if tab === "diff"}
       <DiffChecker />
-    {:else}
+    {:else if tab === "yaml"}
       <YamlOptimizer />
+    {:else}
+      <SentencePolisher />
     {/if}
   </main>
 </div>

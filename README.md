@@ -1,13 +1,16 @@
 # CoreTools
 
-A lightweight, **fully offline** desktop toolkit built with **Tauri v2 + Svelte 5 + TypeScript**.
+A lightweight, **fully offline** desktop toolkit by **JDG Initiates**, built
+with **Tauri v2 + Svelte 5 + TypeScript**.
 
-It bundles two focused developer utilities:
+It bundles three focused utilities:
 
 1. **File Difference Checker** — compare two versions of a file, review each
    difference, choose which side to keep per-change, and export a merged file.
 2. **Kubernetes YAML Optimizer** — validate a manifest, strip server-managed and
    redundant fields, and download a clean, apply-ready result.
+3. **Sentence Polisher** — rewrite any sentence as Professional, Gen Z, or
+   Complete, with instant output and one-click copy (rule-based, fully local).
 
 Everything runs locally in memory. There are **no network calls, no telemetry,
 and nothing is written to disk unless you explicitly save it.** See
@@ -28,7 +31,9 @@ coretools/
 │       │   ├── diff.ts             # line diff + two-way merge engine
 │       │   ├── diff.test.ts
 │       │   ├── yaml-optimizer.ts   # safe K8s parse, validate & clean
-│       │   └── yaml-optimizer.test.ts
+│       │   ├── yaml-optimizer.test.ts
+│       │   ├── polisher.ts         # rule-based sentence rewriting
+│       │   └── polisher.test.ts
 │       ├── platform/           # Host abstraction (I/O boundary)
 │       │   ├── types.ts            # Platform interface
 │       │   ├── tauri.ts            # native dialogs + Rust commands
@@ -38,7 +43,8 @@ coretools/
 │           ├── FilePanel.svelte
 │           ├── DiffViewer.svelte
 │           ├── DiffChecker.svelte
-│           └── YamlOptimizer.svelte
+│           ├── YamlOptimizer.svelte
+│           └── SentencePolisher.svelte
 ├── src-tauri/                  # Native shell (Rust)
 │   ├── src/lib.rs              # Two minimal, guarded I/O commands
 │   ├── src/main.rs

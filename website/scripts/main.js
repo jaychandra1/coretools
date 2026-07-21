@@ -207,94 +207,6 @@
     });
   }
 
-  /* ---------------------- sentence polisher ---------------------- */
-
-  function initPolisher() {
-    var input = document.getElementById("polish-input");
-    var runBtn = document.querySelector("[data-polish-btn]");
-    var group = document.querySelector("[data-style-group]");
-    var outWrap = document.querySelector("[data-output-wrap]");
-    var outText = document.querySelector("[data-output-text]");
-    var copyBtn = document.querySelector("[data-copy-btn]");
-    var copyLabel = document.querySelector("[data-copy-label]");
-    if (!input || !runBtn || !group || !window.CoreToolsPolisher) return;
-
-    var mode = "professional";
-
-    group.querySelectorAll("[data-style]").forEach(function (btn) {
-      btn.addEventListener("click", function () {
-        mode = btn.getAttribute("data-style");
-        group.querySelectorAll("[data-style]").forEach(function (b) {
-          b.setAttribute("aria-checked", b === btn ? "true" : "false");
-        });
-        // Re-polish immediately when the style changes and output is visible.
-        if (outWrap && !outWrap.hidden) run();
-      });
-    });
-
-    function run() {
-      var text = input.value;
-      var polished = window.CoreToolsPolisher.polish(text, mode);
-      if (!polished) {
-        outWrap.hidden = true;
-        return;
-      }
-      outText.textContent = polished;
-      outWrap.hidden = false;
-      resetCopy();
-    }
-
-    runBtn.addEventListener("click", run);
-    input.addEventListener("keydown", function (e) {
-      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-        e.preventDefault();
-        run();
-      }
-    });
-
-    function resetCopy() {
-      if (!copyBtn) return;
-      copyBtn.classList.remove("copied");
-      if (copyLabel) copyLabel.textContent = "Copy";
-    }
-
-    function markCopied() {
-      copyBtn.classList.add("copied");
-      if (copyLabel) copyLabel.textContent = "Copied ✓";
-      setTimeout(resetCopy, 2200);
-    }
-
-    if (copyBtn) {
-      copyBtn.addEventListener("click", function () {
-        var text = outText.textContent || "";
-        if (!text) return;
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(text).then(markCopied, function () {
-            fallbackCopy(text);
-          });
-        } else {
-          fallbackCopy(text);
-        }
-      });
-    }
-
-    function fallbackCopy(text) {
-      var ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      try {
-        document.execCommand("copy");
-        markCopied();
-      } catch (e) {
-        /* clipboard unavailable — user can select manually */
-      }
-      ta.remove();
-    }
-  }
-
   /* --------------------------- meta --------------------------- */
 
   function updateMeta(detected) {
@@ -319,7 +231,6 @@
     populateDownloads(detected);
     loadChecksums();
     initReveal();
-    initPolisher();
   }
 
   if (document.readyState === "loading") {

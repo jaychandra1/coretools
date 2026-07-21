@@ -390,8 +390,13 @@ code {
 /* --------------------------- Features --------------------------- */
 .feature-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 24px;
+}
+@media (max-width: 980px) {
+  .feature-grid {
+    grid-template-columns: 1fr;
+  }
 }
 .feature {
   padding: 32px;
@@ -410,11 +415,14 @@ code {
   font-size: 21px;
   margin-bottom: 10px;
 }
-.feature > p,
-.polisher-head p {
+.feature > p {
   color: var(--text-muted);
   margin: 0 0 18px;
   font-size: 15px;
+}
+.feature-list li strong {
+  color: var(--text);
+  font-weight: 600;
 }
 .feature-list {
   list-style: none;
@@ -440,146 +448,6 @@ code {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M6.5 10.5 4 8l1-1 1.5 1.5L11 4l1 1z' fill='%23a78bfa'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: center;
-}
-@media (max-width: 760px) {
-  .feature-grid {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* ------------------------ Sentence Polisher --------------------- */
-.polisher {
-  grid-column: 1 / -1;
-  padding: 32px;
-}
-.polisher-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-}
-.live-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  flex: none;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--accent-strong);
-  background: var(--accent-soft);
-  border: 1px solid rgba(139, 92, 246, 0.3);
-  padding: 6px 12px;
-  border-radius: 999px;
-  white-space: nowrap;
-}
-.polisher-body {
-  margin-top: 6px;
-}
-.polisher-label {
-  display: block;
-  font-size: 12.5px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-  margin-bottom: 8px;
-}
-.polisher textarea {
-  width: 100%;
-  resize: vertical;
-  font-family: var(--sans);
-  font-size: 15.5px;
-  line-height: 1.6;
-  color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  padding: 14px 16px;
-  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease);
-}
-.polisher textarea:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
-}
-.polisher-controls {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  margin: 16px 0;
-  flex-wrap: wrap;
-}
-.segmented {
-  display: inline-flex;
-  background: var(--bg);
-  border: 1px solid var(--border-strong);
-  border-radius: 999px;
-  padding: 4px;
-  gap: 2px;
-}
-.segmented button {
-  font-family: inherit;
-  font-size: 13.5px;
-  font-weight: 600;
-  color: var(--text-muted);
-  background: transparent;
-  border: none;
-  border-radius: 999px;
-  padding: 8px 18px;
-  cursor: pointer;
-  transition: background 0.2s var(--ease), color 0.2s var(--ease),
-    box-shadow 0.2s var(--ease);
-}
-.segmented button:hover {
-  color: var(--text);
-}
-.segmented button[aria-checked="true"] {
-  background: linear-gradient(180deg, var(--accent-strong), var(--accent));
-  color: #fff;
-  box-shadow: 0 2px 14px var(--accent-glow);
-}
-.polisher-output {
-  background: var(--bg);
-  border: 1px solid rgba(139, 92, 246, 0.32);
-  border-radius: var(--radius-sm);
-  padding: 16px 18px;
-  box-shadow: 0 0 0 3px var(--accent-soft), 0 12px 34px rgba(0, 0, 0, 0.3);
-  animation: outputIn 0.45s var(--ease);
-}
-@keyframes outputIn {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
-}
-.output-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-.output-head .polisher-label {
-  margin-bottom: 0;
-  color: var(--accent-strong);
-}
-.output-text {
-  margin: 10px 0 2px;
-  font-size: 16.5px;
-  line-height: 1.65;
-}
-.copy-btn {
-  gap: 6px;
-}
-.copy-btn.copied {
-  border-color: var(--accent);
-  color: var(--accent-strong);
 }
 
 /* ---------------------------- Privacy --------------------------- */
