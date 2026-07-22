@@ -192,6 +192,205 @@ function repairApiVersion(
   return { apiVersion: inferred, ...obj };
 }
 
+/**
+ * Strip non-YAML noise that commonly rides along with pasted manifests:
+ * Markdown code fences, shell prompts, and heredoc wrappers. Conservative on
+ * purpose — anything that could be real YAML is left alone.
+ */
+function sanitizeInput(input: string, changes: OptimizeChange[]): string {
+  const kept: string[] = [];
+  for (const line of input.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    const isNoise =
+      /^```/.test(trimmed) || // Markdown code fence
+      /^\$\s+\S/.test(trimmed) || // shell prompt: "$ kubectl apply -f -"
+      /^cat\s+<<-?\s*['"]?EOF['"]?/.test(trimmed) || // heredoc opener
+      trimmed === "EOF"; // heredoc terminator
+    if (isNoise) {
+      changes.push({
+        path: "(input)",
+        action: "removed",
+        reason: `non-YAML line stripped: "${trimmed.slice(0, 40)}"`,
+      });
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join("\n");
+}
+
+/** Workload kinds whose spec requires a selector and a pod template. */
+const WORKLOAD_KINDS = new Set(["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet"]);
+
+function asObject(value: unknown): Record<string, unknown> {
+  return isPlainObject(value) ? value : {};
+}
+
+/**
+ * Rebuild an object with `priority` keys first (in that order), then the
+ * remaining keys in their original order. Used to emit conventional
+ * Kubernetes key ordering regardless of input or repair insertion order.
+ */
+function orderKeys(
+  obj: Record<string, unknown>,
+  priority: readonly string[],
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of priority) {
+    if (key in obj) out[key] = obj[key];
+  }
+  for (const [key, value] of Object.entries(obj)) {
+    if (!(key in out)) out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Add missing mandatory fields with sensible, clearly-flagged defaults so the
+ * output is structurally apply-ready. Every addition is recorded. Existing
+ * values are never overwritten.
+ */
+function repairMandatoryFields(
+  obj: Record<string, unknown>,
+  changes: OptimizeChange[],
+): Record<string, unknown> {
+  const kind = typeof obj.kind === "string" ? obj.kind : "";
+
+  // --- metadata.name ------------------------------------------------------
+  const metadata = asObject(obj.metadata);
+  if (!isPlainObject(obj.metadata)) {
+    obj.metadata = metadata;
+  }
+  if (!metadata.name && !metadata.generateName) {
+    const name = kind ? `unnamed-${kind.toLowerCase()}` : "unnamed-resource";
+    metadata.name = name;
+    changes.push({
+      path: "metadata.name",
+      action: "added",
+      reason: `was missing — defaulted to "${name}" (rename before applying)`,
+    });
+  }
+  const name = String(metadata.name ?? metadata.generateName ?? "app");
+
+  // --- workload spec: template, labels, selector --------------------------
+  if (WORKLOAD_KINDS.has(kind)) {
+    const spec = asObject(obj.spec);
+    if (!isPlainObject(obj.spec)) {
+      obj.spec = spec;
+      changes.push({ path: "spec", action: "added", reason: "was missing — required" });
+    }
+
+    // Pod template.
+    if (!isPlainObject(spec.template)) {
+      spec.template = {
+        metadata: { labels: { app: name } },
+        spec: {
+          containers: [{ name, image: "your-image:latest" }],
+        },
+      };
+      changes.push({
+        path: "spec.template",
+        action: "added",
+        reason: 'was missing — added minimal pod template (set a real container image)',
+      });
+    }
+    const template = asObject(spec.template);
+    const templateMeta = asObject(template.metadata);
+    if (!isPlainObject(template.metadata)) template.metadata = templateMeta;
+
+    // Template labels (needed for the selector to match).
+    let labels = asObject(templateMeta.labels);
+    if (!isPlainObject(templateMeta.labels) || Object.keys(labels).length === 0) {
+      // Derive from an existing selector if there is one, else app: <name>.
+      const existingSelector = asObject(asObject(spec.selector).matchLabels);
+      labels = Object.keys(existingSelector).length ? { ...existingSelector } : { app: name };
+      templateMeta.labels = labels;
+      changes.push({
+        path: "spec.template.metadata.labels",
+        action: "added",
+        reason: "was missing — labels are required for the selector to match",
+      });
+    }
+
+    // Selector matching the template labels.
+    if (!isPlainObject(spec.selector)) {
+      spec.selector = { matchLabels: { ...labels } };
+      changes.push({
+        path: "spec.selector",
+        action: "added",
+        reason: "was missing — set to match the pod template labels",
+      });
+    }
+
+    // StatefulSet additionally requires serviceName.
+    if (kind === "StatefulSet" && !spec.serviceName) {
+      spec.serviceName = name;
+      changes.push({
+        path: "spec.serviceName",
+        action: "added",
+        reason: `was missing — defaulted to "${name}"`,
+      });
+    }
+  }
+
+  // --- Job pod template ----------------------------------------------------
+  if (kind === "Job") {
+    const spec = asObject(obj.spec);
+    if (!isPlainObject(obj.spec)) {
+      obj.spec = spec;
+      changes.push({ path: "spec", action: "added", reason: "was missing — required" });
+    }
+    if (!isPlainObject(spec.template)) {
+      spec.template = {
+        spec: {
+          containers: [{ name, image: "your-image:latest" }],
+          restartPolicy: "Never",
+        },
+      };
+      changes.push({
+        path: "spec.template",
+        action: "added",
+        reason: 'was missing — added minimal pod template (set a real container image)',
+      });
+    }
+  }
+
+  // --- Service: selector and ports -----------------------------------------
+  if (kind === "Service") {
+    const spec = asObject(obj.spec);
+    if (!isPlainObject(obj.spec)) {
+      obj.spec = spec;
+      changes.push({ path: "spec", action: "added", reason: "was missing — required" });
+    }
+    if (!isPlainObject(spec.selector) || Object.keys(asObject(spec.selector)).length === 0) {
+      spec.selector = { app: name };
+      changes.push({
+        path: "spec.selector",
+        action: "added",
+        reason: `was missing — defaulted to app: ${name} (match your pod labels)`,
+      });
+    }
+    if (!Array.isArray(spec.ports) || spec.ports.length === 0) {
+      spec.ports = [{ port: 80, targetPort: 80 }];
+      changes.push({
+        path: "spec.ports",
+        action: "added",
+        reason: "was missing — defaulted to port 80 (adjust to your app)",
+      });
+    }
+  }
+
+  // --- conventional key ordering -------------------------------------------
+  if (isPlainObject(obj.spec)) {
+    const spec = obj.spec as Record<string, unknown>;
+    if (isPlainObject(spec.template)) {
+      spec.template = orderKeys(spec.template as Record<string, unknown>, ["metadata", "spec"]);
+    }
+    obj.spec = orderKeys(spec, ["replicas", "serviceName", "selector", "template"]);
+  }
+  return orderKeys(obj, ["apiVersion", "kind", "metadata", "spec"]);
+}
+
 /** Validate the Kubernetes-required scaffolding of a single document. */
 function validateManifest(obj: unknown, index: number, errors: string[]): void {
   const label = `document ${index + 1}`;
@@ -214,6 +413,45 @@ function validateManifest(obj: unknown, index: number, errors: string[]): void {
   } else if (!metadata.name && !metadata.generateName) {
     errors.push(`${label}: missing required field "metadata.name"`);
   }
+
+  // Per-kind schema checks (run after repair, so failures mean the repair
+  // could not fix the document).
+  const kind = typeof obj.kind === "string" ? obj.kind : "";
+  const spec = isPlainObject(obj.spec) ? obj.spec : undefined;
+
+  if (WORKLOAD_KINDS.has(kind)) {
+    if (!spec) {
+      errors.push(`${label}: missing required field "spec"`);
+    } else {
+      if (!isPlainObject(spec.selector)) {
+        errors.push(`${label}: missing required field "spec.selector"`);
+      }
+      if (!isPlainObject(spec.template)) {
+        errors.push(`${label}: missing required field "spec.template"`);
+      } else {
+        const sel = isPlainObject(spec.selector)
+          ? (spec.selector as Record<string, unknown>).matchLabels
+          : undefined;
+        const labels = isPlainObject((spec.template as Record<string, unknown>).metadata)
+          ? ((spec.template as Record<string, unknown>).metadata as Record<string, unknown>).labels
+          : undefined;
+        if (isPlainObject(sel) && isPlainObject(labels)) {
+          const mismatch = Object.entries(sel).some(([k, v]) => labels[k] !== v);
+          if (mismatch) {
+            errors.push(
+              `${label}: spec.selector.matchLabels does not match spec.template.metadata.labels`,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  if (kind === "Service" && spec) {
+    if (!Array.isArray(spec.ports) || spec.ports.length === 0) {
+      errors.push(`${label}: missing required field "spec.ports"`);
+    }
+  }
 }
 
 /**
@@ -232,9 +470,16 @@ export function optimizeManifest(input: string): OptimizeResult {
     return { output: "", changes, documents: 0, valid: false, errors: ["Input is empty"] };
   }
 
+  // Drop pasted-along noise (code fences, shell prompts, heredoc wrappers)
+  // before parsing, so it can never surface in the output.
+  const sanitized = sanitizeInput(input, changes);
+  if (sanitized.trim() === "") {
+    return { output: "", changes, documents: 0, valid: false, errors: ["No YAML content found"] };
+  }
+
   let parsed;
   try {
-    parsed = parseAllDocuments(input, {
+    parsed = parseAllDocuments(sanitized, {
       strict: true,
       // Data-only core schema: no `!!js` / custom tags, no code execution.
       schema: "core",
@@ -254,9 +499,13 @@ export function optimizeManifest(input: string): OptimizeResult {
     // resource-exhaustion attacks (this is also the library default).
     let js = doc.toJS({ maxAliasCount: 100 });
     if (js === null || js === undefined) return; // skip empty documents
-    // Repair a missing apiVersion (inferred from the kind) before validating,
-    // so a repaired document validates clean.
-    if (isPlainObject(js)) js = repairApiVersion(js, changes);
+    // Repair missing mandatory fields before validating, so a repaired
+    // document validates clean: apiVersion (inferred from kind), then
+    // metadata.name / selector / template / ports defaults per kind.
+    if (isPlainObject(js)) {
+      js = repairApiVersion(js, changes);
+      js = repairMandatoryFields(js, changes);
+    }
     validateManifest(js, index, errors);
     cleanedDocs.push(clean(js, "", changes, true));
   });
@@ -271,9 +520,16 @@ export function optimizeManifest(input: string): OptimizeResult {
     };
   }
 
+  // Canonical formatting: 2-space indent, no line wrapping, single trailing
+  // newline per document, and no blank lines between documents.
   const rendered = cleanedDocs
-    .map((doc) => stringify(doc, { lineWidth: 0, sortMapEntries: false }))
-    .join("---\n");
+    .map((doc) =>
+      stringify(doc, { indent: 2, lineWidth: 0, sortMapEntries: false })
+        .replace(/\n{2,}/g, "\n")
+        .trimEnd(),
+    )
+    .join("\n---\n")
+    .concat("\n");
 
   return {
     output: rendered,

@@ -201,15 +201,21 @@
   }
   .results {
     display: grid;
-    grid-template-columns: 1.3fr 1fr;
+    /* minmax(0, …) keeps long unbreakable content from widening the grid
+       past the viewport. */
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
     gap: 16px;
     margin-top: 18px;
     animation: rise 0.3s ease;
   }
   @media (max-width: 820px) {
     .results {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
+  }
+  .output,
+  .grammar {
+    min-width: 0;
   }
   @keyframes rise {
     from {
@@ -255,6 +261,7 @@
     margin: 10px 0 2px;
     font-size: 15px;
     line-height: 1.6;
+    overflow-wrap: anywhere;
   }
   .grammar {
     background: var(--surface);

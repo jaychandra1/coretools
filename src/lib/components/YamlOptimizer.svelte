@@ -7,12 +7,14 @@
   let fileName = $state("");
   let result = $state<OptimizeResult | null>(null);
   let saveMsg = $state("");
+  let copied = $state(false);
 
   const canOptimize = $derived(input.trim().length > 0);
 
   function optimize() {
     result = optimizeManifest(input);
     saveMsg = "";
+    copied = false;
   }
 
   async function download() {
@@ -26,11 +28,42 @@
       saveMsg = e instanceof Error ? e.message : String(e);
     }
   }
+
+  let copyTimer: ReturnType<typeof setTimeout> | undefined;
+
+  async function copy() {
+    if (!result?.output) return;
+    try {
+      await navigator.clipboard.writeText(result.output);
+      markCopied();
+    } catch {
+      // Fallback for webviews without async-clipboard permission.
+      const ta = document.createElement("textarea");
+      ta.value = result.output;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+        markCopied();
+      } finally {
+        ta.remove();
+      }
+    }
+  }
+
+  function markCopied() {
+    copied = true;
+    clearTimeout(copyTimer);
+    copyTimer = setTimeout(() => (copied = false), 2200);
+  }
 </script>
 
 <section>
   <p class="intro muted">
-    Load or paste a Kubernetes manifest (single or multi-document). CoreTools validates it,
+    Load or paste a Kubernetes manifest (single or multi-document). CoreTools validates it
+    against the Kubernetes schema, fills in missing mandatory fields with sensible defaults,
     strips server-managed and redundant fields, and produces a clean, apply-ready result.
   </p>
 
@@ -67,7 +100,12 @@
         <div class="output">
           <div class="head">
             <span class="label">Optimized manifest</span>
-            <button class="primary" onclick={download}>Download…</button>
+            <div class="actions">
+              <button class="copy-btn" class:copied onclick={copy}>
+                {copied ? "Copied ✓" : "Copy"}
+              </button>
+              <button class="primary" onclick={download}>Download…</button>
+            </div>
           </div>
           <pre class="mono code">{result.output}</pre>
           {#if saveMsg}<p class="muted save">{saveMsg}</p>{/if}
@@ -120,18 +158,26 @@
   }
   .results {
     display: grid;
-    grid-template-columns: 1.4fr 1fr;
+    /* minmax(0, …) lets long unbreakable content (wide YAML lines) scroll
+       inside the column instead of blowing the grid past the viewport. */
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
     gap: 16px;
   }
   @media (max-width: 900px) {
     .results {
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1fr);
     }
+  }
+  .output,
+  .changelog {
+    min-width: 0;
   }
   .head {
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
     margin-bottom: 6px;
   }
   .label {
@@ -189,5 +235,18 @@
   .badge.added {
     background: var(--added-bg);
     color: var(--added-fg);
+  }
+  .actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .copy-btn {
+    font-size: 12px;
+    padding: 6px 12px;
+  }
+  .copy-btn.copied {
+    border-color: var(--accent);
+    color: var(--accent);
   }
 </style>

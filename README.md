@@ -139,10 +139,29 @@ npm run check          # type-check .ts and .svelte with svelte-check
 Try it with `examples/diff/nginx.original.conf` and
 `examples/diff/nginx.modified.conf`.
 
-### Kubernetes YAML Optimizer
+### YML-Validator
 
-1. Load or paste a manifest (single- or multi-document).
-2. Click **Optimize**. The manifest is validated and cleaned:
+1. Load or paste a Kubernetes manifest (single- or multi-document).
+2. Click **Optimize**. The full rule set, in order:
+
+   **Input sanitation**
+   - Non-YAML noise stripped before parsing: Markdown code fences,
+     shell prompts (`$ kubectl …`), and heredoc wrappers (`cat <<EOF` / `EOF`).
+
+   **Mandatory-field repair** (defaults are added only when missing — existing
+   values are never overwritten, and every addition is logged)
+   - `apiVersion` inferred from `kind` for ~30 standard kinds
+     (Deployment → `apps/v1`, Ingress → `networking.k8s.io/v1`, …).
+   - `metadata.name` defaulted to `unnamed-<kind>` (rename before applying).
+   - Workloads (Deployment/StatefulSet/DaemonSet/ReplicaSet):
+     `spec.template` (minimal pod template with a placeholder image),
+     `spec.template.metadata.labels`, and `spec.selector.matchLabels` set to
+     match the template labels. StatefulSet also gets `spec.serviceName`.
+   - Job: minimal `spec.template` with `restartPolicy: Never`.
+   - Service: `spec.selector` (`app: <name>`) and `spec.ports`
+     (port 80) defaults.
+
+   **Cleanup**
    - Server-managed fields removed (`creationTimestamp`, `resourceVersion`,
      `uid`, `selfLink`, `generation`, `managedFields`, `finalizers`).
    - Cluster-reconciled top-level `status` block removed.
@@ -150,8 +169,21 @@ Try it with `examples/diff/nginx.original.conf` and
      (`kubectl.kubernetes.io/last-applied-configuration`,
      `deployment.kubernetes.io/revision`).
    - `null` values and empty maps/arrays removed.
-3. Review the **Changes applied** list (every removal is logged with a reason)
-   and click **Download…** to save.
+
+   **Schema validation** (after repair, so errors mean “could not fix”)
+   - Required scaffolding: `apiVersion`, `kind`, `metadata.name`.
+   - Workloads: `spec.selector` and `spec.template` present, and
+     `selector.matchLabels` actually matches the template labels.
+   - Service: `spec.ports` present.
+
+   **Canonical formatting**
+   - Conventional key order (`apiVersion`, `kind`, `metadata`, `spec`;
+     `replicas`, `selector`, `template` inside workload specs; `metadata`
+     before `spec` in pod templates), 2-space indent, no blank lines, one
+     `---` separator per document.
+
+3. Review the **Changes applied** list (every removal *and* addition is logged
+   with a reason), then **Copy** the result or **Download…** it as a file.
 
 Try it with `examples/k8s/messy-deployment.yaml` and
 `examples/k8s/multi-document.yaml`.

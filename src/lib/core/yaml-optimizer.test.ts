@@ -111,7 +111,7 @@ spec:
   it("keeps an existing apiVersion untouched", () => {
     const r = optimizeManifest("apiVersion: apps/v1beta2\nkind: Deployment\nmetadata:\n  name: d\n");
     expect(r.output).toContain("apiVersion: apps/v1beta2");
-    expect(r.changes.some((c) => c.action === "added")).toBe(false);
+    expect(r.changes.some((c) => c.action === "added" && c.path === "apiVersion")).toBe(false);
   });
 
   it("still flags a missing apiVersion for unknown kinds", () => {
@@ -120,10 +120,11 @@ spec:
     expect(r.errors.join(" ")).toContain("apiVersion");
   });
 
-  it("flags missing metadata.name", () => {
+  it("defaults a missing metadata.name", () => {
     const r = optimizeManifest("apiVersion: v1\nkind: Pod\nmetadata: {}\n");
-    expect(r.valid).toBe(false);
-    expect(r.errors.join(" ")).toContain("metadata.name");
+    expect(r.valid).toBe(true);
+    expect(r.output).toContain("name: unnamed-pod");
+    expect(r.changes.some((c) => c.action === "added" && c.path === "metadata.name")).toBe(true);
   });
 
   it("rejects invalid YAML with a parse error, not a crash", () => {
@@ -136,5 +137,77 @@ spec:
     const r = optimizeManifest("   ");
     expect(r.valid).toBe(false);
     expect(r.output).toBe("");
+  });
+
+  it("strips shell prompts, code fences and heredoc wrappers from input", () => {
+    const r = optimizeManifest(
+      "$ kubectl apply -f -\ncat <<EOF\n```yaml\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\ndata:\n  k: v\n```\nEOF\n",
+    );
+    expect(r.valid).toBe(true);
+    expect(r.output).toContain("kind: ConfigMap");
+    expect(r.output).not.toContain("kubectl");
+    expect(r.output).not.toContain("```");
+    expect(r.output).not.toContain("EOF");
+  });
+
+  it("adds selector and template labels for a Deployment missing them", () => {
+    const r = optimizeManifest(
+      "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  replicas: 2\n  template:\n    spec:\n      containers:\n        - name: web\n          image: nginx:1.27\n",
+    );
+    expect(r.valid).toBe(true);
+    expect(r.output).toContain("matchLabels");
+    expect(r.output).toContain("app: web");
+    const added = r.changes.filter((c) => c.action === "added").map((c) => c.path);
+    expect(added).toContain("spec.selector");
+    expect(added).toContain("spec.template.metadata.labels");
+  });
+
+  it("adds a minimal pod template when a workload has none", () => {
+    const r = optimizeManifest("apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  replicas: 1\n");
+    expect(r.valid).toBe(true);
+    expect(r.output).toContain("template:");
+    expect(r.output).toContain("your-image:latest");
+    expect(r.output).toContain("matchLabels");
+  });
+
+  it("derives template labels from an existing selector", () => {
+    const r = optimizeManifest(
+      "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  selector:\n    matchLabels:\n      app: custom\n  template:\n    spec:\n      containers:\n        - name: web\n          image: nginx:1.27\n",
+    );
+    expect(r.valid).toBe(true);
+    expect(r.output).toContain("app: custom");
+    expect(r.errors).toEqual([]);
+  });
+
+  it("adds defaults for a Service missing selector and ports", () => {
+    const r = optimizeManifest("apiVersion: v1\nkind: Service\nmetadata:\n  name: svc\n");
+    expect(r.valid).toBe(true);
+    expect(r.output).toContain("port: 80");
+    expect(r.output).toContain("app: svc");
+  });
+
+  it("adds serviceName for a StatefulSet", () => {
+    const r = optimizeManifest(
+      "apiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: db\nspec:\n  template:\n    metadata:\n      labels:\n        app: db\n    spec:\n      containers:\n        - name: db\n          image: postgres:16\n",
+    );
+    expect(r.valid).toBe(true);
+    expect(r.output).toContain("serviceName: db");
+  });
+
+  it("flags a selector that does not match template labels", () => {
+    const r = optimizeManifest(
+      "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  selector:\n    matchLabels:\n      app: other\n  template:\n    metadata:\n      labels:\n        app: web\n    spec:\n      containers:\n        - name: web\n          image: nginx:1.27\n",
+    );
+    expect(r.valid).toBe(false);
+    expect(r.errors.join(" ")).toContain("does not match");
+  });
+
+  it("emits clean formatting with no blank lines", () => {
+    const r = optimizeManifest(
+      "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\ndata:\n  k: v\n---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: b\ndata:\n  k: v\n",
+    );
+    expect(r.output).not.toMatch(/\n{2,}/);
+    expect(r.output.endsWith("\n")).toBe(true);
+    expect(r.output).toContain("\n---\n");
   });
 });
