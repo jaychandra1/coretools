@@ -14,10 +14,10 @@ import { dirname, join } from "node:path";
 const N = 1024;
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src-tauri", "app-icon.png");
 
-// Palette
-const BG = [47, 109, 246, 255]; // #2f6df6
+// Palette — brand violet, matching the app accent and website favicon.
+const BG = [139, 92, 246, 255]; // #8b5cf6
 const LEFT = [255, 255, 255, 255];
-const RIGHT = [161, 189, 251, 255]; // white @55% over the blue
+const RIGHT = [203, 182, 251, 255]; // white @55% over the violet
 const TRANSPARENT = [0, 0, 0, 0];
 
 const S = N / 32; // favicon viewBox is 32 units

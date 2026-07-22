@@ -31,6 +31,13 @@
     "publisher": "JDG Initiates",
     "copyright": "© 2026 JDG Initiates",
     "shortDescription": "Offline file diff & Kubernetes YAML optimizer",
+    "windows": {
+      "nsis": {
+        "installerIcon": "icons/icon.ico",
+        "sidebarImage": "installer/nsis-sidebar.bmp",
+        "headerImage": "installer/nsis-header.bmp"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
