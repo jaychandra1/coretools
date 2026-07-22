@@ -133,16 +133,53 @@ installer; macOS/Linux builds require those OSes — use the automated workflow
 above for all three.) You can drop a locally-built installer into
 `website/downloads/` under the stable name to publish it manually.
 
-## 3. Code signing (optional but recommended)
+## 3. SmartScreen blocks & code signing
 
-Unsigned installers trigger OS warnings ("unknown publisher" / Gatekeeper).
-For a public release, sign them:
+### Why downloads get flagged
 
-- **Windows:** an Authenticode certificate (see Tauri "Windows Code Signing").
-- **macOS:** an Apple Developer ID + notarization.
+The installer is **unsigned**, and Microsoft SmartScreen judges unsigned files
+by the reputation of the **exact file hash**. Every CI build produces a new
+hash with zero reputation, so any release can be labeled "unverified" or
+"suspicious download blocked" — which build trips it is essentially luck.
+Three factors stack against us:
 
-These require paid certificates and are configured via secrets in the workflow.
-Until then, users can still install by accepting the OS prompt.
+1. No Authenticode signature (the dominant factor).
+2. NSIS installers draw extra heuristic suspicion (malware often uses NSIS).
+3. A shared `*.vercel.app` subdomain carries no domain reputation.
+
+### The real fix: sign the Windows installer
+
+Reputation attaches to the **signing certificate**, so it persists across
+releases. Options, cheapest first:
+
+| Option | Cost (approx.) | SmartScreen effect |
+| --- | --- | --- |
+| **Azure Trusted Signing** | ~$10/month | Signed + Microsoft-managed identity; reputation builds quickly. Tauri supports it via `bundle.windows.signCommand` (use `trusted-signing-cli`). Requires identity validation (org, or individual where available). |
+| **OV certificate** (Sectigo, SSL.com, …) | ~$100–400/yr | Signed; reputation builds over weeks of downloads. |
+| **EV certificate** | ~$250–700/yr | Near-instant SmartScreen reputation. |
+
+Wiring it in: add the signing secrets to the repo (Settings → Secrets), then
+configure `src-tauri/tauri.conf.json` → `bundle.windows.signCommand` (Trusted
+Signing / custom signtool) or `certificateThumbprint` per the Tauri
+"Windows – Code signing" guide. The existing workflow needs no structural
+change — Tauri signs during `tauri build`.
+
+**macOS:** the `.dmg` is also unsigned — Gatekeeper shows a similar prompt.
+The fix there is an Apple Developer ID ($99/yr) + notarization.
+
+### Mitigations until you sign
+
+- **Report false positives to Microsoft** (helps the *current* build only):
+  submit the `.exe` at <https://www.microsoft.com/en-us/wdsi/filesubmission>
+  as a developer; in Edge you can also right-click the blocked download →
+  *Report this file as safe*.
+- The download page now explains the warning and points users to the SHA-256
+  checksums and the "Keep anyway" flow — and offers the in-browser app as the
+  zero-friction alternative.
+- A **custom domain** (instead of `*.vercel.app`) modestly improves URL
+  reputation.
+- Avoid rebuilding installers on every push (tag-only trigger) — fewer fresh
+  hashes means each build accumulates more reputation before being replaced.
 
 ## Summary checklist
 
