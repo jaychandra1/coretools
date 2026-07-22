@@ -92,8 +92,30 @@ spec:
     expect(r.output).toContain("kind: Service");
   });
 
-  it("flags manifests missing required fields", () => {
+  it("adds a missing apiVersion inferred from a standard kind", () => {
     const r = optimizeManifest("kind: Pod\nmetadata:\n  name: p\n");
+    expect(r.valid).toBe(true);
+    expect(r.output.startsWith("apiVersion: v1\n")).toBe(true);
+    const added = r.changes.find((c) => c.action === "added");
+    expect(added?.path).toBe("apiVersion");
+  });
+
+  it("infers group apiVersions (Deployment → apps/v1, Ingress → networking)", () => {
+    const dep = optimizeManifest("kind: Deployment\nmetadata:\n  name: d\nspec:\n  replicas: 1\n");
+    expect(dep.output).toContain("apiVersion: apps/v1");
+    expect(dep.valid).toBe(true);
+    const ing = optimizeManifest("kind: Ingress\nmetadata:\n  name: i\n");
+    expect(ing.output).toContain("apiVersion: networking.k8s.io/v1");
+  });
+
+  it("keeps an existing apiVersion untouched", () => {
+    const r = optimizeManifest("apiVersion: apps/v1beta2\nkind: Deployment\nmetadata:\n  name: d\n");
+    expect(r.output).toContain("apiVersion: apps/v1beta2");
+    expect(r.changes.some((c) => c.action === "added")).toBe(false);
+  });
+
+  it("still flags a missing apiVersion for unknown kinds", () => {
+    const r = optimizeManifest("kind: MyCustomThing\nmetadata:\n  name: x\n");
     expect(r.valid).toBe(false);
     expect(r.errors.join(" ")).toContain("apiVersion");
   });

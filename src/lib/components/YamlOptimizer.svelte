@@ -47,7 +47,7 @@
     {#if result}
       <span class="muted">
         {result.documents} document{result.documents === 1 ? "" : "s"}
-        · {result.changes.length} field{result.changes.length === 1 ? "" : "s"} removed
+        · {result.changes.length} change{result.changes.length === 1 ? "" : "s"} applied
       </span>
     {/if}
   </div>
@@ -79,13 +79,14 @@
             <ul>
               {#each result.changes as c}
                 <li>
+                  <span class="badge {c.action}">{c.action}</span>
                   <code>{c.path}</code>
                   <span class="reason muted">— {c.reason}</span>
                 </li>
               {/each}
             </ul>
           {:else}
-            <p class="muted">Nothing to remove — the manifest was already clean.</p>
+            <p class="muted">Nothing to change — the manifest was already clean.</p>
           {/if}
         </div>
       </div>
@@ -170,5 +171,23 @@
   }
   .reason {
     font-family: var(--sans);
+  }
+  .badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    border-radius: 4px;
+    padding: 1px 6px;
+    margin-right: 6px;
+  }
+  .badge.removed {
+    background: var(--removed-bg);
+    color: var(--removed-fg);
+  }
+  .badge.added {
+    background: var(--added-bg);
+    color: var(--added-fg);
   }
 </style>

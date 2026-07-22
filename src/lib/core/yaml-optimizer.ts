@@ -15,7 +15,7 @@ export interface OptimizeChange {
   /** Dotted path of the affected field, e.g. `metadata.creationTimestamp`. */
   path: string;
   /** What happened. */
-  action: "removed";
+  action: "removed" | "added";
   /** Human-readable justification, surfaced in the UI. */
   reason: string;
 }
@@ -23,7 +23,7 @@ export interface OptimizeChange {
 export interface OptimizeResult {
   /** Optimized manifest, or "" when the input could not be optimized. */
   output: string;
-  /** Ordered log of every field that was removed. */
+  /** Ordered log of every field that was removed or added. */
   changes: OptimizeChange[];
   /** Number of YAML documents processed. */
   documents: number;
@@ -128,6 +128,70 @@ function clean(
   return result;
 }
 
+/**
+ * Canonical `apiVersion` for the standard Kubernetes kinds, used to repair
+ * manifests that omit the field. Only unambiguous, current API groups are
+ * listed — anything else stays a validation error rather than a guess.
+ */
+const KIND_TO_API_VERSION: Record<string, string> = {
+  // core/v1
+  Pod: "v1",
+  Service: "v1",
+  ConfigMap: "v1",
+  Secret: "v1",
+  Namespace: "v1",
+  ServiceAccount: "v1",
+  PersistentVolume: "v1",
+  PersistentVolumeClaim: "v1",
+  ReplicationController: "v1",
+  ResourceQuota: "v1",
+  LimitRange: "v1",
+  Endpoints: "v1",
+  Node: "v1",
+  // apps/v1
+  Deployment: "apps/v1",
+  StatefulSet: "apps/v1",
+  DaemonSet: "apps/v1",
+  ReplicaSet: "apps/v1",
+  // batch/v1
+  Job: "batch/v1",
+  CronJob: "batch/v1",
+  // networking.k8s.io/v1
+  Ingress: "networking.k8s.io/v1",
+  IngressClass: "networking.k8s.io/v1",
+  NetworkPolicy: "networking.k8s.io/v1",
+  // rbac.authorization.k8s.io/v1
+  Role: "rbac.authorization.k8s.io/v1",
+  RoleBinding: "rbac.authorization.k8s.io/v1",
+  ClusterRole: "rbac.authorization.k8s.io/v1",
+  ClusterRoleBinding: "rbac.authorization.k8s.io/v1",
+  // other stable groups
+  HorizontalPodAutoscaler: "autoscaling/v2",
+  PodDisruptionBudget: "policy/v1",
+  StorageClass: "storage.k8s.io/v1",
+  CustomResourceDefinition: "apiextensions.k8s.io/v1",
+};
+
+/**
+ * If `apiVersion` is missing but the `kind` is a standard Kubernetes kind,
+ * add the canonical apiVersion (as the first key, matching convention) and
+ * record the addition. Returns the (possibly repaired) document.
+ */
+function repairApiVersion(
+  obj: Record<string, unknown>,
+  changes: OptimizeChange[],
+): Record<string, unknown> {
+  if (obj.apiVersion || typeof obj.kind !== "string") return obj;
+  const inferred = KIND_TO_API_VERSION[obj.kind];
+  if (!inferred) return obj;
+  changes.push({
+    path: "apiVersion",
+    action: "added",
+    reason: `was missing — set to "${inferred}" (standard for kind ${obj.kind})`,
+  });
+  return { apiVersion: inferred, ...obj };
+}
+
 /** Validate the Kubernetes-required scaffolding of a single document. */
 function validateManifest(obj: unknown, index: number, errors: string[]): void {
   const label = `document ${index + 1}`;
@@ -135,7 +199,13 @@ function validateManifest(obj: unknown, index: number, errors: string[]): void {
     errors.push(`${label}: not a YAML mapping`);
     return;
   }
-  if (!obj.apiVersion) errors.push(`${label}: missing required field "apiVersion"`);
+  if (!obj.apiVersion) {
+    errors.push(
+      typeof obj.kind === "string"
+        ? `${label}: missing required field "apiVersion" (could not infer it for kind "${obj.kind}")`
+        : `${label}: missing required field "apiVersion"`,
+    );
+  }
   if (!obj.kind) errors.push(`${label}: missing required field "kind"`);
 
   const metadata = obj.metadata;
@@ -182,8 +252,11 @@ export function optimizeManifest(input: string): OptimizeResult {
   parsed.forEach((doc, index) => {
     // `maxAliasCount` caps alias expansion to defuse "billion laughs" style
     // resource-exhaustion attacks (this is also the library default).
-    const js = doc.toJS({ maxAliasCount: 100 });
+    let js = doc.toJS({ maxAliasCount: 100 });
     if (js === null || js === undefined) return; // skip empty documents
+    // Repair a missing apiVersion (inferred from the kind) before validating,
+    // so a repaired document validates clean.
+    if (isPlainObject(js)) js = repairApiVersion(js, changes);
     validateManifest(js, index, errors);
     cleanedDocs.push(clean(js, "", changes, true));
   });
