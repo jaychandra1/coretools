@@ -78,6 +78,26 @@ const MODAL_OF: readonly WordRule[] = [
   ["might of", "might have", '"of" after a modal verb'],
 ];
 
+/** Tense consistency: auxiliary + wrong verb form (unambiguous cases). */
+const TENSE: readonly WordRule[] = [
+  ["did not went", "did not go", "verb tense"],
+  ["didn't went", "didn't go", "verb tense"],
+  ["did you went", "did you go", "verb tense"],
+  ["did went", "went", "verb tense"],
+  ["has went", "has gone", "verb tense"],
+  ["have went", "have gone", "verb tense"],
+  ["had went", "had gone", "verb tense"],
+  ["has came", "has come", "verb tense"],
+  ["have came", "have come", "verb tense"],
+  ["has ate", "has eaten", "verb tense"],
+  ["have ate", "have eaten", "verb tense"],
+  ["has wrote", "has written", "verb tense"],
+  ["have wrote", "have written", "verb tense"],
+  ["has did", "has done", "verb tense"],
+  ["have did", "have done", "verb tense"],
+  ["will went", "will go", "verb tense"],
+];
+
 /** Subject–verb agreement (unambiguous cases only). */
 const AGREEMENT: readonly WordRule[] = [
   ["he don't", "he doesn't", "subject–verb agreement"],
@@ -148,6 +168,7 @@ export function checkGrammar(text: string): GrammarResult {
   });
 
   t = applyWordRules(t, MODAL_OF, issues);
+  t = applyWordRules(t, TENSE, issues);
   t = applyWordRules(t, AGREEMENT, issues);
   t = applyWordRules(t, SPELLING, issues);
   t = applyWordRules(t, APOSTROPHES, issues);

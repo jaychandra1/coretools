@@ -9,10 +9,11 @@ It bundles three focused utilities:
    choose which side to keep per-change, and export a merged file.
 2. **YML-Validator** — validate a Kubernetes manifest, strip server-managed and
    redundant fields, and download a clean, apply-ready result.
-3. **Grammar-Polisher** — check grammar (spelling, apostrophes, agreement,
-   articles, and more, with every fix explained), then rewrite the corrected
-   sentence as Professional, Gen Z, or Complete — with one-click copy.
-   Rule-based and fully local.
+3. **Grammar-Polisher** — check grammar (capitalization, spelling,
+   apostrophes, tense, agreement, articles — every fix explained), then
+   rewrite as Professional, Gen Z, or Complete, with one-click copy. Includes
+   an **email mode** that corrects greetings, sign-offs, and tone to corporate
+   standards. Rule-based and fully local.
 
 The app ships with a premium dark/light theme (toggle in the header; the
 choice is kept in memory only — never persisted) and self-hosted Inter
@@ -41,7 +42,9 @@ coretools/
 │       │   ├── polisher.ts         # rule-based sentence rewriting
 │       │   ├── polisher.test.ts
 │       │   ├── grammar.ts          # offline grammar checker
-│       │   └── grammar.test.ts
+│       │   ├── grammar.test.ts
+│       │   ├── email.ts            # corporate email correction mode
+│       │   └── email.test.ts
 │       ├── platform/           # Host abstraction (I/O boundary)
 │       │   ├── types.ts            # Platform interface
 │       │   ├── tauri.ts            # native dialogs + Rust commands
@@ -188,12 +191,46 @@ Try it with `examples/diff/nginx.original.conf` and
 Try it with `examples/k8s/messy-deployment.yaml` and
 `examples/k8s/multi-document.yaml`.
 
+### Grammar-Polisher
+
+1. Choose the input type — **Sentence** or **Email** — then paste your text.
+2. Pick a rewrite style (**Professional**, **Gen Z**, or **Complete**) and hit
+   **Check & Polish**. Corrections appear itemized beside the output, each
+   with the original text, the fix, and the reason. **Copy** grabs the result.
+
+**Grammar rules applied** (deterministic, rule-based — no AI, fully offline):
+
+| Category | Examples |
+| --- | --- |
+| Capitalization | sentence starts; standalone `i` → `I` |
+| Spelling | `becuase` → `because`, `definately` → `definitely`, … |
+| Apostrophes | `dont` → `don't`, `im` → `I'm`, `its a` → `it's a` |
+| Tense consistency | `has went` → `has gone`, `didn't went` → `didn't go`, … |
+| Subject–verb agreement | `he don't` → `he doesn't`, `we was` → `we were` |
+| Modal + "of" | `should of` → `should have` |
+| Articles | `a apple` → `an apple` (with `a university`-style exceptions) |
+| Punctuation & spacing | end punctuation, `!!` / `..` collapse, repeated words, extra spaces |
+
+**Email mode — corporate communication standards** (structural fixes always
+follow professional conventions; the style choice applies to the body):
+
+- **Greeting**: added if missing (`Hi [Name],`); casual openers (`hey`, `yo`)
+  normalized to `Hi` with the recipient's name capitalized.
+- **Sign-off**: added if missing (`Best regards,` + `[Your Name]`); casual
+  closings (`cheers`, `thx`, `br`) replaced with corporate-standard ones.
+- **Tone**: all-caps shouting softened (business acronyms like `EOD`, `FYI`,
+  `KPI` are preserved); exclamation marks replaced with periods
+  (kept in Gen Z style).
+- **Structure**: greeting / body paragraphs / sign-off separated by blank
+  lines; each paragraph gets the full grammar check and style rewrite.
+
 ---
 
 ## Testing
 
-The core logic is covered by unit tests (`npm test`): the diff/merge engine and
-the YAML optimizer, including validation and safe-parsing edge cases.
+The core logic is covered by unit tests (`npm test`): the diff/merge engine,
+the YAML optimizer, the grammar checker, the sentence polisher, and the email
+correction mode, including validation and safe-parsing edge cases.
 
 ## License
 

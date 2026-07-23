@@ -1,6 +1,7 @@
 <script lang="ts">
   import { polish, type PolishMode } from "../core/polisher";
   import { checkGrammar, type GrammarIssue } from "../core/grammar";
+  import { polishEmail } from "../core/email";
 
   const MODES: { id: PolishMode; label: string; hint: string }[] = [
     { id: "professional", label: "Professional", hint: "Formal, polished business English" },
@@ -8,7 +9,10 @@
     { id: "complete", label: "Complete", hint: "Balanced, clear, fully fleshed out" },
   ];
 
+  type InputKind = "sentence" | "email";
+
   let input = $state("");
+  let kind = $state<InputKind>("sentence");
   let mode = $state<PolishMode>("professional");
   let output = $state("");
   let issues = $state<GrammarIssue[]>([]);
@@ -17,14 +21,31 @@
 
   const canPolish = $derived(input.trim().length > 0);
   const activeHint = $derived(MODES.find((m) => m.id === mode)?.hint ?? "");
+  const placeholder = $derived(
+    kind === "email"
+      ? "e.g.\nhey john\nthis is URGENT, i dont think we was on track for EOD!!\nthx"
+      : "e.g. hey, i dont think the report is gonna be late becuase its really good stuff",
+  );
 
   function run() {
-    // 1. Validate grammar first; 2. rewrite the corrected sentence.
-    const grammar = checkGrammar(input);
-    issues = grammar.issues;
-    output = polish(grammar.corrected, mode);
+    if (kind === "email") {
+      // Corporate email pass: greeting/sign-off/tone + grammar + style rewrite.
+      const email = polishEmail(input, mode);
+      issues = email.issues;
+      output = email.output;
+    } else {
+      // 1. Validate grammar first; 2. rewrite the corrected sentence.
+      const grammar = checkGrammar(input);
+      issues = grammar.issues;
+      output = polish(grammar.corrected, mode);
+    }
     checked = Boolean(output);
     copied = false;
+  }
+
+  function setKind(next: InputKind) {
+    kind = next;
+    if (checked) run();
   }
 
   function setMode(next: PolishMode) {
@@ -72,17 +93,42 @@
 
 <section>
   <p class="intro muted">
-    Check grammar and rewrite any sentence in the style you need. Everything
-    runs locally — nothing you type ever leaves this app.
+    Check grammar and rewrite any sentence — or a whole email — in the style
+    you need. Everything runs locally; nothing you type ever leaves this app.
   </p>
 
-  <label class="label" for="polish-input">Your sentence</label>
+  <div class="kind-row">
+    <label class="label" for="polish-input">
+      {kind === "email" ? "Your email" : "Your sentence"}
+    </label>
+    <div class="modes kind-toggle" role="radiogroup" aria-label="Input type">
+      <button
+        type="button"
+        role="radio"
+        aria-checked={kind === "sentence"}
+        class:active={kind === "sentence"}
+        onclick={() => setKind("sentence")}
+      >
+        Sentence
+      </button>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={kind === "email"}
+        class:active={kind === "email"}
+        title="Checks greeting, sign-off, and tone against corporate standards"
+        onclick={() => setKind("email")}
+      >
+        Email
+      </button>
+    </div>
+  </div>
   <textarea
     id="polish-input"
     bind:value={input}
-    rows={4}
-    maxlength={600}
-    placeholder="e.g. hey, i dont think the report is gonna be late becuase its really good stuff"
+    rows={kind === "email" ? 8 : 4}
+    maxlength={2000}
+    {placeholder}
     spellcheck="false"
     onkeydown={onKeydown}
   ></textarea>
@@ -120,7 +166,7 @@
 
       <div class="grammar">
         <span class="label">
-          Grammar check
+          {kind === "email" ? "Corrections & email checks" : "Grammar check"}
           {#if issues.length}
             <span class="count">{issues.length} fix{issues.length === 1 ? "" : "es"}</span>
           {/if}
@@ -137,7 +183,7 @@
             {/each}
           </ul>
         {:else}
-          <p class="clean">✓ No grammar issues detected.</p>
+          <p class="clean">✓ No issues detected.</p>
         {/if}
       </div>
     </div>
@@ -262,6 +308,23 @@
     font-size: 15px;
     line-height: 1.6;
     overflow-wrap: anywhere;
+    /* Preserve email line structure (greeting / paragraphs / sign-off). */
+    white-space: pre-wrap;
+  }
+  .kind-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  .kind-row .label {
+    margin-bottom: 0;
+  }
+  .kind-toggle button {
+    padding: 4px 14px;
+    font-size: 12px;
   }
   .grammar {
     background: var(--surface);

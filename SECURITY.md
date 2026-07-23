@@ -66,10 +66,11 @@ The Kubernetes optimizer (`src/lib/core/yaml-optimizer.ts`) parses with the
 
 ### Grammar checking & rewriting are equally sandboxed
 
-The Grammar-Polisher (`src/lib/core/grammar.ts`, `src/lib/core/polisher.ts`)
-is a **deterministic, rule-based engine**: fixed word tables and regular
-expressions, no language-model calls, no external service, no `eval`, no
-dynamic code. Text is processed in memory and discarded; nothing typed is
+The Grammar-Polisher (`src/lib/core/grammar.ts`, `src/lib/core/polisher.ts`,
+`src/lib/core/email.ts`) is a **deterministic, rule-based engine**: fixed word
+tables and regular expressions, no language-model calls, no external service,
+no `eval`, no dynamic code. This includes the email correction mode — emails
+are analyzed and rewritten entirely in memory and discarded; nothing typed is
 transmitted or stored anywhere.
 
 ### Theme preference is never persisted
