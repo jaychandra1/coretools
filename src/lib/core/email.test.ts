@@ -85,6 +85,59 @@ describe("polishEmail", () => {
   });
 });
 
+describe("polishEmail — pasted single-line emails", () => {
+  it("splits a greeting off a single-line email instead of swallowing the body", () => {
+    const r = polishEmail("hi sam, can you send the report today", "professional");
+    expect(r.output.startsWith("Hi Sam,")).toBe(true);
+    expect(r.output).toContain("Can you send the report today.");
+  });
+
+  it("extracts a greeting buried mid-text and moves it to the top", () => {
+    const r = polishEmail(
+      "Please find the details below: Hello john.doe@corp.com, I want to update the policy.",
+      "professional",
+    );
+    expect(r.output.startsWith("Hello john.doe@corp.com,")).toBe(true);
+    expect(r.output).not.toContain("Hi [Name]");
+    expect(r.issues.some((i) => i.reason.includes("buried mid-text"))).toBe(true);
+  });
+
+  it("detects an inline sign-off and does not append a duplicate", () => {
+    const r = polishEmail(
+      "Hi Sam,\n\nsee the attached file. Thank you and Regards, Jaya Chandra K.",
+      "professional",
+    );
+    expect(r.output).toContain("Thank you and regards,\nJaya Chandra K.");
+    expect(r.output).not.toContain("[Your Name]");
+    expect((r.output.match(/regards/gi) || []).length).toBe(1);
+  });
+
+  it("keeps DOB and other business acronyms intact", () => {
+    const r = polishEmail("Hi Sam,\n\nDOB: 16-03-2026 PAN: ABCDE1234F\n\nThanks,\nJay", "professional");
+    expect(r.output).toContain("DOB:");
+    expect(r.output).toContain("PAN:");
+    expect(r.issues.every((i) => !i.reason.includes("shouting"))).toBe(true);
+  });
+
+  it("formats a details block one per line and resumes the courtesy sentence", () => {
+    const input =
+      "Please find the requested details below: Hello @deepthikalyani@visistarisk.com, I want to update my baby name as Kalla Ganvika Sri gayatri in the insurance policy. Baby Name: Baby Of Velagala Deepika DOB: 16-03-2026 Gender: Female Relationship: Daughter Please please inform me if any further information is required. Thank you and Regards, Jaya Chandra K.";
+    const r = polishEmail(input, "professional");
+    // Greeting extracted, not duplicated.
+    expect(r.output.startsWith("Hello @deepthikalyani@visistarisk.com,")).toBe(true);
+    expect(r.output).not.toContain("[Name]");
+    // Details one per line, DOB preserved.
+    expect(r.output).toContain("Baby Name: Baby Of Velagala Deepika\nDOB: 16-03-2026\nGender: Female\nRelationship: Daughter");
+    // Courtesy sentence resumes as text with the repeated word fixed.
+    expect(r.output).toContain("Please inform me if any further information is required.");
+    expect(r.output).not.toContain("Please please");
+    // Inline sign-off detected, no duplicate closing.
+    expect(r.output).not.toContain("[Your Name]");
+    expect(r.output.trimEnd().endsWith("Jaya Chandra K.")).toBe(true);
+    expect((r.output.match(/regards/gi) || []).length).toBe(1);
+  });
+});
+
 describe("grammar tense rules (via email body)", () => {
   it("fixes auxiliary + wrong verb form", () => {
     const r = polishEmail("Hi Sam,\n\nhe has went home and we have ate\n\nThanks,\nJay", "complete");
