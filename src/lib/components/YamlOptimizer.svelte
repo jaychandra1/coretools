@@ -236,6 +236,10 @@
     background: var(--added-bg);
     color: var(--added-fg);
   }
+  .badge.renamed {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
   .actions {
     display: flex;
     align-items: center;

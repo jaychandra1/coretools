@@ -151,6 +151,16 @@ Try it with `examples/diff/nginx.original.conf` and
    - Non-YAML noise stripped before parsing: Markdown code fences,
      shell prompts (`$ kubectl …`), and heredoc wrappers (`cat <<EOF` / `EOF`).
 
+   **Field-name correction** (fixes `kubectl apply` strict-decoding rejections)
+   - Wrong-cased field names renamed to the canonical camelCase form the API
+     expects (`serviceaccount` → `serviceAccountName`, `imagepullsecrets` →
+     `imagePullSecrets`, `mountpath` → `mountPath`, ~150 known fields).
+   - Deprecated aliases upgraded (`serviceAccount` → `serviceAccountName`).
+   - A misspelled field that duplicates an existing canonical one is dropped.
+   - User-data maps are never touched: keys under `labels`, `annotations`,
+     `data`, `stringData`, `binaryData`, `matchLabels`, `nodeSelector`,
+     `limits`, and `requests` are data, not schema fields.
+
    **Mandatory-field repair** (defaults are added only when missing — existing
    values are never overwritten, and every addition is logged)
    - `apiVersion` inferred from `kind` for ~30 standard kinds

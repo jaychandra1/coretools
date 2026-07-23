@@ -202,6 +202,58 @@ spec:
     expect(r.errors.join(" ")).toContain("does not match");
   });
 
+  it("renames invalid field 'serviceaccount' to serviceAccountName", () => {
+    const r = optimizeManifest(
+      "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  selector:\n    matchLabels:\n      app: web\n  template:\n    metadata:\n      labels:\n        app: web\n    spec:\n      serviceaccount: qa-cashier-sa\n      containers:\n        - name: web\n          image: nginx:1.27\n",
+    );
+    expect(r.valid).toBe(true);
+    expect(r.output).toContain("serviceAccountName: qa-cashier-sa");
+    expect(r.output).not.toContain("serviceaccount:");
+    const renamed = r.changes.find((c) => c.action === "renamed");
+    expect(renamed?.path).toBe("spec.template.spec.serviceaccount");
+    expect(renamed?.reason).toContain("serviceAccountName");
+  });
+
+  it("upgrades the deprecated serviceAccount field", () => {
+    const r = optimizeManifest(
+      "apiVersion: v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  serviceAccount: my-sa\n  containers:\n    - name: c\n      image: nginx\n",
+    );
+    expect(r.output).toContain("serviceAccountName: my-sa");
+    expect(r.output).not.toContain("serviceAccount: my-sa");
+  });
+
+  it("fixes wrong-cased field names throughout the document", () => {
+    const r = optimizeManifest(
+      "apiVersion: v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  restartpolicy: Always\n  imagepullsecrets:\n    - name: regcred\n  containers:\n    - name: c\n      image: nginx\n      imagepullpolicy: Always\n      volumemounts:\n        - name: v\n          mountpath: /data\n          subpath: logs\n",
+    );
+    expect(r.output).toContain("restartPolicy: Always");
+    expect(r.output).toContain("imagePullSecrets:");
+    expect(r.output).toContain("imagePullPolicy: Always");
+    expect(r.output).toContain("volumeMounts:");
+    expect(r.output).toContain("mountPath: /data");
+    expect(r.output).toContain("subPath: logs");
+    expect(r.changes.filter((c) => c.action === "renamed").length).toBe(6);
+  });
+
+  it("drops a misspelled field that duplicates the canonical one", () => {
+    const r = optimizeManifest(
+      "apiVersion: v1\nkind: Pod\nmetadata:\n  name: p\nspec:\n  serviceaccount: wrong\n  serviceAccountName: right\n  containers:\n    - name: c\n      image: nginx\n",
+    );
+    expect(r.output).toContain("serviceAccountName: right");
+    expect(r.output).not.toContain("wrong");
+    expect(r.changes.some((c) => c.reason.includes("duplicate"))).toBe(true);
+  });
+
+  it("never renames keys inside user-data maps", () => {
+    const r = optimizeManifest(
+      "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: cfg\n  labels:\n    imagepullpolicy: keep-me\ndata:\n  restartpolicy: some-config-value\n  nodeselector: another-value\n",
+    );
+    expect(r.output).toContain("imagepullpolicy: keep-me");
+    expect(r.output).toContain("restartpolicy: some-config-value");
+    expect(r.output).toContain("nodeselector: another-value");
+    expect(r.changes.filter((c) => c.action === "renamed").length).toBe(0);
+  });
+
   it("emits clean formatting with no blank lines", () => {
     const r = optimizeManifest(
       "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\ndata:\n  k: v\n---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: b\ndata:\n  k: v\n",

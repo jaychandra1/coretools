@@ -15,7 +15,7 @@ export interface OptimizeChange {
   /** Dotted path of the affected field, e.g. `metadata.creationTimestamp`. */
   path: string;
   /** What happened. */
-  action: "removed" | "added";
+  action: "removed" | "added" | "renamed";
   /** Human-readable justification, surfaced in the UI. */
   reason: string;
 }
@@ -217,6 +217,131 @@ function sanitizeInput(input: string, changes: OptimizeChange[]): string {
     kept.push(line);
   }
   return kept.join("\n");
+}
+
+/**
+ * Canonical camelCase Kubernetes field names. Keys that match one of these
+ * case-insensitively but are cased differently (e.g. `imagepullsecrets`,
+ * `serviceaccount`) are invalid — the API server's strict decoding rejects
+ * them — and get renamed to the canonical form.
+ */
+const CANONICAL_FIELD_NAMES = [
+  // metadata / common
+  "apiVersion", "generateName", "ownerReferences",
+  // workloads
+  "revisionHistoryLimit", "progressDeadlineSeconds", "minReadySeconds",
+  "serviceName", "podManagementPolicy", "updateStrategy", "volumeClaimTemplates",
+  "matchLabels", "matchExpressions", "rollingUpdate", "maxSurge", "maxUnavailable",
+  "activeDeadlineSeconds", "backoffLimit", "ttlSecondsAfterFinished", "jobTemplate",
+  "concurrencyPolicy", "startingDeadlineSeconds", "successfulJobsHistoryLimit",
+  "failedJobsHistoryLimit",
+  // pod spec
+  "initContainers", "imagePullSecrets", "imagePullPolicy", "serviceAccount",
+  "serviceAccountName", "automountServiceAccountToken", "nodeSelector", "nodeName",
+  "hostNetwork", "hostPID", "hostIPC", "shareProcessNamespace", "securityContext",
+  "restartPolicy", "terminationGracePeriodSeconds", "dnsPolicy", "dnsConfig",
+  "hostAliases", "priorityClassName", "runtimeClassName", "enableServiceLinks",
+  "topologySpreadConstraints", "schedulerName", "readinessGates",
+  "ephemeralContainers", "setHostnameAsFQDN",
+  // containers
+  "containerPort", "hostPort", "hostIP", "envFrom", "valueFrom", "fieldRef",
+  "fieldPath", "resourceFieldRef", "configMapRef", "configMapKeyRef", "secretRef",
+  "secretKeyRef", "volumeMounts", "mountPath", "mountPropagation", "subPath",
+  "subPathExpr", "readOnly", "volumeDevices", "devicePath", "livenessProbe",
+  "readinessProbe", "startupProbe", "initialDelaySeconds", "periodSeconds",
+  "timeoutSeconds", "failureThreshold", "successThreshold", "httpGet", "tcpSocket",
+  "httpHeaders", "workingDir", "terminationMessagePath", "terminationMessagePolicy",
+  "postStart", "preStop",
+  // security context
+  "runAsUser", "runAsGroup", "runAsNonRoot", "readOnlyRootFilesystem",
+  "allowPrivilegeEscalation", "fsGroup", "seLinuxOptions", "seccompProfile",
+  "supplementalGroups", "procMount", "fsGroupChangePolicy",
+  // volumes
+  "persistentVolumeClaim", "claimName", "hostPath", "emptyDir", "configMap",
+  "secretName", "defaultMode", "sizeLimit", "storageClassName", "accessModes",
+  "volumeMode", "volumeName", "downwardAPI", "serviceAccountToken",
+  "expirationSeconds",
+  // service / networking
+  "clusterIP", "clusterIPs", "externalIPs", "targetPort", "nodePort",
+  "appProtocol", "sessionAffinity", "externalName", "externalTrafficPolicy",
+  "internalTrafficPolicy", "healthCheckNodePort", "loadBalancerIP",
+  "loadBalancerClass", "loadBalancerSourceRanges", "publishNotReadyAddresses",
+  "ipFamilies", "ipFamilyPolicy", "ingressClassName", "defaultBackend", "pathType",
+  // autoscaling
+  "scaleTargetRef", "minReplicas", "maxReplicas",
+  "targetCPUUtilizationPercentage", "averageUtilization", "averageValue",
+] as const;
+
+const CANONICAL_BY_LOWER = new Map(
+  CANONICAL_FIELD_NAMES.map((f) => [f.toLowerCase(), f]),
+);
+
+/** Deprecated field aliases upgraded to the current API field. */
+const FIELD_UPGRADES: Record<string, string> = {
+  serviceAccount: "serviceAccountName",
+};
+
+/**
+ * Keys whose values are user-defined maps (labels, config data, resource
+ * quantities) — their child keys are data, not schema fields, and must never
+ * be renamed.
+ */
+const USER_DATA_KEYS = new Set([
+  "labels", "annotations", "data", "stringData", "binaryData", "matchLabels",
+  "nodeSelector", "limits", "requests",
+]);
+
+/**
+ * Recursively fix invalid field-name casing and deprecated aliases, recording
+ * every rename. Runs before validation and repair so downstream logic sees
+ * canonical names.
+ */
+function normalizeFieldNames(
+  value: unknown,
+  path: string,
+  changes: OptimizeChange[],
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item, i) => normalizeFieldNames(item, `${path}[${i}]`, changes));
+  }
+  if (!isPlainObject(value)) return value;
+
+  const out: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    const childPath = path ? `${path}.${key}` : key;
+
+    // Resolve the canonical name: case fix first, then deprecated upgrade.
+    let target = key;
+    const canonical = CANONICAL_BY_LOWER.get(key.toLowerCase());
+    if (canonical && key !== canonical) target = canonical;
+    if (FIELD_UPGRADES[target]) target = FIELD_UPGRADES[target];
+
+    if (target !== key) {
+      if (target in value || target in out) {
+        // The canonical field also exists — the misspelled one is a duplicate.
+        changes.push({
+          path: childPath,
+          action: "removed",
+          reason: `duplicate of "${target}" — invalid field name dropped`,
+        });
+        continue;
+      }
+      changes.push({
+        path: childPath,
+        action: "renamed",
+        reason:
+          key.toLowerCase() === target.toLowerCase()
+            ? `invalid field name — the API expects "${target}"`
+            : `deprecated/invalid field — the API expects "${target}"`,
+      });
+    }
+
+    // Child keys of user-data maps are data, never schema fields.
+    out[target] = USER_DATA_KEYS.has(target)
+      ? raw
+      : normalizeFieldNames(raw, path ? `${path}.${target}` : target, changes);
+  }
+  return out;
 }
 
 /** Workload kinds whose spec requires a selector and a pod template. */
@@ -499,10 +624,12 @@ export function optimizeManifest(input: string): OptimizeResult {
     // resource-exhaustion attacks (this is also the library default).
     let js = doc.toJS({ maxAliasCount: 100 });
     if (js === null || js === undefined) return; // skip empty documents
-    // Repair missing mandatory fields before validating, so a repaired
-    // document validates clean: apiVersion (inferred from kind), then
-    // metadata.name / selector / template / ports defaults per kind.
+    // 1. Fix invalid field-name casing / deprecated aliases so validation
+    //    and repair see canonical names; 2. repair missing mandatory fields
+    //    (apiVersion inferred from kind, name, selector, template, ports)
+    //    so a repaired document validates clean.
     if (isPlainObject(js)) {
+      js = normalizeFieldNames(js, "", changes) as Record<string, unknown>;
       js = repairApiVersion(js, changes);
       js = repairMandatoryFields(js, changes);
     }
