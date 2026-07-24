@@ -254,6 +254,30 @@ spec:
     expect(r.changes.filter((c) => c.action === "renamed").length).toBe(0);
   });
 
+  it("keeps user annotations by default", () => {
+    const r = optimizeManifest(
+      "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\nspec:\n  selector:\n    matchLabels:\n      app: web\n  template:\n    metadata:\n      labels:\n        app: web\n      annotations:\n        instrumentation.opentelemetry.io/inject-java: \"true\"\n    spec:\n      containers:\n        - name: web\n          image: nginx:1.27\n",
+    );
+    expect(r.output).toContain("instrumentation.opentelemetry.io/inject-java");
+  });
+
+  it("strips all annotations when the option is enabled", () => {
+    const r = optimizeManifest(
+      "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: web\n  annotations:\n    team: platform\nspec:\n  selector:\n    matchLabels:\n      app: web\n  template:\n    metadata:\n      labels:\n        app: web\n      annotations:\n        cloudwatch.aws.amazon.com/auto-annotate-java: \"true\"\n        instrumentation.opentelemetry.io/inject-java: \"true\"\n    spec:\n      containers:\n        - name: web\n          image: nginx:1.27\n",
+      { stripAnnotations: true },
+    );
+    expect(r.valid).toBe(true);
+    expect(r.output).not.toContain("annotations");
+    expect(r.output).not.toContain("opentelemetry");
+    expect(r.output).not.toContain("team: platform");
+    const stripped = r.changes.filter((c) => c.reason.includes("disabled by option"));
+    expect(stripped.map((c) => c.path)).toEqual([
+      "metadata.annotations",
+      "spec.template.metadata.annotations",
+    ]);
+    expect(stripped[1].reason).toContain("2 entries");
+  });
+
   it("emits clean formatting with no blank lines", () => {
     const r = optimizeManifest(
       "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\ndata:\n  k: v\n---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: b\ndata:\n  k: v\n",

@@ -175,6 +175,10 @@ Try it with `examples/diff/nginx.original.conf` and
      (port 80) defaults.
 
    **Cleanup**
+   - **Strip annotations** (optional, checkbox next to Optimize — off by
+     default): removes every `metadata.annotations` block, top-level and pod
+     template. Kept by default because annotations are often functional
+     (observability injection, ingress behavior, GitOps hints).
    - Server-managed fields removed (`creationTimestamp`, `resourceVersion`,
      `uid`, `selfLink`, `generation`, `managedFields`, `finalizers`).
    - Cluster-reconciled top-level `status` block removed.

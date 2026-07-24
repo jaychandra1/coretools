@@ -579,6 +579,50 @@ function validateManifest(obj: unknown, index: number, errors: string[]): void {
   }
 }
 
+export interface OptimizeOptions {
+  /**
+   * Remove every `metadata.annotations` block (top-level and pod template).
+   * Off by default: annotations are optional in the schema but often
+   * functional (observability injection, ingress behavior, ArgoCD hints).
+   */
+  stripAnnotations?: boolean;
+}
+
+/**
+ * Remove all `metadata.annotations` blocks anywhere in the document,
+ * recording one change per block. Only annotations under a `metadata` key are
+ * touched — an `annotations` key inside user data is left alone.
+ */
+function stripAllAnnotations(
+  value: unknown,
+  path: string,
+  changes: OptimizeChange[],
+  parentKey: string,
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item, i) =>
+      stripAllAnnotations(item, `${path}[${i}]`, changes, parentKey),
+    );
+  }
+  if (!isPlainObject(value)) return value;
+
+  const out: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    const childPath = path ? `${path}.${key}` : key;
+    if (key === "annotations" && parentKey === "metadata" && isPlainObject(raw)) {
+      const n = Object.keys(raw).length;
+      changes.push({
+        path: childPath,
+        action: "removed",
+        reason: `annotations stripped (${n} entr${n === 1 ? "y" : "ies"}) — disabled by option`,
+      });
+      continue;
+    }
+    out[key] = stripAllAnnotations(raw, childPath, changes, key);
+  }
+  return out;
+}
+
 /**
  * Optimize a (possibly multi-document) Kubernetes YAML manifest.
  *
@@ -587,7 +631,10 @@ function validateManifest(obj: unknown, index: number, errors: string[]): void {
  *  - No custom/JS tags are enabled, so parsing can never instantiate arbitrary
  *    objects or execute code — it only ever produces plain data.
  */
-export function optimizeManifest(input: string): OptimizeResult {
+export function optimizeManifest(
+  input: string,
+  options: OptimizeOptions = {},
+): OptimizeResult {
   const errors: string[] = [];
   const changes: OptimizeChange[] = [];
 
@@ -630,6 +677,9 @@ export function optimizeManifest(input: string): OptimizeResult {
     //    so a repaired document validates clean.
     if (isPlainObject(js)) {
       js = normalizeFieldNames(js, "", changes) as Record<string, unknown>;
+      if (options.stripAnnotations) {
+        js = stripAllAnnotations(js, "", changes, "") as Record<string, unknown>;
+      }
       js = repairApiVersion(js, changes);
       js = repairMandatoryFields(js, changes);
     }

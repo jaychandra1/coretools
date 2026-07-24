@@ -8,13 +8,19 @@
   let result = $state<OptimizeResult | null>(null);
   let saveMsg = $state("");
   let copied = $state(false);
+  let stripAnnotations = $state(false);
 
   const canOptimize = $derived(input.trim().length > 0);
 
   function optimize() {
-    result = optimizeManifest(input);
+    result = optimizeManifest(input, { stripAnnotations });
     saveMsg = "";
     copied = false;
+  }
+
+  function toggleStripAnnotations() {
+    // Re-optimize immediately when the option changes and output is visible.
+    if (result) optimize();
   }
 
   async function download() {
@@ -77,6 +83,17 @@
 
   <div class="bar">
     <button class="primary" onclick={optimize} disabled={!canOptimize}>Optimize</button>
+    <label
+      class="option"
+      title="Annotations are optional in the schema but often functional (observability injection, ingress behavior). Kept by default."
+    >
+      <input
+        type="checkbox"
+        bind:checked={stripAnnotations}
+        onchange={toggleStripAnnotations}
+      />
+      Strip annotations
+    </label>
     {#if result}
       <span class="muted">
         {result.documents} document{result.documents === 1 ? "" : "s"}
@@ -140,8 +157,28 @@
   .bar {
     display: flex;
     align-items: center;
-    gap: 12px;
+    gap: 14px;
     margin: 14px 0;
+    flex-wrap: wrap;
+  }
+  .option {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 13px;
+    color: var(--text-muted);
+    cursor: pointer;
+    user-select: none;
+  }
+  .option:hover {
+    color: var(--text);
+  }
+  .option input {
+    width: 15px;
+    height: 15px;
+    margin: 0;
+    accent-color: var(--accent);
+    cursor: pointer;
   }
   .errors {
     border: 1px solid var(--danger);
