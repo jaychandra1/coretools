@@ -4,9 +4,9 @@
   import { polishEmail } from "../core/email";
 
   const MODES: { id: PolishMode; label: string; hint: string }[] = [
-    { id: "professional", label: "Professional", hint: "Formal, polished business English" },
-    { id: "genz", label: "Gen Z", hint: "Casual, trendy phrasing" },
-    { id: "complete", label: "Complete", hint: "Balanced, clear, fully fleshed out" },
+    { id: "professional", label: "Professional", hint: "Polished, structured workplace tone — emails, reports, team updates" },
+    { id: "genz", label: "Gen Z", hint: "Casual, modern chat style — Slack/Discord vibe" },
+    { id: "complete", label: "Complete", hint: "Clear and complete — balanced between professional and approachable" },
   ];
 
   type InputKind = "sentence" | "email";

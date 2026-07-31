@@ -8,7 +8,7 @@ describe("polish — professional", () => {
       "professional",
     );
     expect(out).toBe(
-      "Hello, I think the report is going to be late, however, it is good material.",
+      "Hello, based on my assessment, the report is going to be late, however, it is good material.",
     );
   });
 
@@ -34,6 +34,36 @@ describe("polish — professional", () => {
   it("expands n't contractions", () => {
     const out = polish("I don't think he doesn't know", "professional");
     expect(out).toBe("I do not think he does not know.");
+  });
+});
+
+describe("polish — mode voices (workplace example)", () => {
+  const input =
+    "Hi everyone, i think this is not from the cloudflare.. this needs to be done at the application side.";
+
+  it("professional: structured workplace tone", () => {
+    expect(polish(input, "professional")).toBe(
+      "Team, based on my assessment, this is not from the cloudflare. This should be handled at the application level.",
+    );
+  });
+
+  it("genz: casual chat style", () => {
+    expect(polish(input, "genz")).toBe(
+      "hey folks, pretty sure this isn't from the cloudflare. this needs to be done at the application side, no cap",
+    );
+  });
+
+  it("complete: clear and balanced", () => {
+    expect(polish(input, "complete")).toBe(
+      "Hi team, I believe this is not from the cloudflare. This needs to be handled at the application side.",
+    );
+  });
+
+  it("professional: hedge replacement stays lowercase mid-sentence after 'I think'", () => {
+    // The app runs the grammar pass first, which capitalizes "i" → "I think".
+    expect(polish("Hi everyone, I think this is wrong", "professional")).toBe(
+      "Team, based on my assessment, this is wrong.",
+    );
   });
 });
 

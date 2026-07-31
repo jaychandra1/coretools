@@ -156,6 +156,28 @@ const PRO_FILLERS =
   /\b(just|basically|literally|really|very|super|totally|honestly,?|you know,?|i mean,?|like,)\s+/gi;
 
 const PRO_RULES: Rule[] = [
+  // group greetings → workplace address
+  ["hi everyone", "team"],
+  ["hello everyone", "team"],
+  ["hey everyone", "team"],
+  ["hi all", "team"],
+  ["hey all", "team"],
+  ["hi folks", "team"],
+  ["hey folks", "team"],
+  // hedges → structured assessment
+  ["i think that", "based on my assessment,"],
+  ["i think", "based on my assessment,"],
+  ["i believe", "based on my assessment,"],
+  ["i guess", "it appears"],
+  ["i feel like", "it appears"],
+  ["pretty sure", "confident that"],
+  // workplace phrasing
+  ["needs to be done", "should be handled"],
+  ["needs to be fixed", "should be resolved"],
+  ["application side", "application level"],
+  ["sorted out", "resolved"],
+  ["sort out", "resolve"],
+  ["figure out", "determine"],
   ["a lot of", "many"],
   ["lots of", "many"],
   ["need to", "must"],
@@ -190,6 +212,13 @@ function polishProfessional(text: string): string {
   t = applyRules(t, TXT_SPEAK);
   t = applyRules(t, EXPAND_CONTRACTIONS);
   t = applyRules(t, PRO_RULES);
+  // Hedge replacements inherit a capital from "I think"/"I guess" — lowercase
+  // them unless they genuinely start a sentence (sentenceCase re-caps those).
+  t = t.replace(
+    /(^|[.!?]\s+)?(Based on my assessment,|It appears)/g,
+    (match, pre: string | undefined, phrase: string) =>
+      pre !== undefined ? match : phrase.charAt(0).toLowerCase() + phrase.slice(1),
+  );
   // Mid-sentence "but" reads better as a parenthetical "however".
   t = t.replace(/\s+but\s+/gi, ", however, ").replace(/,\s*,/g, ",");
   // Sentence-opening casual conjunctions.
@@ -210,6 +239,21 @@ function polishProfessional(text: string): string {
 /* --------------------------- gen z ---------------------------- */
 
 const GENZ_RULES: Rule[] = [
+  // group greetings → chat-style opener
+  ["hi everyone", "hey folks"],
+  ["hello everyone", "hey folks"],
+  ["hi all", "hey folks"],
+  ["hey all", "hey folks"],
+  ["hi team", "hey folks"],
+  ["hello team", "hey folks"],
+  // hedges → casual confidence
+  ["i think that", "pretty sure"],
+  ["i think", "pretty sure"],
+  ["i believe", "pretty sure"],
+  ["it appears that", "looks like"],
+  ["it appears", "looks like"],
+  ["it seems like", "looks like"],
+  ["it seems", "looks like"],
   ["very good", "straight fire"],
   ["to be honest", "ngl"],
   ["i agree", "bet"],
@@ -285,6 +329,17 @@ function polishGenZ(text: string): string {
 /* -------------------------- complete -------------------------- */
 
 const COMPLETE_RULES: Rule[] = [
+  // group greetings → balanced address
+  ["hi everyone", "hi team"],
+  ["hello everyone", "hi team"],
+  ["hey everyone", "hi team"],
+  ["hi all", "hi team"],
+  ["hey all", "hi team"],
+  // hedges → clear, complete statements
+  ["i think that", "I believe"],
+  ["i think", "I believe"],
+  ["i guess", "I believe"],
+  ["needs to be done", "needs to be handled"],
   ["etc", "and so on"],
   ["stuff", "details"],
   ["w/", "with"],
