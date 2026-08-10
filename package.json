@@ -19,6 +19,8 @@
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.0.0",
     "diff": "^9.0.0",
+    "jsqr": "^1.4.0",
+    "qrcode": "^1.5.4",
     "yaml": "^2.5.1"
   },
   "devDependencies": {
@@ -26,6 +28,7 @@
     "@tauri-apps/cli": "^2.0.0",
     "@tsconfig/svelte": "^5.0.4",
     "@types/diff": "^7.0.2",
+    "@types/qrcode": "^1.5.6",
     "svelte": "^5.46.4",
     "svelte-check": "^4.7.3",
     "tslib": "^2.7.0",

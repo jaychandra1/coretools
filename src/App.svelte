@@ -2,9 +2,10 @@
   import DiffChecker from "./lib/components/DiffChecker.svelte";
   import YamlOptimizer from "./lib/components/YamlOptimizer.svelte";
   import SentencePolisher from "./lib/components/SentencePolisher.svelte";
+  import Authenticator from "./lib/components/authenticator/Authenticator.svelte";
   import { getPlatform } from "./lib/platform";
 
-  type Tab = "diff" | "yaml" | "polish";
+  type Tab = "diff" | "yaml" | "polish" | "authenticator";
   let tab = $state<Tab>("diff");
 
   const platform = getPlatform();
@@ -65,6 +66,12 @@
     <button class:active={tab === "polish"} onclick={() => (tab = "polish")}>
       Grammar-Polisher
     </button>
+    <button
+      class:active={tab === "authenticator"}
+      onclick={() => (tab = "authenticator")}
+    >
+      Authenticator
+    </button>
   </nav>
 
   <main>
@@ -74,8 +81,10 @@
           <DiffChecker />
         {:else if tab === "yaml"}
           <YamlOptimizer />
-        {:else}
+        {:else if tab === "polish"}
           <SentencePolisher />
+        {:else}
+          <Authenticator />
         {/if}
       </div>
     {/key}
