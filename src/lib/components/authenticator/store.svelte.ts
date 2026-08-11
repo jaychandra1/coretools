@@ -56,6 +56,13 @@ export class AuthStore {
   now = $state(Date.now());
   /** Whether the host offers OS-biometric unlock (Windows Hello). */
   helloSupported = $state(false);
+  /**
+   * Why the vault is currently locked. Drives the Hello-first flow: the
+   * prompt auto-opens only for "initial" (app start) — never right after the
+   * user deliberately locked ("manual") or the idle timer fired ("auto"),
+   * where a system dialog popping up unrequested would be wrong.
+   */
+  lockReason = $state<"initial" | "manual" | "auto" | null>(null);
 
   #key: CryptoKey | null = null;
   #secrets = new Map<string, string>();
@@ -86,6 +93,7 @@ export class AuthStore {
     this.settings = settings;
     this.entries = entries;
     this.locked = this.encrypted; // locked on page load when a password is set
+    this.lockReason = this.locked ? "initial" : null;
 
     if (!this.encrypted) {
       for (const entry of entries) {
@@ -112,7 +120,7 @@ export class AuthStore {
       minutes > 0 &&
       this.now - this.#lastActivity > minutes * 60_000
     ) {
-      this.lock();
+      this.lock("auto");
     }
   }
 
@@ -121,10 +129,11 @@ export class AuthStore {
     this.#lastActivity = Date.now();
   }
 
-  lock(): void {
+  lock(reason: "manual" | "auto" = "manual"): void {
     this.#key = null;
     this.#secrets.clear();
     this.locked = true;
+    this.lockReason = reason;
   }
 
   async #deriveAndVerify(password: string): Promise<CryptoKey> {
@@ -161,6 +170,7 @@ export class AuthStore {
     this.#secrets = secrets;
     this.touch();
     this.locked = false;
+    this.lockReason = null;
   }
 
   async unlock(password: string): Promise<void> {
@@ -180,6 +190,12 @@ export class AuthStore {
       throw new Error("Windows Hello unlock is not set up");
     }
 
+    // Nothing below mutates any state until BOTH gates pass:
+    //  1. the OS-verified Hello signature must unwrap the vault key
+    //     (AES-GCM authentication fails for any other signature), and
+    //  2. the unwrapped key must decrypt the vault verifier.
+    // A canceled or failed Hello prompt rejects inside sign() and the vault
+    // stays locked; the password path is completely independent of this.
     const signature = await hello.sign(base64ToBytes(vault.hello.challenge));
     const wrappingKey = await deriveWrappingKey(signature);
 
@@ -188,8 +204,6 @@ export class AuthStore {
       key = await importVaultKey(
         await unwrapKeyBytes(wrappingKey, vault.hello.wrapped),
       );
-      // Confirm against the verifier so a corrupt wrap can never
-      // half-unlock with a key that fails on real secrets.
       if ((await decryptString(key, vault.verifier)) !== VERIFIER_PLAINTEXT) {
         throw new Error("verifier mismatch");
       }

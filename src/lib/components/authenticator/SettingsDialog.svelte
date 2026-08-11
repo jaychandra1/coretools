@@ -90,7 +90,9 @@
       helloPw = "";
       ontoast("Windows Hello unlock enabled");
     } catch (e) {
-      const message = e instanceof Error ? e.message : "";
+      // Tauri invoke rejects with plain strings (Rust error tokens).
+      const message =
+        e instanceof Error ? e.message : typeof e === "string" ? e : "";
       error =
         message === "hello_canceled"
           ? ""

@@ -196,6 +196,16 @@ The desktop build can optionally unlock the vault with Windows Hello
   vault key exists at rest (protected by the Hello/TPM key). Password-only
   mode keeps zero key material on disk. Users who don't enable the toggle are
   entirely unaffected.
+- When enabled, Hello is the **first** unlock method offered: the OS prompt
+  opens automatically when the app starts locked (never after a deliberate
+  manual lock or an idle auto-lock, where an unrequested system dialog would
+  be wrong), and the password form stays visible as the fallback. The unlock
+  completes only after the OS reports a successful verification **and** the
+  resulting signature both unwraps the vault key (AES-GCM authentication)
+  and decrypts the stored verifier — a dismissed or failed prompt leaves the
+  vault locked. Note that Windows validates an *enrolled* fingerprint already
+  resting on the sensor instantly; that is a genuine OS-level match, not a
+  bypass — unenrolled fingers fail.
 - The password remains the master fallback: changing or removing it, wiping
   data, or a Windows-side Hello reset (e.g. biometric re-enrollment) all
   invalidate and remove the Hello configuration; re-enabling always requires
