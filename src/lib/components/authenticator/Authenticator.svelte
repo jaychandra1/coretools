@@ -11,16 +11,18 @@
   import type { ParsedAccount } from "../../core/authenticator/types";
   import type { StoredEntry } from "../../core/authenticator/db";
 
-  // ---- lifecycle: init, shared clock, activity tracking -------------------
+  // ---- lifecycle: init + activity tracking ---------------------------------
+  // The shared clock (and with it the idle auto-lock) is owned by the store so
+  // it keeps running while other tabs are open; only the activity listeners
+  // are scoped to this section — interacting with the *authenticator* is what
+  // resets its idle countdown.
 
   $effect(() => {
     authStore.init();
-    const timer = setInterval(() => authStore.tick(), 500);
     const touch = () => authStore.touch();
     window.addEventListener("pointerdown", touch);
     window.addEventListener("keydown", touch);
     return () => {
-      clearInterval(timer);
       window.removeEventListener("pointerdown", touch);
       window.removeEventListener("keydown", touch);
     };

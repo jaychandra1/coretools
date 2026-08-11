@@ -67,6 +67,7 @@ export class AuthStore {
   #key: CryptoKey | null = null;
   #secrets = new Map<string, string>();
   #lastActivity = Date.now();
+  #ticker: ReturnType<typeof setInterval> | null = null;
 
   get encrypted(): boolean {
     return this.vault?.encrypted === true;
@@ -101,6 +102,12 @@ export class AuthStore {
       }
     }
     this.ready = true;
+
+    // The shared clock lives on the store, not on the Authenticator
+    // component: the idle auto-lock must keep counting while the user is on
+    // other tabs of the app, otherwise decrypted secrets would stay in
+    // memory indefinitely once the section is left open in the background.
+    this.#ticker ??= setInterval(() => this.tick(), 500);
 
     // Probe biometric availability in the background — never blocks startup,
     // and simply stays false in the browser build or when Hello isn't set up.

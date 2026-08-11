@@ -197,9 +197,13 @@ The desktop build can optionally unlock the vault with Windows Hello
   mode keeps zero key material on disk. Users who don't enable the toggle are
   entirely unaffected.
 - When enabled, Hello is the **first** unlock method offered: the OS prompt
-  opens automatically when the app starts locked (never after a deliberate
-  manual lock or an idle auto-lock, where an unrequested system dialog would
-  be wrong), and the password form stays visible as the fallback. The unlock
+  opens automatically whenever the user *arrives* at the locked section —
+  app start, switching to the Authenticator tab, or the window regaining
+  focus after an idle auto-lock. It never auto-opens after a deliberate
+  manual lock, never while the app window is unfocused (an idle lock firing
+  in the background defers the prompt until the user returns), and never
+  re-prompts in a loop after the user cancels the dialog. The password form
+  stays visible as the fallback in every case. The unlock
   completes only after the OS reports a successful verification **and** the
   resulting signature both unwraps the vault key (AES-GCM authentication)
   and decrypts the stored verifier — a dismissed or failed prompt leaves the

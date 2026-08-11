@@ -15,20 +15,32 @@
     return typeof e === "string" ? e : "";
   }
 
-  // Hello-first: when Hello unlock is configured, open the OS prompt
-  // automatically — but only for the initial app-load lock. After a manual
-  // lock or an idle auto-lock the button is primary instead, so a system
-  // dialog never pops up unrequested.
-  let autoPrompted = false;
+  // Hello-first: open the OS prompt automatically whenever the user ARRIVES
+  // at the locked section — app start, switching to the Authenticator tab,
+  // or the window regaining focus after an idle auto-lock. Two deliberate
+  // exceptions:
+  //  - a manual "Lock now" never auto-prompts (the user asked for it locked);
+  //  - after the user cancels the Hello dialog, no more auto-prompts until
+  //    they arrive again (prevents a cancel → re-prompt loop, since closing
+  //    the OS dialog refocuses this window).
+  let suppressAuto = false;
+
+  function maybeAutoPrompt() {
+    if (!authStore.canUnlockWithHello) return;
+    if (authStore.lockReason === "manual") return;
+    if (suppressAuto || busy) return;
+    // If the app window isn't focused (idle lock fired while the user is in
+    // another application), defer to the focus listener below instead of
+    // popping a system dialog over their other work.
+    if (!document.hasFocus()) return;
+    unlockWithHello();
+  }
+
   $effect(() => {
-    if (
-      authStore.canUnlockWithHello &&
-      authStore.lockReason === "initial" &&
-      !autoPrompted
-    ) {
-      autoPrompted = true;
-      unlockWithHello();
-    }
+    maybeAutoPrompt(); // arrival by mount: app start or tab switch
+    const onFocus = () => maybeAutoPrompt(); // arrival by window re-focus
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
   });
 
   // Focus the password field only when it is the primary method; while the
@@ -64,6 +76,9 @@
       // (see store.unlockWithHello). Cancel/failure lands in catch.
       await authStore.unlockWithHello();
     } catch (e) {
+      // Any non-success outcome stops further auto-prompting for this visit;
+      // the button and the password field remain available.
+      suppressAuto = true;
       const message = errorText(e);
       if (message === "hello_canceled") {
         // User dismissed the OS prompt — fall through to the password field.
