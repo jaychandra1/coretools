@@ -26,6 +26,14 @@ export interface StoredEntry extends OtpEntry {
   secret: StoredSecret;
 }
 
+/** Windows Hello unlock state: the vault key wrapped under a Hello-gated key. */
+export interface HelloConfig {
+  /** Fixed random challenge (base64) the Hello key signs on every unlock. */
+  challenge: string;
+  /** Vault-key bytes, AES-GCM-wrapped under the signature-derived key. */
+  wrapped: EncryptedBlob;
+}
+
 /** Vault (encryption) configuration; absent until the user makes a choice. */
 export interface VaultConfig {
   encrypted: boolean;
@@ -34,6 +42,8 @@ export interface VaultConfig {
   iterations?: number;
   /** Sentinel encrypted with the vault key; used to verify the password. */
   verifier?: EncryptedBlob;
+  /** Present only while Windows Hello unlock is enabled (desktop, encrypted). */
+  hello?: HelloConfig;
 }
 
 export interface AuthSettings {

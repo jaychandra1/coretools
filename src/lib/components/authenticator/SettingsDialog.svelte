@@ -35,9 +35,16 @@
       if (!settingNew && !(await authStore.verifyPassword(currentPw))) {
         throw new Error("Current password is wrong");
       }
+      const hadHello = authStore.helloEnabled;
       await authStore.setPassword(newPw);
       currentPw = newPw = confirmPw = "";
-      ontoast(settingNew ? "Encryption enabled" : "Password changed");
+      ontoast(
+        settingNew
+          ? "Encryption enabled"
+          : hadHello
+            ? "Password changed — re-enable Windows Hello below"
+            : "Password changed",
+      );
     } catch (e) {
       error = e instanceof Error ? e.message : "Failed to set password";
     } finally {
@@ -64,6 +71,42 @@
       ontoast("Encryption removed — secrets are now stored unencrypted");
     } catch (e) {
       error = e instanceof Error ? e.message : "Failed to remove password";
+    } finally {
+      busy = false;
+    }
+  }
+
+  // ---- Windows Hello unlock ---------------------------------------------------
+
+  let helloPw = $state("");
+
+  async function enableHello(event: SubmitEvent) {
+    event.preventDefault();
+    if (!helloPw || busy) return;
+    busy = true;
+    error = "";
+    try {
+      await authStore.enableHello(helloPw);
+      helloPw = "";
+      ontoast("Windows Hello unlock enabled");
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "";
+      error =
+        message === "hello_canceled"
+          ? ""
+          : message || "Could not enable Windows Hello";
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function disableHello() {
+    if (busy) return;
+    busy = true;
+    error = "";
+    try {
+      await authStore.disableHello();
+      ontoast("Windows Hello unlock disabled");
     } finally {
       busy = false;
     }
@@ -149,6 +192,42 @@
       </form>
     {/if}
   </section>
+
+  {#if authStore.helloSupported && authStore.encrypted}
+    <section>
+      <h3>Windows Hello</h3>
+      {#if authStore.helloEnabled}
+        <p class="muted">
+          Windows Hello unlock is <strong>enabled</strong>. Your vault key is
+          wrapped by a TPM-backed key that only unlocks after a successful
+          fingerprint / face / PIN verification. Your password always works as
+          a fallback.
+        </p>
+        <button onclick={disableHello} disabled={busy}>
+          Disable Windows Hello unlock
+        </button>
+      {:else}
+        <p class="muted">
+          Unlock this section with your fingerprint, face or Windows Hello PIN
+          instead of typing the password. Enabling requires your current
+          password and a Hello verification; the password remains the master
+          fallback.
+        </p>
+        <form onsubmit={enableHello}>
+          <input
+            type="password"
+            bind:value={helloPw}
+            placeholder="Current password"
+            autocomplete="current-password"
+            aria-label="Current password to enable Windows Hello"
+          />
+          <button class="primary" type="submit" disabled={!helloPw || busy}>
+            {busy ? "Waiting for Windows Hello…" : "Enable Windows Hello unlock"}
+          </button>
+        </form>
+      {/if}
+    </section>
+  {/if}
 
   <section>
     <h3>Behavior</h3>

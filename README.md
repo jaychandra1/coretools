@@ -3,7 +3,7 @@
 A lightweight, **fully offline** desktop toolkit by **JDG Initiates**, built
 with **Tauri v2 + Svelte 5 + TypeScript**.
 
-It bundles three focused utilities:
+It bundles four focused utilities:
 
 1. **Diff-Checker** — compare two versions of a file, review each difference,
    choose which side to keep per-change, and export a merged file.
@@ -14,14 +14,26 @@ It bundles three focused utilities:
    rewrite as Professional, Gen Z, or Complete, with one-click copy. Includes
    an **email mode** that corrects greetings, sign-offs, and tone to corporate
    standards. Rule-based and fully local.
+4. **Authenticator** — a full two-factor code generator compatible with the
+   open-source [Authenticator browser extension](https://authenticator.cc):
+   TOTP / HOTP / Steam Guard / Blizzard codes, QR scanning, and
+   import/export of the extension's backup files (including encrypted ones).
+   Secrets can be encrypted at rest with a password (PBKDF2 + AES-256-GCM),
+   and the desktop build can optionally unlock with **Windows Hello**
+   (fingerprint / face / PIN, TPM-backed). See [SECURITY.md](./SECURITY.md)
+   for the storage and unlock model.
 
 The app ships with a premium dark/light theme (toggle in the header; the
 choice is kept in memory only — never persisted) and self-hosted Inter
 typography, so it makes zero network requests even for fonts.
 
-Everything runs locally in memory. There are **no network calls, no telemetry,
-and nothing is written to disk unless you explicitly save it.** See
-[SECURITY.md](./SECURITY.md) for the full privacy & security model.
+Everything runs locally. There are **no network calls and no telemetry.** The
+three text tools keep everything in memory and write nothing to disk unless
+you explicitly save it. The **Authenticator is the one deliberate exception**:
+its purpose is to keep your 2FA accounts, so it persists them to a local
+IndexedDB database on this device — encrypted with AES-256-GCM once you set a
+password. See [SECURITY.md](./SECURITY.md) for the full privacy & security
+model.
 
 ---
 
@@ -44,7 +56,17 @@ coretools/
 │       │   ├── grammar.ts          # offline grammar checker
 │       │   ├── grammar.test.ts
 │       │   ├── email.ts            # corporate email correction mode
-│       │   └── email.test.ts
+│       │   ├── email.test.ts
+│       │   └── authenticator/      # 2FA engine (see its README.md)
+│       │       ├── base32.ts           # RFC 4648 encode/decode
+│       │       ├── otp.ts              # TOTP/HOTP/Steam/Blizzard (WebCrypto HMAC)
+│       │       ├── otpauth.ts          # otpauth:// URI parse & build
+│       │       ├── migration.ts        # Google Authenticator export decoding
+│       │       ├── vault-crypto.ts     # PBKDF2 + AES-256-GCM vault
+│       │       ├── legacy-crypto.ts    # extension-backup (CryptoJS) compat
+│       │       ├── backup.ts           # import/export formats + dedupe
+│       │       ├── db.ts               # IndexedDB persistence
+│       │       └── *.test.ts           # RFC vectors + round-trip tests
 │       ├── platform/           # Host abstraction (I/O boundary)
 │       │   ├── types.ts            # Platform interface
 │       │   ├── tauri.ts            # native dialogs + Rust commands
@@ -55,7 +77,8 @@ coretools/
 │           ├── DiffViewer.svelte
 │           ├── DiffChecker.svelte
 │           ├── YamlOptimizer.svelte
-│           └── SentencePolisher.svelte
+│           ├── SentencePolisher.svelte
+│           └── authenticator/      # Authenticator UI (list, dialogs, lock)
 ├── src-tauri/                  # Native shell (Rust)
 │   ├── src/lib.rs              # Two minimal, guarded I/O commands
 │   ├── src/main.rs
@@ -238,13 +261,39 @@ follow professional conventions; the style choice applies to the body):
 - **Structure**: greeting / body paragraphs / sign-off separated by blank
   lines; each paragraph gets the full grammar check and style rewrite.
 
+### Authenticator
+
+1. **Add accounts** — scan a QR code with the camera, upload/paste a QR
+   screenshot, or enter the Base32 secret manually. `otpauth://` URIs and
+   Google Authenticator export QRs (`otpauth-migration://`) are both
+   understood.
+2. **Use codes** — codes tick from a shared timer with a countdown ring;
+   click a code to copy it (optional 30 s clipboard auto-clear). Press **/**
+   to jump to search. **Edit** mode enables rename, delete, pin-to-top and
+   drag-to-reorder.
+3. **Encrypt** — set an encryption password in Settings (independent of
+   anything else). Secrets are then stored AES-256-GCM-encrypted, and the
+   section locks on load and after a configurable idle timeout. Without a
+   password, secrets are stored unencrypted and a persistent warning is shown.
+4. **Import / Export** — round-trips the Authenticator browser extension's
+   JSON backups (plaintext *and* password-encrypted), otpauth URI lists, a
+   modern encrypted format (this app only), and per-account QR codes with a
+   print-all view. Imports show a preview and skip duplicates; exports are
+   generated entirely on-device.
+
+See [src/lib/core/authenticator/README.md](./src/lib/core/authenticator/README.md)
+for the feature's full design and security notes.
+
 ---
 
 ## Testing
 
 The core logic is covered by unit tests (`npm test`): the diff/merge engine,
 the YAML optimizer, the grammar checker, the sentence polisher, and the email
-correction mode, including validation and safe-parsing edge cases.
+correction mode, including validation and safe-parsing edge cases. The
+Authenticator engine is tested against the official RFC 4226/6238 test
+vectors, Google-migration payload fixtures, and full backup round-trips
+(plaintext and encrypted).
 
 ## License
 

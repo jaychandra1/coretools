@@ -18,6 +18,12 @@ backup files, including encrypted ones.
   toast and optional 30 s clipboard auto-clear, search with the **/** shortcut,
   edit mode (rename, delete with warning, drag-and-drop reorder), pin-to-top,
   colored monogram avatars, responsive + light/dark theme.
+- **Windows Hello unlock (desktop)**: optional biometric/PIN unlock via a
+  TPM-backed `KeyCredentialManager` key whose deterministic signature over a
+  stored random challenge derives the AES key that wraps the vault key
+  (`src-tauri/src/hello.rs` + `platform.hello`). Password stays the master
+  fallback; changing/removing it invalidates the Hello setup. Absent in the
+  browser build.
 - **Encryption at rest**: optional password (independent of anything else) —
   PBKDF2-SHA256 (310,000 iterations) → AES-256-GCM per-secret with random
   12-byte IVs and a 16-byte per-user salt. The derived key is a

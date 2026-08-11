@@ -9,6 +9,8 @@
 //! There are no network dependencies, no persistence, and no logging of file
 //! contents.
 
+mod hello;
+
 use std::fs;
 use std::path::Path;
 
@@ -56,7 +58,14 @@ fn write_text_file(path: String, contents: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![read_text_file, write_text_file])
+        .invoke_handler(tauri::generate_handler![
+            read_text_file,
+            write_text_file,
+            hello::hello_available,
+            hello::hello_create_key,
+            hello::hello_sign,
+            hello::hello_delete_key
+        ])
         .run(tauri::generate_context!())
         .expect("error while running CoreTools");
 }

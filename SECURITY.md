@@ -8,7 +8,10 @@ be audited rather than taken on faith.
 
 - **No network code.** The application makes no HTTP/WebSocket/fetch calls. There
   is no analytics SDK, no update pinger, no crash reporter, and no external font
-  or asset loading.
+  or asset loading. This includes the Authenticator: QR codes are decoded
+  (`jsqr`) and generated (`qrcode`) entirely in-page from canvas pixels and
+  `data:` URLs, service icons are locally-computed monogram avatars (no
+  favicon fetching), and camera frames never leave the device.
 - **Content Security Policy.** The packaged app runs under a strict CSP defined
   in `src-tauri/tauri.conf.json`:
   ```
@@ -24,28 +27,40 @@ be audited rather than taken on faith.
   `dialog:allow-save`. There is no HTTP plugin, no shell plugin, and no
   filesystem-scope plugin enabled.
 
-## 2. In-memory only — nothing is persisted implicitly
+## 2. In-memory by default — persistence only where it *is* the feature
 
-- All diffing and YAML processing happens on in-memory strings in the frontend.
-- **The app never writes to disk on its own.** No cache, no temp files, no logs
-  of user content, no local storage, no databases.
-- The **only** way data leaves the app is when *you* pick a destination in the
-  native **Save** dialog. Loading a file likewise only happens through a native
-  **Open** dialog that you drive.
+- All diffing, YAML and text processing happens on in-memory strings in the
+  frontend. For these tools **the app never writes to disk on its own** — no
+  cache, no temp files, no logs of user content, no local storage, no
+  databases. The only way their data leaves the app is when *you* pick a
+  destination in the native **Save** dialog; loading likewise only happens
+  through a native **Open** dialog that you drive.
+- **The Authenticator is the single, deliberate exception.** Its purpose is to
+  keep two-factor accounts across restarts, so it persists them to a local
+  IndexedDB database (`coretools-authenticator`) on this device — and nowhere
+  else. What is stored, and how it is encrypted, is specified in
+  [§8](#8-authenticator-local-persistence--encryption-model). No other tool
+  reads or writes that database.
 - The Rust backend does not log file contents.
 
 ## 3. Minimal, guarded native surface
 
-The Rust backend (`src-tauri/src/lib.rs`) exposes exactly two commands:
+The Rust backend (`src-tauri/src/lib.rs`, `src-tauri/src/hello.rs`) exposes
+exactly six commands:
 
 | Command | Purpose | Guards |
 | --- | --- | --- |
 | `read_text_file(path)` | Read a user-selected file | Path must originate from the native open-dialog; must be a regular file; rejected if larger than 50 MiB; read as UTF-8 only |
 | `write_text_file(path, contents)` | Write to a user-selected path | Path must originate from the native save-dialog |
+| `hello_available()` | Report whether Windows Hello is set up | Read-only capability probe; Windows-only (`false` elsewhere) |
+| `hello_create_key(challenge)` | Create/replace the app's Hello key and sign the enrollment challenge | OS shows the Hello verification prompt; challenge limited to 128 bytes; never sees secrets or passwords |
+| `hello_sign(challenge)` | Sign the stored challenge to unlock | OS enforces a biometric/PIN verification on **every** call; challenge limited to 128 bytes |
+| `hello_delete_key()` | Remove the app's Hello key | Idempotent; used when Hello unlock is disabled |
 
 No business logic runs in the backend, minimising the trusted native surface. No
 paths are ever constructed from untrusted/manifest content — they come only from
-dialog results.
+dialog results. The Hello commands (§8) handle only opaque challenge/signature
+byte arrays — vault keys, secrets and passwords never cross the IPC boundary.
 
 ## 4. Safe, sandboxed YAML parsing
 
@@ -90,9 +105,11 @@ inside the app, so even typography triggers no network request.
 ## 6. Clear frontend / backend separation
 
 - **Core logic** (`src/lib/core`) is pure and I/O-free — trivial to review and
-  fully unit-tested.
+  fully unit-tested. The single exception is
+  `src/lib/core/authenticator/db.ts`, the Authenticator's isolated IndexedDB
+  boundary (§8); all crypto and parsing modules beside it remain pure.
 - **UI** (`src/lib/components`) renders state only.
-- **Platform layer** (`src/lib/platform`) is the single I/O boundary.
+- **Platform layer** (`src/lib/platform`) is the single file-I/O boundary.
 - **Rust backend** is a thin, guarded I/O shell.
 
 This layering means a reviewer can verify the security-relevant behaviour by
@@ -100,13 +117,105 @@ reading a small number of well-isolated files.
 
 ## 7. Dependency posture
 
-- Runtime dependencies are intentionally few: `yaml` (safe parsing) and `diff`
-  (line diffing), plus the Tauri API/dialog packages. Production dependencies are
-  audited (`npm audit --omit=dev`) and currently report **0 vulnerabilities**.
+- Runtime dependencies are intentionally few: `yaml` (safe parsing), `diff`
+  (line diffing), `jsqr` (QR decoding) and `qrcode` (QR generation), plus the
+  Tauri API/dialog packages. Both QR libraries are pure computation — they have
+  been reviewed to contain **no network APIs, no `eval`, and no dynamic code**.
+  Production dependencies are audited (`npm audit --omit=dev`) and currently
+  report **0 vulnerabilities**.
+- All OTP cryptography uses the platform **Web Crypto API** (`crypto.subtle`)
+  — HMAC, PBKDF2, AES-GCM and SHA-256 are never reimplemented in JS. The one
+  hand-written primitive is MD5, required solely for compatibility with the
+  Authenticator browser extension's legacy backup format (see §8).
 - Build-time tooling (Vite/esbuild) never ships in the packaged application, so
   dev-server advisories do not affect the distributed binary.
+
+## 8. Authenticator: local persistence & encryption model
+
+The Authenticator (`src/lib/core/authenticator/`,
+`src/lib/components/authenticator/`) stores 2FA accounts in a local IndexedDB
+database. This section specifies exactly what that means.
+
+### What is stored, and where
+
+- **Database**: IndexedDB `coretools-authenticator`, local to this device
+  (the WebView2 profile directory in the packaged app; per-origin browser
+  storage in the web preview). It is never synced or transmitted — there is no
+  backend and the CSP forbids network access.
+- **Entry metadata** (issuer, account name, code type, digits, period,
+  counter, ordering, pinned flag) is stored **in the clear** — the same model
+  the Authenticator browser extension uses.
+- **Secrets** are stored in one of two states:
+  - **Encrypted (recommended).** When the user sets an encryption password
+    (independent of any other credential), each secret is encrypted with
+    **AES-256-GCM** under a key derived via **PBKDF2-SHA256 with 310,000
+    iterations** and a random 16-byte per-user salt; every encryption uses a
+    fresh random 12-byte IV.
+  - **Unencrypted (explicit opt-out).** If no password is set, secrets are
+    stored in plaintext and the UI shows a **persistent warning banner** until
+    a password is set — mirroring the extension's behaviour.
+
+### Key handling & locking
+
+- The derived AES key is created **non-extractable**, so its raw bytes are
+  never exposed to JavaScript, and it exists **only in memory**.
+- The section is **locked on every load** and after a configurable idle
+  timeout (default 5 minutes). Locking drops the key reference and clears the
+  decrypted-secret cache.
+- Password verification decrypts a stored sentinel value; AES-GCM's
+  authenticated decryption provides the constant-time check (no password hash
+  is stored or compared in JS).
+
+### What never happens
+
+- Secrets, generated codes and passwords are never logged (there are no
+  `console.*` calls in `src/lib`), never placed in URLs or query strings,
+  never written to `localStorage`/cookies, and never leave the device.
+- QR scanning (camera or image) and QR generation for export run entirely
+  in-page; exports are produced client-side and written only through the
+  user-driven Save dialog.
+- Imports never overwrite silently: duplicates are detected
+  (same secret + issuer + account), reported, and skipped; deletions require
+  an explicit confirmation with a data-loss warning.
+
+### Windows Hello unlock (optional, desktop only)
+
+The desktop build can optionally unlock the vault with Windows Hello
+(fingerprint / face / PIN) instead of the password:
+
+- Enabling requires the **current password** plus a Hello verification. A
+  transient extractable copy of the vault key is derived, its 32 raw bytes are
+  **AES-256-GCM-wrapped** and stored in IndexedDB, and the plaintext copy is
+  zeroed. The wrapping key is `SHA-256` of a Windows Hello **signature**
+  (RSA-PKCS#1, deterministic) over a fixed random 32-byte challenge.
+- The signing key is created via `KeyCredentialManager` — **TPM-backed where
+  available** — and the OS requires a successful biometric/PIN verification
+  for *every* signing operation. The signature, and therefore the unwrapping
+  key, never exists on disk.
+- **Trade-off, stated plainly:** with Hello enabled, a wrapped copy of the
+  vault key exists at rest (protected by the Hello/TPM key). Password-only
+  mode keeps zero key material on disk. Users who don't enable the toggle are
+  entirely unaffected.
+- The password remains the master fallback: changing or removing it, wiping
+  data, or a Windows-side Hello reset (e.g. biometric re-enrollment) all
+  invalidate and remove the Hello configuration; re-enabling always requires
+  the password again.
+- In the browser build the feature is absent (`hello_available` is
+  Windows-desktop only); nothing is degraded.
+
+### Legacy-format compatibility (deliberate, contained weakness)
+
+To import and export backups compatible with the Authenticator browser
+extension, the app implements that format's original encryption:
+OpenSSL/CryptoJS `AES-256-CBC` with `EVP_BytesToKey`-MD5 key derivation. This
+scheme is **weak by modern standards** and is used **only** to decrypt
+existing extension backups and to produce extension-importable exports at the
+user's explicit request. Anything imported through it is immediately
+re-encrypted with the AES-GCM vault; the app's own at-rest storage never uses
+the legacy scheme.
 
 ## Reporting
 
 Because the app is offline and local, the primary risk surface is the parsing/
-merging logic itself. Issues can be raised against this repository.
+merging logic itself and the Authenticator's local storage model described
+above. Issues can be raised against this repository.

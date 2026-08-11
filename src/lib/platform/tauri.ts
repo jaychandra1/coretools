@@ -1,4 +1,41 @@
-import type { Platform, LoadedFile } from "./types";
+import type { Platform, LoadedFile, HelloUnlock } from "./types";
+
+/**
+ * Windows Hello bridge. Challenges/signatures cross the IPC boundary as plain
+ * byte arrays; no vault key material or password is ever passed to Rust.
+ * On non-Windows builds the backend stubs report unavailable/unsupported.
+ */
+const tauriHello: HelloUnlock = {
+  async available(): Promise<boolean> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      return await invoke<boolean>("hello_available");
+    } catch {
+      return false;
+    }
+  },
+
+  async createKey(challenge: Uint8Array): Promise<Uint8Array> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const signature = await invoke<number[]>("hello_create_key", {
+      challenge: Array.from(challenge),
+    });
+    return new Uint8Array(signature);
+  },
+
+  async sign(challenge: Uint8Array): Promise<Uint8Array> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const signature = await invoke<number[]>("hello_sign", {
+      challenge: Array.from(challenge),
+    });
+    return new Uint8Array(signature);
+  },
+
+  async deleteKey(): Promise<void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("hello_delete_key");
+  },
+};
 
 /**
  * Tauri implementation used by the packaged desktop app.
@@ -10,6 +47,7 @@ import type { Platform, LoadedFile } from "./types";
  */
 export const tauriPlatform: Platform = {
   kind: "tauri",
+  hello: tauriHello,
 
   async openTextFile(): Promise<LoadedFile | null> {
     const { open } = await import("@tauri-apps/plugin-dialog");

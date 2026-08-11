@@ -30,6 +30,12 @@ export async function deriveVaultKey(
   password: string,
   saltB64: string,
   iterations = PBKDF2_ITERATIONS,
+  /**
+   * The working key is always non-extractable. An extractable copy is derived
+   * only transiently while enabling OS-biometric unlock, where the raw bytes
+   * are wrapped (AES-GCM under a Hello-gated key) and immediately discarded.
+   */
+  extractable = false,
 ): Promise<CryptoKey> {
   const material = await crypto.subtle.importKey(
     "raw",
@@ -47,9 +53,62 @@ export async function deriveVaultKey(
     },
     material,
     { name: "AES-GCM", length: 256 },
-    false, // non-extractable: the raw key bytes are never exposed to JS
+    extractable,
     ["encrypt", "decrypt"],
   );
+}
+
+/** Export an (extractable) AES key's raw bytes. */
+export async function exportKeyBytes(key: CryptoKey): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.exportKey("raw", key));
+}
+
+/** Re-create the vault key from raw bytes as a non-extractable working key. */
+export function importVaultKey(raw: Uint8Array): Promise<CryptoKey> {
+  return crypto.subtle.importKey(
+    "raw",
+    raw as BufferSource,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+/**
+ * Derive a non-extractable AES-256-GCM wrapping key from opaque secret
+ * material (the deterministic Windows Hello signature over a fixed random
+ * challenge). SHA-256 condenses the material to exactly 256 key bits.
+ */
+export async function deriveWrappingKey(
+  material: Uint8Array,
+): Promise<CryptoKey> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    material as BufferSource,
+  );
+  return crypto.subtle.importKey(
+    "raw",
+    digest,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+/** Wrap raw vault-key bytes under a wrapping key. */
+export async function wrapKeyBytes(
+  wrappingKey: CryptoKey,
+  raw: Uint8Array,
+): Promise<EncryptedBlob> {
+  return encryptString(wrappingKey, bytesToBase64(raw));
+}
+
+/** Unwrap raw vault-key bytes. Throws if the wrapping key is wrong. */
+export async function unwrapKeyBytes(
+  wrappingKey: CryptoKey,
+  blob: EncryptedBlob,
+): Promise<Uint8Array> {
+  return base64ToBytes(await decryptString(wrappingKey, blob));
 }
 
 export async function encryptString(
