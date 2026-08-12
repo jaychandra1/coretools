@@ -29,6 +29,8 @@ windows = { version = "0.58", features = [
   "Security_Credentials",
   "Security_Cryptography",
   "Storage_Streams",
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
 ] }
 
 [features]

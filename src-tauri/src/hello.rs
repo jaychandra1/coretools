@@ -21,11 +21,40 @@ const KEY_NAME: &str = "io.coretools.authenticator";
 #[cfg(windows)]
 mod imp {
     use super::KEY_NAME;
-    use windows::core::HSTRING;
+    use windows::core::{w, HSTRING, PCWSTR};
     use windows::Security::Credentials::{
         KeyCredentialCreationOption, KeyCredentialManager, KeyCredentialStatus,
     };
     use windows::Security::Cryptography::CryptographicBuffer;
+    use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, SetForegroundWindow};
+
+    /// Bring the Windows Hello prompt to the foreground.
+    ///
+    /// `KeyCredentialManager` has no HWND interop (unlike, say,
+    /// `UserConsentVerifierInterop`), so its dialog — hosted by
+    /// CredentialUIBroker.exe in a window of class "Credential Dialog Xaml
+    /// Host" — opens BEHIND desktop apps and only flashes in the taskbar.
+    /// This watcher polls for that window for a few seconds and foregrounds
+    /// it, which the OS allows because our process holds foreground focus at
+    /// the moment the user triggers the unlock. Purely window management —
+    /// no effect on the verification itself.
+    fn foreground_hello_dialog() {
+        std::thread::spawn(|| {
+            for _ in 0..50 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                unsafe {
+                    if let Ok(hwnd) =
+                        FindWindowW(w!("Credential Dialog Xaml Host"), PCWSTR::null())
+                    {
+                        if !hwnd.is_invalid() {
+                            let _ = SetForegroundWindow(hwnd);
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     /// Map a non-success status to a stable, frontend-matchable error token.
     fn status_error(status: KeyCredentialStatus) -> String {
@@ -49,6 +78,7 @@ mod imp {
     ) -> Result<Vec<u8>, String> {
         let buffer =
             CryptographicBuffer::CreateFromByteArray(challenge).map_err(|e| e.to_string())?;
+        foreground_hello_dialog(); // the sign prompt opens in the background otherwise
         let result = credential
             .RequestSignAsync(&buffer)
             .map_err(|e| e.to_string())?
@@ -70,6 +100,7 @@ mod imp {
     /// Create (or replace) the app's Hello key and sign `challenge` with it.
     /// Shows the Windows Hello enrollment/verification prompt.
     pub fn create_and_sign(challenge: &[u8]) -> Result<Vec<u8>, String> {
+        foreground_hello_dialog(); // the enrollment prompt opens in the background otherwise
         let result = KeyCredentialManager::RequestCreateAsync(
             &HSTRING::from(KEY_NAME),
             KeyCredentialCreationOption::ReplaceExisting,
