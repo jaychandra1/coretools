@@ -24,7 +24,7 @@ serde_json = "1"
 # Windows Hello (Authenticator unlock). WinRT KeyCredentialManager bindings;
 # compiled only on Windows targets.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.58", features = [
+windows = { version = "0.62", features = [
   "Foundation",
   "Security_Credentials",
   "Security_Cryptography",
