@@ -35,6 +35,8 @@ export interface Platform {
   openTextFile(): Promise<LoadedFile | null>;
   /** Prompt the user for a save location and write `content`. Returns false if cancelled. */
   saveTextFile(suggestedName: string, content: string): Promise<boolean>;
+  /** Same as saveTextFile, for binary payloads (e.g. .xlsx exports). */
+  saveBinaryFile(suggestedName: string, bytes: Uint8Array): Promise<boolean>;
   /** OS biometric unlock. Absent where the host has no such facility (browser). */
   readonly hello?: HelloUnlock;
 }

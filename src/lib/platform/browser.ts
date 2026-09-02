@@ -36,15 +36,28 @@ export const browserPlatform: Platform = {
   },
 
   async saveTextFile(suggestedName: string, content: string): Promise<boolean> {
-    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = suggestedName;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    URL.revokeObjectURL(url);
-    return true;
+    return downloadBlob(
+      suggestedName,
+      new Blob([content], { type: "text/plain;charset=utf-8" }),
+    );
+  },
+
+  async saveBinaryFile(suggestedName: string, bytes: Uint8Array): Promise<boolean> {
+    return downloadBlob(
+      suggestedName,
+      new Blob([bytes as BlobPart], { type: "application/octet-stream" }),
+    );
   },
 };
+
+function downloadBlob(suggestedName: string, blob: Blob): boolean {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = suggestedName;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+  return true;
+}

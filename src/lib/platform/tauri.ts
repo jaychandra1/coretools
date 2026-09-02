@@ -71,4 +71,16 @@ export const tauriPlatform: Platform = {
     await invoke("write_text_file", { path, contents: content });
     return true;
   },
+
+  async saveBinaryFile(suggestedName: string, bytes: Uint8Array): Promise<boolean> {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { invoke } = await import("@tauri-apps/api/core");
+
+    const path = await save({ defaultPath: suggestedName });
+    if (typeof path !== "string") return false;
+
+    // Tauri v2 serializes Vec<u8> command args efficiently from number[].
+    await invoke("write_binary_file", { path, contents: Array.from(bytes) });
+    return true;
+  },
 };

@@ -3,9 +3,10 @@
   import YamlOptimizer from "./lib/components/YamlOptimizer.svelte";
   import SentencePolisher from "./lib/components/SentencePolisher.svelte";
   import Authenticator from "./lib/components/authenticator/Authenticator.svelte";
+  import JsonStudio from "./lib/components/json-studio/JsonStudio.svelte";
   import { getPlatform } from "./lib/platform";
 
-  type Tab = "diff" | "yaml" | "polish" | "authenticator";
+  type Tab = "diff" | "yaml" | "polish" | "authenticator" | "json";
   let tab = $state<Tab>("diff");
 
   const platform = getPlatform();
@@ -72,6 +73,9 @@
     >
       Authenticator
     </button>
+    <button class:active={tab === "json"} onclick={() => (tab = "json")}>
+      JSON-Studio
+    </button>
   </nav>
 
   <main>
@@ -83,8 +87,10 @@
           <YamlOptimizer />
         {:else if tab === "polish"}
           <SentencePolisher />
-        {:else}
+        {:else if tab === "authenticator"}
           <Authenticator />
+        {:else}
+          <JsonStudio />
         {/if}
       </div>
     {/key}

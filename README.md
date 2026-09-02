@@ -3,7 +3,7 @@
 A lightweight, **fully offline** desktop toolkit by **JDG Initiates**, built
 with **Tauri v2 + Svelte 5 + TypeScript**.
 
-It bundles four focused utilities:
+It bundles five focused utilities:
 
 1. **Diff-Checker** — compare two versions of a file, review each difference,
    choose which side to keep per-change, and export a merged file.
@@ -22,6 +22,13 @@ It bundles four focused utilities:
    and the desktop build can optionally unlock with **Windows Hello**
    (fingerprint / face / PIN, TPM-backed). See [SECURITY.md](./SECURITY.md)
    for the storage and unlock model.
+5. **JSON-Studio** — a full JSON workbench: Monaco editor with live
+   validation, tree editing, JSON Schema validation & generation, JSONPath /
+   JMESPath explorers, side-by-side + semantic diff, JSON repair, OpenAPI
+   linting, conversion to/from CSV / XML / YAML / Excel, code generation
+   (TypeScript, C#, Java, Python, Go), an analytics dashboard, Web-Worker
+   support for large files, and IndexedDB session recovery. See
+   [src/lib/core/json-studio/README.md](./src/lib/core/json-studio/README.md).
 
 The app ships with a premium dark/light theme (toggle in the header; the
 choice is kept in memory only — never persisted) and self-hosted Inter
@@ -29,10 +36,11 @@ typography, so it makes zero network requests even for fonts.
 
 Everything runs locally. There are **no network calls and no telemetry.** The
 three text tools keep everything in memory and write nothing to disk unless
-you explicitly save it. The **Authenticator is the one deliberate exception**:
-its purpose is to keep your 2FA accounts, so it persists them to a local
-IndexedDB database on this device — encrypted with AES-256-GCM once you set a
-password. See [SECURITY.md](./SECURITY.md) for the full privacy & security
+you explicitly save it. Two tools are deliberate exceptions with their own
+local IndexedDB databases: the **Authenticator** (its purpose is to keep your
+2FA accounts — encrypted with AES-256-GCM once you set a password) and
+**JSON-Studio** (crash/reload session recovery for the document you're
+editing). See [SECURITY.md](./SECURITY.md) for the full privacy & security
 model.
 
 ---
@@ -57,16 +65,25 @@ coretools/
 │       │   ├── grammar.test.ts
 │       │   ├── email.ts            # corporate email correction mode
 │       │   ├── email.test.ts
-│       │   └── authenticator/      # 2FA engine (see its README.md)
-│       │       ├── base32.ts           # RFC 4648 encode/decode
-│       │       ├── otp.ts              # TOTP/HOTP/Steam/Blizzard (WebCrypto HMAC)
-│       │       ├── otpauth.ts          # otpauth:// URI parse & build
-│       │       ├── migration.ts        # Google Authenticator export decoding
-│       │       ├── vault-crypto.ts     # PBKDF2 + AES-256-GCM vault
-│       │       ├── legacy-crypto.ts    # extension-backup (CryptoJS) compat
-│       │       ├── backup.ts           # import/export formats + dedupe
-│       │       ├── db.ts               # IndexedDB persistence
-│       │       └── *.test.ts           # RFC vectors + round-trip tests
+│       │   ├── authenticator/      # 2FA engine (see its README.md)
+│       │   │   ├── base32.ts           # RFC 4648 encode/decode
+│       │   │   ├── otp.ts              # TOTP/HOTP/Steam/Blizzard (WebCrypto HMAC)
+│       │   │   ├── otpauth.ts          # otpauth:// URI parse & build
+│       │   │   ├── migration.ts        # Google Authenticator export decoding
+│       │   │   ├── vault-crypto.ts     # PBKDF2 + AES-256-GCM vault
+│       │   │   ├── legacy-crypto.ts    # extension-backup (CryptoJS) compat
+│       │   │   ├── backup.ts           # import/export formats + dedupe
+│       │   │   ├── db.ts               # IndexedDB persistence
+│       │   │   └── *.test.ts           # RFC vectors + round-trip tests
+│       │   └── json-studio/        # JSON workbench engine (see its README.md
+│       │       │                     and ARCHITECTURE.md)
+│       │       ├── parse.ts / tree-edit.ts / json-diff.ts / repair.ts
+│       │       ├── schema-infer.ts / validate.ts / openapi.ts / query.ts
+│       │       ├── stats.ts / db.ts (session recovery)
+│       │       ├── convert/            # CSV / XML / YAML / XLSX
+│       │       ├── codegen/            # TS / C# / Java / Python / Go
+│       │       ├── worker/             # large-file Web Worker + client
+│       │       └── *.test.ts           # 97 unit tests
 │       ├── platform/           # Host abstraction (I/O boundary)
 │       │   ├── types.ts            # Platform interface
 │       │   ├── tauri.ts            # native dialogs + Rust commands
@@ -78,7 +95,8 @@ coretools/
 │           ├── DiffChecker.svelte
 │           ├── YamlOptimizer.svelte
 │           ├── SentencePolisher.svelte
-│           └── authenticator/      # Authenticator UI (list, dialogs, lock)
+│           ├── authenticator/      # Authenticator UI (list, dialogs, lock)
+│           └── json-studio/        # JSON Studio UI (Monaco, panels, store)
 ├── src-tauri/                  # Native shell (Rust)
 │   ├── src/lib.rs              # Two minimal, guarded I/O commands
 │   ├── src/main.rs
@@ -284,6 +302,29 @@ follow professional conventions; the style choice applies to the body):
 See [src/lib/core/authenticator/README.md](./src/lib/core/authenticator/README.md)
 for the feature's full design and security notes.
 
+### JSON-Studio
+
+1. **Edit** — the Monaco editor validates as you type (status bar + red
+   squiggles). Toolbar: **Format / Minify / Sort keys / Repair**, indent
+   selection, Open/Save. Shortcuts: `Ctrl+Shift+F/M/S/R`, `Alt+1…9` to switch
+   tools (full list behind the `?` button).
+2. **Explore** — **Tree** for inline structural editing; **Query** for
+   JSONPath and JMESPath with per-match pointers; **Analytics** for node,
+   type, depth and key statistics.
+3. **Verify** — **Schema** validates against JSON Schema (or generates one
+   from the document); **OpenAPI** lints 3.0/3.1/Swagger 2.0 documents (JSON
+   or YAML); **Diff** compares against a pasted version side-by-side plus a
+   formatting-independent semantic changelist.
+4. **Transform** — **Convert** to/from CSV, XML, YAML and Excel;
+   **Codegen** emits TypeScript, C#, Java, Python or Go types from the
+   document.
+
+Documents ≥ 1 MB are processed in a Web Worker so the UI stays responsive,
+and the session autosaves locally for crash recovery (restore/discard banner
+on return). See
+[src/lib/core/json-studio/README.md](./src/lib/core/json-studio/README.md)
+and [ARCHITECTURE.md](./src/lib/core/json-studio/ARCHITECTURE.md).
+
 ---
 
 ## Testing
@@ -293,7 +334,11 @@ the YAML optimizer, the grammar checker, the sentence polisher, and the email
 correction mode, including validation and safe-parsing edge cases. The
 Authenticator engine is tested against the official RFC 4226/6238 test
 vectors, Google-migration payload fixtures, and full backup round-trips
-(plaintext and encrypted).
+(plaintext and encrypted). JSON Studio's engine has 97 tests covering
+parsing/positioned errors, tree edits, schema inference + validation,
+OpenAPI rules, JSONPath/JMESPath, semantic diff, repair, stats, all four
+format conversions (including a real .xlsx zip round-trip), and all five
+code generators.
 
 ## License
 

@@ -54,6 +54,23 @@ fn write_text_file(path: String, contents: String) -> Result<(), String> {
         .map_err(|e| format!("Could not write file: {e}"))
 }
 
+/// Binary counterpart of `write_text_file` (e.g. .xlsx exports from JSON
+/// Studio). Same trust model: the path comes from a native save-dialog, the
+/// bytes are produced entirely in the frontend, capped at 100 MiB.
+#[tauri::command]
+fn write_binary_file(path: String, contents: Vec<u8>) -> Result<(), String> {
+    const MAX_WRITE_BYTES: usize = 100 * 1024 * 1024;
+    if contents.len() > MAX_WRITE_BYTES {
+        return Err(format!(
+            "Refusing to write {} bytes (limit {} bytes).",
+            contents.len(),
+            MAX_WRITE_BYTES
+        ));
+    }
+    fs::write(Path::new(&path), contents)
+        .map_err(|e| format!("Could not write file: {e}"))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -61,6 +78,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_text_file,
             write_text_file,
+            write_binary_file,
             hello::hello_available,
             hello::hello_create_key,
             hello::hello_sign,

@@ -35,23 +35,28 @@ be audited rather than taken on faith.
   databases. The only way their data leaves the app is when *you* pick a
   destination in the native **Save** dialog; loading likewise only happens
   through a native **Open** dialog that you drive.
-- **The Authenticator is the single, deliberate exception.** Its purpose is to
-  keep two-factor accounts across restarts, so it persists them to a local
-  IndexedDB database (`coretools-authenticator`) on this device — and nowhere
-  else. What is stored, and how it is encrypted, is specified in
-  [§8](#8-authenticator-local-persistence--encryption-model). No other tool
-  reads or writes that database.
+- **Two tools are deliberate, documented exceptions**, each with its own
+  isolated IndexedDB database and nothing else:
+  - the **Authenticator** (`coretools-authenticator`) — its purpose is to keep
+    2FA accounts across restarts; storage and encryption are specified in
+    [§8](#8-authenticator-local-persistence--encryption-model);
+  - **JSON Studio** (`coretools-json-studio`) — crash/reload session recovery
+    for the working document only: the editor texts and active tab, autosaved
+    locally, restorable or discardable from a banner, capped at 5M characters.
+    No encryption is applied (it is working-document text the user is actively
+    editing, not credential material); "wipe" is discarding the session.
 - The Rust backend does not log file contents.
 
 ## 3. Minimal, guarded native surface
 
 The Rust backend (`src-tauri/src/lib.rs`, `src-tauri/src/hello.rs`) exposes
-exactly six commands:
+exactly seven commands:
 
 | Command | Purpose | Guards |
 | --- | --- | --- |
 | `read_text_file(path)` | Read a user-selected file | Path must originate from the native open-dialog; must be a regular file; rejected if larger than 50 MiB; read as UTF-8 only |
 | `write_text_file(path, contents)` | Write to a user-selected path | Path must originate from the native save-dialog |
+| `write_binary_file(path, contents)` | Binary counterpart (e.g. .xlsx exports) | Same save-dialog trust model; refuses writes above 100 MiB |
 | `hello_available()` | Report whether Windows Hello is set up | Read-only capability probe; Windows-only (`false` elsewhere) |
 | `hello_create_key(challenge)` | Create/replace the app's Hello key and sign the enrollment challenge | OS shows the Hello verification prompt; challenge limited to 128 bytes; never sees secrets or passwords |
 | `hello_sign(challenge)` | Sign the stored challenge to unlock | OS enforces a biometric/PIN verification on **every** call; challenge limited to 128 bytes |
@@ -88,6 +93,17 @@ no `eval`, no dynamic code. This includes the email correction mode — emails
 are analyzed and rewritten entirely in memory and discarded; nothing typed is
 transmitted or stored anywhere.
 
+### JSON Studio is interpreter-only
+
+All JSON Studio processing is `JSON.parse` plus pure interpreters: schema
+validation walks the schema (no compiled validators), JSONPath filter
+expressions run in `jsonpath-plus`'s safe evaluator, YAML conversion reuses
+the same locked-down `yaml` configuration as the optimizer (core schema,
+alias cap), and documents are only ever rendered as text — never as markup.
+Repaired JSON must re-parse successfully before it replaces the document.
+Large-file work runs in a same-origin Web Worker bundled at build time — no
+`blob:` workers, no CSP relaxation.
+
 ### Theme preference is never persisted
 
 The dark/light toggle keeps its state **in memory only**. It defaults to the
@@ -118,11 +134,18 @@ reading a small number of well-isolated files.
 ## 7. Dependency posture
 
 - Runtime dependencies are intentionally few: `yaml` (safe parsing), `diff`
-  (line diffing), `jsqr` (QR decoding) and `qrcode` (QR generation), plus the
-  Tauri API/dialog packages. Both QR libraries are pure computation — they have
-  been reviewed to contain **no network APIs, no `eval`, and no dynamic code**.
-  Production dependencies are audited (`npm audit --omit=dev`) and currently
-  report **0 vulnerabilities**.
+  (line diffing), `jsqr`/`qrcode` (QR decode/encode), and for JSON Studio:
+  `monaco-editor` (the VS Code editor, bundled locally with same-origin
+  workers), `@cfworker/json-schema` (an **interpreting** schema validator —
+  chosen over AJV precisely because AJV compiles schemas with `new Function`,
+  which the CSP forbids), `jsonpath-plus` (run exclusively in `eval: "safe"`
+  mode — filter expressions go through its jsep interpreter, never `eval`),
+  `jmespath`, `jsonrepair`, `fast-xml-parser` and `fflate` — all pure
+  computation, no network APIs. Excel support is hand-rolled on `fflate`
+  rather than SheetJS, whose npm build carries unfixed advisories, and
+  `monaco-editor` is pinned to `~0.53` because newer releases bundle a
+  `dompurify` with open advisories. Production dependencies are audited
+  (`npm audit --omit=dev`) and currently report **0 vulnerabilities**.
 - All OTP cryptography uses the platform **Web Crypto API** (`crypto.subtle`)
   — HMAC, PBKDF2, AES-GCM and SHA-256 are never reimplemented in JS. The one
   hand-written primitive is MD5, required solely for compatibility with the
