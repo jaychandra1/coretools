@@ -260,8 +260,19 @@ user's explicit request. Anything imported through it is immediately
 re-encrypted with the AES-GCM vault; the app's own at-rest storage never uses
 the legacy scheme.
 
-## Reporting
+## Reporting a vulnerability
 
 Because the app is offline and local, the primary risk surface is the parsing/
-merging logic itself and the Authenticator's local storage model described
-above. Issues can be raised against this repository.
+merging logic, the Authenticator's storage model (§8), and the native IPC
+boundary (§3).
+
+- **Security issues**: please use GitHub's **private vulnerability reporting**
+  on this repository (Security tab → "Report a vulnerability") rather than a
+  public issue, so a fix can ship before details are public. Expect an initial
+  response within 7 days.
+- **Non-security bugs**: open a regular issue, and include the app version
+  shown in the header — every release is tagged, so the version pins the exact
+  code.
+- Fixes are released as new tagged versions (see CHANGELOG.md). There is no
+  auto-update channel by design, so security-relevant releases are flagged
+  prominently on the download page.

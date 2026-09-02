@@ -252,25 +252,27 @@
             </summary>
             <div class="checksums-body">
               <ul class="checksum-list" data-checksums>
-                <li class="muted">Checksums load from this site — no third parties.</li>
+                <li class="muted">
+                  Checksums are published on each GitHub Release, next to the
+                  installers they describe.
+                </li>
               </ul>
               <p class="muted verify-how">
                 Verify with <code>certutil -hashfile &lt;file&gt; SHA256</code> (Windows),
                 <code>shasum -a 256 &lt;file&gt;</code> (macOS), or
-                <code>sha256sum &lt;file&gt;</code> (Linux) and compare the output.
+                <code>sha256sum &lt;file&gt;</code> (Linux) and compare against the
+                release's <code>SHA256SUMS.txt</code>.
               </p>
             </div>
           </details>
 
           <p class="smartscreen-note muted reveal">
             <strong>Windows may warn about this download.</strong> CoreTools is
-            not yet code-signed, so each new release starts with no SmartScreen
-            reputation and Edge/Windows can flag it as "unverified" or block it.
-            The app is fully offline and open source — verify the SHA-256
-            checksum above, then choose
-            <em>Keep&nbsp;→&nbsp;Show&nbsp;more&nbsp;→&nbsp;Keep&nbsp;anyway</em>
-            in the download bar (and <em>More&nbsp;info&nbsp;→&nbsp;Run&nbsp;anyway</em>
-            if SmartScreen prompts at launch).
+            not yet code-signed, so SmartScreen can flag new releases as
+            "unverified". Only proceed with an installer whose SHA-256 checksum
+            you have verified against the release's <code>SHA256SUMS.txt</code>;
+            if you can't verify it, or would rather skip the warning entirely,
+            use the in-browser app below — same tools, no installer.
           </p>
 
           <p class="download-foot muted reveal">

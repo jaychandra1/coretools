@@ -35,7 +35,8 @@
     </div>
     <div class="header-right">
       <span class="mode muted" title="Everything runs locally. No network access.">
-        ● Offline · {platform.kind === "tauri" ? "Desktop" : "Preview"}
+        ● Offline · {platform.kind === "tauri" ? "Desktop" : "Preview"} ·
+        v{__APP_VERSION__}
       </span>
       <button
         class="theme-toggle"

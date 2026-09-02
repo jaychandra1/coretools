@@ -1,10 +1,14 @@
 {
   "name": "coretools",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "Lightweight, fully offline desktop toolkit: file diff & merge + Kubernetes YAML optimizer.",
+  "engines": {
+    "node": ">=20.19"
+  },
   "scripts": {
+    "version:sync": "node scripts/sync-version.mjs",
     "dev": "vite",
     "build": "svelte-check --tsconfig ./tsconfig.json && vite build",
     "build:web": "vite build --mode web && node scripts/build-web.mjs",

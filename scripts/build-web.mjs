@@ -24,12 +24,14 @@ if (!existsSync(join(dist, "app"))) {
 mkdirSync(dist, { recursive: true });
 
 // Copy the static marketing assets to the dist root. `dist/app` is left intact.
-// `downloads` holds the installer files committed by the build-installers
-// workflow — they must be copied so they are actually served at /downloads/.
+// Installer binaries are NOT part of the web deploy (they live on GitHub
+// Releases); the filter keeps any locally-built ones out of dist so local and
+// Vercel builds stay identical.
+const isInstaller = (p) => /\.(exe|dmg|AppImage)$/i.test(p) || /SHA256SUMS\.txt$/.test(p);
 for (const entry of ["index.html", "styles", "scripts", "assets", "downloads"]) {
   const from = join(website, entry);
   if (existsSync(from)) {
-    cpSync(from, join(dist, entry), { recursive: true });
+    cpSync(from, join(dist, entry), { recursive: true, filter: (src) => !isInstaller(src) });
     console.log(`copied website/${entry} -> dist/${entry}`);
   }
 }

@@ -1,0 +1,30 @@
+# Keep the three dependency ecosystems patched. Grouped weekly PRs keep the
+# noise low; the CI workflow (type-check, tests, prod audit, clippy) gates
+# every update before it can merge.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # Pinned deliberately: newer monaco-editor bundles a dompurify with open
+      # advisories (see src/lib/components/json-studio/monaco-setup.ts).
+      - dependency-name: monaco-editor
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

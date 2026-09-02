@@ -1,0 +1,201 @@
+name: Release
+
+# Builds the desktop installers and publishes them to a GitHub Release.
+#
+# Trigger: pushing a version tag (v0.2.0, v1.0.0, …). Tag-only releases mean:
+#   - binaries never enter git history (the old flow grew .git by ~90 MB per
+#     release and taught SmartScreen a fresh unknown hash on every push);
+#   - each installer hash lives long enough to accumulate reputation;
+#   - every release is versioned, listed, and permanently downloadable.
+#
+# The website links to the stable "latest" asset URLs:
+#   https://github.com/<owner>/<repo>/releases/latest/download/CoreTools-Windows-Setup.exe
+# so asset names stay stable across versions and no site edit is needed.
+#
+# Release flow:  git tag v0.2.0 && git push origin v0.2.0
+#
+# Code signing (when certificates are available): add the secrets and wire
+# `bundle.windows.signCommand` (Azure Trusted Signing) or
+# `certificateThumbprint`, plus macOS `signingIdentity` + notarization —
+# see DEPLOYMENT.md §3. Tauri signs during `tauri build`; no structural
+# workflow change is needed.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never cancel a release mid-publish.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: Gate — tests, types, audit, version match
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies (lockfile-exact)
+        run: npm ci
+
+      - name: Type-check
+        run: npm run check
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=low
+
+      - name: Version strings in sync
+        run: node scripts/sync-version.mjs --check
+
+      - name: Tag matches package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          PKG="v$(node -p "require('./package.json').version")"
+          if [ "$PKG" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $PKG"
+            exit 1
+          fi
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: quality
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+            glob: "src-tauri/target/release/bundle/nsis/*-setup.exe"
+            out: CoreTools-Windows-Setup.exe
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+            glob: "src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg"
+            out: CoreTools-macOS.dmg
+          - platform: ubuntu-22.04
+            args: ""
+            glob: "src-tauri/target/release/bundle/appimage/*.AppImage"
+            out: CoreTools-Linux.AppImage
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned master
+        with:
+          toolchain: stable
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Generate app icons
+        run: npm run icon
+
+      - name: Build the desktop app
+        run: npm run tauri build -- ${{ matrix.args }}
+
+      - name: Collect the installer under its stable asset name
+        shell: bash
+        run: |
+          set -e
+          mkdir -p staging
+          src=$(ls ${{ matrix.glob }} | head -n1)
+          echo "Found installer: $src"
+          cp "$src" "staging/${{ matrix.out }}"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.out }}
+          path: staging/${{ matrix.out }}
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish GitHub Release
+    # A release is all-or-nothing: if any platform failed, nothing ships and
+    # nothing is overwritten. No mixed-version download sets, ever.
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload assets
+    steps:
+      - name: Download all built installers
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: incoming
+          merge-multiple: true
+
+      - name: Require all three installers
+        run: |
+          set -e
+          ls -lh incoming
+          for f in CoreTools-Windows-Setup.exe CoreTools-macOS.dmg CoreTools-Linux.AppImage; do
+            test -f "incoming/$f" || { echo "::error::Missing $f — refusing to publish a partial release"; exit 1; }
+          done
+
+      - name: Generate SHA-256 checksums
+        run: |
+          cd incoming
+          sha256sum CoreTools-Windows-Setup.exe CoreTools-macOS.dmg CoreTools-Linux.AppImage > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          name: CoreTools ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            Built from commit `${{ github.sha }}`.
+
+            **Verify your download** (PowerShell: `Get-FileHash <file> -Algorithm SHA256`,
+            macOS/Linux: `shasum -a 256 <file>`) against `SHA256SUMS.txt` below.
+
+            The installers are currently unsigned; SmartScreen/Gatekeeper may warn.
+            Prefer the in-browser app if you cannot verify the checksum.
+          files: |
+            incoming/CoreTools-Windows-Setup.exe
+            incoming/CoreTools-macOS.dmg
+            incoming/CoreTools-Linux.AppImage
+            incoming/SHA256SUMS.txt

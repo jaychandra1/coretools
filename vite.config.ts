@@ -1,5 +1,12 @@
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
+
+// Single-sourced from package.json (see scripts/sync-version.mjs); shown in
+// the app header so bug reports can be tied to a build.
+const { version } = JSON.parse(readFileSync("./package.json", "utf8")) as {
+  version: string;
+};
 
 // Tauri expects a fixed dev-server port. `TAURI_DEV_HOST` is injected by the
 // Tauri CLI when developing against a physical device; it is otherwise unset.
@@ -17,6 +24,9 @@ export default defineConfig(({ mode }) => {
   const isWeb = mode === "web";
   return {
     plugins: [svelte()],
+    define: {
+      __APP_VERSION__: JSON.stringify(version),
+    },
     base: isWeb ? "/app/" : "/",
     // Prevent Vite from clearing Rust compiler errors printed by the Tauri CLI.
     clearScreen: false,

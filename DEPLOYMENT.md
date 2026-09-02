@@ -67,46 +67,55 @@ A real `.exe` / `.dmg` / `.AppImage` is compiled native code produced by
 **`tauri build`**, which needs **Rust** and must run **on each target OS**. This
 can't happen on Vercel (web-only) — Vercel only builds web assets.
 
-### How installers reach the site (automated, no GitHub Releases)
+### How installers are released (tag-triggered, GitHub Releases)
 
-`.github/workflows/build-installers.yml` runs on every push to `master`:
+Two workflows own quality and distribution:
 
-1. Builds the app on **Windows, macOS, and Linux** runners (real machines).
-2. Renames each installer to a **stable name** and commits them into
-   `website/downloads/`:
-   - `CoreTools-Windows-Setup.exe`
-   - `CoreTools-macOS.dmg`
-   - `CoreTools-Linux.AppImage`
-3. That commit triggers a Vercel redeploy, so the files are served at
-   `https://<your-site>/downloads/CoreTools-Windows-Setup.exe` (etc.).
-
-The site's download buttons already point at these same-site paths (see
-`website/scripts/downloads.js`), so visitors download **straight from your
-domain** — GitHub Releases is never involved. Because the names are stable, the
-buttons keep working across versions with no edits.
+- **`.github/workflows/ci.yml`** — every push/PR: `svelte-check`, the full
+  vitest suite, a production `npm audit` (must be clean), a version-drift
+  check, and `cargo clippy` on the Rust backend. Nothing publishes from CI.
+- **`.github/workflows/release.yml`** — runs when you push a version tag:
 
 ```bash
-# Trigger it just by pushing (or run it from the Actions tab):
-git push
+# 1. Set the version once (package.json is the single source):
+#    edit package.json "version", then propagate it:
+node scripts/sync-version.mjs
+git commit -am "release: v0.3.0"
+
+# 2. Tag and push — this is the entire release action:
+git tag v0.3.0
+git push origin master v0.3.0
 ```
 
-Watch the **Actions** tab; when the `publish` job finishes it commits the
-installers and Vercel redeploys. First run takes ~10–15 min.
+The release workflow then:
 
-> The workflow regenerates icons (`npm run icon`) before building, so no icon
-> files need to be committed for CI to succeed. The auto-commit uses
-> `[skip ci]` and the trigger ignores `website/downloads/**`, so it never loops.
+1. Re-runs the quality gates and **refuses tags that don't match
+   `package.json`**.
+2. Builds on **Windows, macOS, and Linux** runners.
+3. Publishes **all three or nothing** — a failed platform build fails the
+   release; no mixed-version download sets.
+4. Creates a GitHub Release for the tag with stable asset names
+   (`CoreTools-Windows-Setup.exe`, `CoreTools-macOS.dmg`,
+   `CoreTools-Linux.AppImage`) plus a `SHA256SUMS.txt` generated over the
+   exact published files, auto-generated release notes, and the source commit.
 
-**Trade-offs to know:**
+The site's download buttons (`website/scripts/downloads.js`) point at the
+stable **`releases/latest/download/<asset>`** URLs, so they always serve the
+newest release with no site edit; every previous version stays downloadable
+from the Releases page. **Binaries are never committed to git** — the old
+per-push publish flow grew `.git` by ~90 MB per release and gave SmartScreen a
+fresh unknown hash on every push; tag-only releases also keep macOS CI minutes
+(billed at 10×) for actual releases.
 
-- **CI minutes.** macOS runners bill at **10×** minutes. Building on *every*
-  push can use your free quota quickly. To build less often, change the trigger
-  in the workflow from `push` to tags only (`on: push: tags: ['v*']`) and build
-  by running `git tag v0.1.0 && git push origin v0.1.0`.
-- **Repo/deploy size.** Committing binaries grows git history over time. If that
-  becomes a problem, host them on **Vercel Blob** instead (upload from the
-  workflow, point `downloads.js` at the Blob URLs) — same "download from your
-  site" experience without the git bloat.
+All workflow actions are **pinned to commit SHAs**, the default token is
+read-only (`contents: write` exists only on the publish job), and Dependabot
+(`.github/dependabot.yml`) keeps npm, cargo, and the pinned actions patched.
+
+> **One-time follow-ups:** commit `src-tauri/Cargo.lock`
+> (`cd src-tauri && cargo generate-lockfile`) so builds are reproducible, and
+> optionally purge the historical binaries from git history
+> (`git filter-repo --path website/downloads --invert-paths` + coordinated
+> force-push) to reclaim the ~680 MB `.git`.
 
 ### Faster: build a Windows installer locally (Windows only)
 
@@ -129,9 +138,10 @@ src-tauri/target/release/bundle/nsis/CoreTools_0.1.0_x64-setup.exe
 ```
 
 Double-click either to install. (This machine can only build the **Windows**
-installer; macOS/Linux builds require those OSes — use the automated workflow
-above for all three.) You can drop a locally-built installer into
-`website/downloads/` under the stable name to publish it manually.
+installer; macOS/Linux builds require those OSes — use the tag-triggered
+release workflow for all three.) Locally-built installers are for your own
+testing; distribution goes through GitHub Releases so every published binary
+has a version, release notes, and a checksum file.
 
 ## 3. SmartScreen blocks & code signing
 
@@ -161,8 +171,9 @@ releases. Options, cheapest first:
 Wiring it in: add the signing secrets to the repo (Settings → Secrets), then
 configure `src-tauri/tauri.conf.json` → `bundle.windows.signCommand` (Trusted
 Signing / custom signtool) or `certificateThumbprint` per the Tauri
-"Windows – Code signing" guide. The existing workflow needs no structural
-change — Tauri signs during `tauri build`.
+"Windows – Code signing" guide. `release.yml` needs no structural change —
+Tauri signs during `tauri build`; expose the secrets as env vars on the build
+job's "Build the desktop app" step.
 
 **macOS:** the `.dmg` is also unsigned — Gatekeeper shows a similar prompt.
 The fix there is an Apple Developer ID ($99/yr) + notarization.
@@ -173,19 +184,39 @@ The fix there is an Apple Developer ID ($99/yr) + notarization.
   submit the `.exe` at <https://www.microsoft.com/en-us/wdsi/filesubmission>
   as a developer; in Edge you can also right-click the blocked download →
   *Report this file as safe*.
-- The download page now explains the warning and points users to the SHA-256
-  checksums and the "Keep anyway" flow — and offers the in-browser app as the
-  zero-friction alternative.
+- The download page explains the warning, points users at each release's
+  `SHA256SUMS.txt`, and deliberately does **not** walk them through bypassing
+  SmartScreen — the guidance is: verify the checksum or use the in-browser app.
 - A **custom domain** (instead of `*.vercel.app`) modestly improves URL
   reputation.
-- Avoid rebuilding installers on every push (tag-only trigger) — fewer fresh
-  hashes means each build accumulates more reputation before being replaced.
+- Releases are already tag-only, so each installer hash lives long enough to
+  accumulate reputation instead of being replaced on every push.
+
+## Updates for installed copies
+
+There is no auto-updater (by design, the app makes no network requests — see
+SECURITY.md). The manual-update policy is:
+
+- The app shows its version in the header; each release lists changes in
+  `CHANGELOG.md` and on the GitHub Release.
+- Users update by downloading the new installer over the old one; Authenticator
+  and JSON-Studio data live in the webview profile and survive reinstalls.
+- **Watch releases**: GitHub → Watch → Custom → Releases gives an
+  email/notification feed; the Releases page also serves an Atom feed
+  (`/releases.atom`).
+- If a security fix ever ships, announce it prominently on the download page —
+  there is no other channel to reach installed copies. Revisit
+  `tauri-plugin-updater` (opt-in prompt, signed manifests) if the user base
+  grows.
 
 ## Summary checklist
 
-- [ ] `git push` the changes → Vercel serves `/` (site) and `/app` (tool), and
-      the installer workflow starts building.
-- [ ] Wait for the **Actions** run to finish → it commits installers into
-      `website/downloads/` → Vercel redeploys → download buttons work.
-- [ ] (Optional) switch the workflow to tag-only triggers to save CI minutes.
-- [ ] (Optional) set up code signing to remove OS "unknown publisher" warnings.
+- [ ] Push to `master` → **CI** must be green (types, tests, audit, clippy,
+      version sync).
+- [ ] Release: bump `package.json` version → `node scripts/sync-version.mjs`
+      → commit → `git tag vX.Y.Z && git push origin vX.Y.Z` → verify the
+      GitHub Release has all three installers + `SHA256SUMS.txt`.
+- [ ] One-time: commit `src-tauri/Cargo.lock` from a machine with Rust.
+- [ ] (Optional) purge historical binaries from git history (filter-repo).
+- [ ] (Recommended) set up code signing — Windows cert + macOS Developer ID —
+      to remove OS "unknown publisher" warnings.

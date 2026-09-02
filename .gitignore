@@ -6,3 +6,9 @@ dist-ssr
 .DS_Store
 .env
 .env.*
+
+# Installers are published to GitHub Releases by release.yml — never committed.
+website/downloads/*.exe
+website/downloads/*.dmg
+website/downloads/*.AppImage
+website/downloads/SHA256SUMS.txt
