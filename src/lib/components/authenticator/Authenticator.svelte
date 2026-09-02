@@ -7,7 +7,7 @@
   import ImportDialog from "./ImportDialog.svelte";
   import ExportDialog from "./ExportDialog.svelte";
   import SettingsDialog from "./SettingsDialog.svelte";
-  import { previewImport } from "../../core/authenticator/backup";
+  import { previewImport, type ExportableEntry } from "../../core/authenticator/backup";
   import type { ParsedAccount } from "../../core/authenticator/types";
   import type { StoredEntry } from "../../core/authenticator/db";
 
@@ -80,13 +80,16 @@
     if (authStore.settings.clipboardClear) {
       clearTimeout(clipboardTimer);
       clipboardTimer = setTimeout(() => {
-        // Only clear if the clipboard still holds the code we put there.
+        // Clear ONLY when we can verify the clipboard still holds the code we
+        // put there. readText() failing is the normal case in many browsers
+        // (permission-gated or unavailable) — clearing blind would destroy
+        // whatever the user copied since, so on any failure we do nothing.
         navigator.clipboard
           .readText()
           .then((text) => {
             if (text === code) return navigator.clipboard.writeText("");
           })
-          .catch(() => navigator.clipboard.writeText("").catch(() => {}));
+          .catch(() => {});
       }, 30_000);
     }
   }
@@ -100,6 +103,21 @@
   let deleting = $state<StoredEntry | null>(null);
   let renameIssuer = $state("");
   let renameAccount = $state("");
+  /** Snapshots taken when a dialog opens — never computed reactively in the
+   *  template, where a lock mid-render would throw or leak. */
+  let exportEntries = $state<ExportableEntry[]>([]);
+  let importExisting = $state<Array<{ secret: string; issuer: string; account: string }>>([]);
+
+  // Locking must slam every dialog shut: an Export dialog left open would keep
+  // rendering plaintext-secret QR codes on top of the lock screen.
+  $effect(() => {
+    if (authStore.locked) {
+      dialog = null;
+      renaming = null;
+      deleting = null;
+      exportEntries = [];
+    }
+  });
 
   function existingForDupCheck() {
     return authStore.entries.map((entry) => ({
@@ -107,6 +125,20 @@
       issuer: entry.issuer,
       account: entry.account,
     }));
+  }
+
+  function openImport() {
+    importExisting = existingForDupCheck();
+    dialog = "import";
+  }
+
+  function openExport() {
+    try {
+      exportEntries = authStore.exportables();
+      dialog = "export";
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Export unavailable");
+    }
   }
 
   async function handleAdd(accounts: ParsedAccount[]) {
@@ -196,11 +228,8 @@
 
       <div class="toolbar-actions">
         <button class="primary" onclick={() => (dialog = "add")}>+ Add</button>
-        <button onclick={() => (dialog = "import")}>Import</button>
-        <button
-          onclick={() => (dialog = "export")}
-          disabled={authStore.entries.length === 0}
-        >
+        <button onclick={openImport}>Import</button>
+        <button onclick={openExport} disabled={authStore.entries.length === 0}>
           Export
         </button>
         <button
@@ -243,7 +272,7 @@
           Reminder: keep a backup of your secrets in a safe place — if this
           device's data is lost, so are your codes.
         </span>
-        <button onclick={() => (dialog = "export")}>Export backup</button>
+        <button onclick={openExport}>Export backup</button>
         <button
           class="dismiss"
           aria-label="Dismiss backup reminder"
@@ -265,7 +294,7 @@
         </p>
         <div class="empty-actions">
           <button class="primary" onclick={() => (dialog = "add")}>Add account</button>
-          <button onclick={() => (dialog = "import")}>Import backup</button>
+          <button onclick={openImport}>Import backup</button>
         </div>
       </div>
     {:else if visibleEntries.length === 0}
@@ -300,25 +329,27 @@
   {/if}
 </div>
 
-{#if dialog === "add"}
-  <AddAccountDialog onclose={() => (dialog = null)} onadd={handleAdd} />
-{:else if dialog === "import"}
-  <ImportDialog
-    existing={existingForDupCheck()}
-    onclose={() => (dialog = null)}
-    onimport={handleImport}
-  />
-{:else if dialog === "export"}
-  <ExportDialog
-    entries={authStore.exportables()}
-    onclose={() => (dialog = null)}
-    ontoast={showToast}
-  />
-{:else if dialog === "settings"}
-  <SettingsDialog onclose={() => (dialog = null)} ontoast={showToast} />
+{#if !authStore.locked}
+  {#if dialog === "add"}
+    <AddAccountDialog onclose={() => (dialog = null)} onadd={handleAdd} />
+  {:else if dialog === "import"}
+    <ImportDialog
+      existing={importExisting}
+      onclose={() => (dialog = null)}
+      onimport={handleImport}
+    />
+  {:else if dialog === "export"}
+    <ExportDialog
+      entries={exportEntries}
+      onclose={() => (dialog = null)}
+      ontoast={showToast}
+    />
+  {:else if dialog === "settings"}
+    <SettingsDialog onclose={() => (dialog = null)} ontoast={showToast} />
+  {/if}
 {/if}
 
-{#if renaming}
+{#if renaming && !authStore.locked}
   <Modal title="Rename account" onclose={() => (renaming = null)}>
     <form class="rename-form" onsubmit={applyRename}>
       <label>
@@ -343,7 +374,7 @@
   </Modal>
 {/if}
 
-{#if deleting}
+{#if deleting && !authStore.locked}
   <Modal title="Delete account?" onclose={() => (deleting = null)}>
     <p>
       Delete <strong>{deleting.issuer || deleting.account}</strong>

@@ -49,11 +49,14 @@ export const tauriPlatform: Platform = {
   kind: "tauri",
   hello: tauriHello,
 
+  // Dialogs are opened in RUST (`pick_open_path` / `pick_save_path`), which
+  // canonicalizes and remembers the chosen path; the read/write commands only
+  // accept a remembered path, once. This keeps the security guarantee out of
+  // the webview: script injection cannot fabricate paths.
   async openTextFile(): Promise<LoadedFile | null> {
-    const { open } = await import("@tauri-apps/plugin-dialog");
     const { invoke } = await import("@tauri-apps/api/core");
 
-    const selected = await open({ multiple: false, directory: false });
+    const selected = await invoke<string | null>("pick_open_path");
     if (typeof selected !== "string") return null;
 
     const content = await invoke<string>("read_text_file", { path: selected });
@@ -62,10 +65,11 @@ export const tauriPlatform: Platform = {
   },
 
   async saveTextFile(suggestedName: string, content: string): Promise<boolean> {
-    const { save } = await import("@tauri-apps/plugin-dialog");
     const { invoke } = await import("@tauri-apps/api/core");
 
-    const path = await save({ defaultPath: suggestedName });
+    const path = await invoke<string | null>("pick_save_path", {
+      defaultName: suggestedName,
+    });
     if (typeof path !== "string") return false;
 
     await invoke("write_text_file", { path, contents: content });
@@ -73,10 +77,11 @@ export const tauriPlatform: Platform = {
   },
 
   async saveBinaryFile(suggestedName: string, bytes: Uint8Array): Promise<boolean> {
-    const { save } = await import("@tauri-apps/plugin-dialog");
     const { invoke } = await import("@tauri-apps/api/core");
 
-    const path = await save({ defaultPath: suggestedName });
+    const path = await invoke<string | null>("pick_save_path", {
+      defaultName: suggestedName,
+    });
     if (typeof path !== "string") return false;
 
     // Tauri v2 serializes Vec<u8> command args efficiently from number[].

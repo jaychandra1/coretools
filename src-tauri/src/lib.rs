@@ -1,65 +1,147 @@
 //! CoreTools native backend.
 //!
-//! This backend is deliberately tiny. It exposes exactly two privileged
-//! operations — reading and writing UTF-8 text files that the user explicitly
-//! selected through a native dialog. All diffing and YAML optimization happens
-//! in the frontend (in-memory), so no business logic or user data ever passes
-//! through, or is retained by, the native layer.
+//! This backend is deliberately tiny, and the trust model is enforced HERE,
+//! not in the webview: file dialogs are opened from Rust, every path they
+//! issue is canonicalized and remembered, and the read/write commands accept
+//! only a remembered path — exactly once. A compromised webview can therefore
+//! never read or write a path the user did not just pick in a native dialog.
 //!
 //! There are no network dependencies, no persistence, and no logging of file
 //! contents.
 
 mod hello;
 
+use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+
+use tauri::Manager;
+use tauri_plugin_dialog::DialogExt;
 
 /// Hard upper bound on files we are willing to read into memory (50 MiB).
 /// Protects against accidentally loading a huge/binary file and exhausting RAM.
-const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
+const MAX_READ_BYTES: u64 = 50 * 1024 * 1024;
+
+/// Hard upper bound on writes (100 MiB) — applies to text and binary alike.
+const MAX_WRITE_BYTES: usize = 100 * 1024 * 1024;
+
+/// Paths the user has explicitly picked in a native dialog, canonicalized.
+/// Each entry authorizes exactly one file operation and is consumed by it.
+#[derive(Default)]
+struct AuthorizedPaths(Mutex<HashSet<PathBuf>>);
+
+/// Canonical form for a file that is about to be written: the parent must
+/// exist and canonicalize; the file itself may not exist yet.
+fn canonical_for_write(path: &Path) -> Result<PathBuf, String> {
+    let parent = path.parent().ok_or("Path has no parent directory.")?;
+    let name = path.file_name().ok_or("Path has no file name.")?;
+    let parent = fs::canonicalize(parent)
+        .map_err(|e| format!("Could not resolve the target directory: {e}"))?;
+    Ok(parent.join(name))
+}
+
+/// Remove `path` from the authorized set. Returns false when it was never
+/// authorized (or was already used) — the caller must refuse the operation.
+fn consume(state: &AuthorizedPaths, canonical: &Path) -> bool {
+    state.0.lock().map(|mut set| set.remove(canonical)).unwrap_or(false)
+}
+
+/// Show the native open-dialog and authorize the picked file for one read.
+/// Runs the blocking dialog off the main thread. Returns None on cancel.
+#[tauri::command]
+async fn pick_open_path(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    let dialog_app = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        dialog_app.dialog().file().blocking_pick_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let Some(file_path) = picked else { return Ok(None) };
+    let path = file_path.into_path().map_err(|e| e.to_string())?;
+    let canonical = fs::canonicalize(&path)
+        .map_err(|e| format!("Could not resolve the selected file: {e}"))?;
+
+    let state = app.state::<AuthorizedPaths>();
+    state
+        .0
+        .lock()
+        .map_err(|_| "Internal state unavailable".to_string())?
+        .insert(canonical.clone());
+    Ok(Some(canonical.to_string_lossy().into_owned()))
+}
+
+/// Show the native save-dialog and authorize the chosen path for one write.
+#[tauri::command]
+async fn pick_save_path(
+    app: tauri::AppHandle,
+    default_name: String,
+) -> Result<Option<String>, String> {
+    let dialog_app = app.clone();
+    let picked = tauri::async_runtime::spawn_blocking(move || {
+        dialog_app
+            .dialog()
+            .file()
+            .set_file_name(&default_name)
+            .blocking_save_file()
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let Some(file_path) = picked else { return Ok(None) };
+    let path = file_path.into_path().map_err(|e| e.to_string())?;
+    let canonical = canonical_for_write(&path)?;
+
+    let state = app.state::<AuthorizedPaths>();
+    state
+        .0
+        .lock()
+        .map_err(|_| "Internal state unavailable".to_string())?
+        .insert(canonical.clone());
+    Ok(Some(canonical.to_string_lossy().into_owned()))
+}
 
 /// Read a user-selected text file into a string.
 ///
-/// The path always originates from a native open-dialog on the frontend, never
-/// from untrusted content. We still validate defensively: the target must be a
-/// regular file and within the size limit.
+/// The path must have been issued by `pick_open_path` (canonical match,
+/// single use). Defensive checks on top: regular file, size cap, UTF-8 only.
 #[tauri::command]
-fn read_text_file(path: String) -> Result<String, String> {
-    let p = Path::new(&path);
+fn read_text_file(
+    state: tauri::State<'_, AuthorizedPaths>,
+    path: String,
+) -> Result<String, String> {
+    let canonical = fs::canonicalize(Path::new(&path))
+        .map_err(|e| format!("Could not resolve file: {e}"))?;
+    if !consume(&state, &canonical) {
+        return Err("Path was not issued by a file dialog.".into());
+    }
 
-    if !p.is_file() {
+    if !canonical.is_file() {
         return Err("Selected path is not a regular file.".into());
     }
 
-    let meta = fs::metadata(p).map_err(|e| format!("Could not read file metadata: {e}"))?;
-    if meta.len() > MAX_FILE_BYTES {
+    let meta =
+        fs::metadata(&canonical).map_err(|e| format!("Could not read file metadata: {e}"))?;
+    if meta.len() > MAX_READ_BYTES {
         return Err(format!(
             "File is too large ({} bytes). Maximum supported size is {} bytes.",
             meta.len(),
-            MAX_FILE_BYTES
+            MAX_READ_BYTES
         ));
     }
 
-    fs::read_to_string(p).map_err(|e| format!("Could not read file as UTF-8 text: {e}"))
+    fs::read_to_string(&canonical).map_err(|e| format!("Could not read file as UTF-8 text: {e}"))
 }
 
-/// Write `contents` to a user-selected destination path.
-///
-/// The path always originates from a native save-dialog on the frontend. This
-/// is the only way data leaves the application, and it happens only when the
-/// user explicitly confirms a destination.
+/// Write `contents` to a destination issued by `pick_save_path` (canonical
+/// match, single use, size-capped).
 #[tauri::command]
-fn write_text_file(path: String, contents: String) -> Result<(), String> {
-    fs::write(Path::new(&path), contents)
-        .map_err(|e| format!("Could not write file: {e}"))
-}
-
-/// Binary counterpart of `write_text_file` (e.g. .xlsx exports from JSON
-/// Studio). Same trust model: the path comes from a native save-dialog, the
-/// bytes are produced entirely in the frontend, capped at 100 MiB.
-#[tauri::command]
-fn write_binary_file(path: String, contents: Vec<u8>) -> Result<(), String> {
-    const MAX_WRITE_BYTES: usize = 100 * 1024 * 1024;
+fn write_text_file(
+    state: tauri::State<'_, AuthorizedPaths>,
+    path: String,
+    contents: String,
+) -> Result<(), String> {
     if contents.len() > MAX_WRITE_BYTES {
         return Err(format!(
             "Refusing to write {} bytes (limit {} bytes).",
@@ -67,15 +149,43 @@ fn write_binary_file(path: String, contents: Vec<u8>) -> Result<(), String> {
             MAX_WRITE_BYTES
         ));
     }
-    fs::write(Path::new(&path), contents)
-        .map_err(|e| format!("Could not write file: {e}"))
+    let canonical = canonical_for_write(Path::new(&path))?;
+    if !consume(&state, &canonical) {
+        return Err("Path was not issued by a file dialog.".into());
+    }
+    fs::write(&canonical, contents).map_err(|e| format!("Could not write file: {e}"))
+}
+
+/// Binary counterpart of `write_text_file` (e.g. .xlsx exports). Same trust
+/// model: dialog-issued path, single use, size cap.
+#[tauri::command]
+fn write_binary_file(
+    state: tauri::State<'_, AuthorizedPaths>,
+    path: String,
+    contents: Vec<u8>,
+) -> Result<(), String> {
+    if contents.len() > MAX_WRITE_BYTES {
+        return Err(format!(
+            "Refusing to write {} bytes (limit {} bytes).",
+            contents.len(),
+            MAX_WRITE_BYTES
+        ));
+    }
+    let canonical = canonical_for_write(Path::new(&path))?;
+    if !consume(&state, &canonical) {
+        return Err("Path was not issued by a file dialog.".into());
+    }
+    fs::write(&canonical, contents).map_err(|e| format!("Could not write file: {e}"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(AuthorizedPaths::default())
         .invoke_handler(tauri::generate_handler![
+            pick_open_path,
+            pick_save_path,
             read_text_file,
             write_text_file,
             write_binary_file,

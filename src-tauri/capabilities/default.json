@@ -1,11 +1,9 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimal capability set: native open/save dialogs only. No filesystem, shell, HTTP, or network permissions are granted.",
+  "description": "Minimal capability set. File dialogs are opened from Rust (pick_open_path / pick_save_path), so the webview holds NO dialog permission — it can only call the app's own guarded commands.",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "dialog:allow-open",
-    "dialog:allow-save"
+    "core:default"
   ]
 }

@@ -49,18 +49,30 @@
   let stream: MediaStream | null = null;
   let scanTimer: ReturnType<typeof setInterval> | null = null;
   const scanCanvas = document.createElement("canvas");
+  // getUserMedia can resolve AFTER the dialog/tab is torn down (the whole time
+  // the permission prompt is up). Each stopCamera() bumps the generation; a
+  // start that awakes stale must stop the tracks it just received and bail,
+  // or the camera stays live with no UI attached — a privacy bug.
+  let cameraGeneration = 0;
 
   async function startCamera() {
     cameraError = "";
+    const mine = ++cameraGeneration;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
+      const media = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "environment" },
         audio: false,
       });
+      if (mine !== cameraGeneration) {
+        media.getTracks().forEach((t) => t.stop());
+        return;
+      }
+      stream = media;
       if (video) {
         video.srcObject = stream;
-        await video.play();
+        await video.play().catch(() => {});
       }
+      if (mine !== cameraGeneration) return; // torn down during play()
       scanTimer = setInterval(() => {
         if (!video || found) return;
         const text = decodeQrFromVideo(video, scanCanvas);
@@ -70,12 +82,14 @@
         }
       }, 250);
     } catch {
+      if (mine !== cameraGeneration) return;
       cameraError =
         "Camera unavailable (no device, or permission denied). Use the Image tab to upload a screenshot instead.";
     }
   }
 
   function stopCamera() {
+    cameraGeneration++;
     if (scanTimer) clearInterval(scanTimer);
     scanTimer = null;
     stream?.getTracks().forEach((t) => t.stop());

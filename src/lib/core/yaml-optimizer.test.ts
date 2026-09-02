@@ -278,12 +278,90 @@ spec:
     expect(stripped[1].reason).toContain("2 entries");
   });
 
-  it("emits clean formatting with no blank lines", () => {
+  it("emits clean formatting between documents", () => {
     const r = optimizeManifest(
       "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: a\ndata:\n  k: v\n---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: b\ndata:\n  k: v\n",
     );
-    expect(r.output).not.toMatch(/\n{2,}/);
+    // No blank lines around the separator itself; plain-mapping docs stay tight.
+    expect(r.output).not.toMatch(/\n\n---|---\n\n/);
+    expect(r.output).not.toMatch(/\n{2,}/); // nothing here is a block scalar
     expect(r.output.endsWith("\n")).toBe(true);
     expect(r.output).toContain("\n---\n");
+  });
+
+  // Regression: the formatter must NEVER collapse blank lines inside
+  // block-scalar values — that silently corrupts ConfigMap payloads.
+  it("preserves blank lines inside block-scalar values byte-for-byte", () => {
+    const payload = "server {\n  listen 80;\n}\n\n# second section\n\nupstream app {}\n";
+    const r = optimizeManifest(
+      [
+        "apiVersion: v1",
+        "kind: ConfigMap",
+        "metadata:",
+        "  name: nginx",
+        "data:",
+        "  nginx.conf: |",
+        ...payload.trimEnd().split("\n").map((l) => `    ${l}`),
+        "",
+      ].join("\n"),
+    );
+    expect(r.errors).toEqual([]);
+    const roundTripped = optimizeManifest(r.output); // parseable output
+    expect(roundTripped.errors).toEqual([]);
+    // The blank lines inside the scalar survive in the rendered output.
+    expect(r.output).toContain("}\n\n    # second section\n\n");
+  });
+
+  // Regression: clean() must treat user-data maps as opaque payload.
+  it("never strips keys, nulls or empties inside user data maps", () => {
+    const r = optimizeManifest(
+      [
+        "apiVersion: v1",
+        "kind: ConfigMap",
+        "metadata:",
+        "  name: cm",
+        "  labels:",
+        '    generation: "4"',
+        "  annotations:",
+        "    kubectl.kubernetes.io/last-applied-configuration: noisy",
+        "    empty-on-purpose: \"\"",
+        "data:",
+        "  uid: abc-123",
+        "  finalizers: keep-me",
+        "  nested: '{}'",
+      ].join("\n"),
+    );
+    expect(r.errors).toEqual([]);
+    // User payload keys that collide with server-managed names survive.
+    expect(r.output).toContain("uid: abc-123");
+    expect(r.output).toContain("finalizers: keep-me");
+    expect(r.output).toContain('generation: "4"');
+    expect(r.output).toContain('empty-on-purpose: ""');
+    // The documented noise-annotation strip still works at annotation level.
+    expect(r.output).not.toContain("last-applied-configuration");
+    expect(
+      r.changes.some(
+        (c) =>
+          c.reason === "tooling-generated annotation" &&
+          c.path === "metadata.annotations.kubectl.kubernetes.io/last-applied-configuration",
+      ),
+    ).toBe(true);
+  });
+
+  it("still strips server-managed fields at schema level", () => {
+    const r = optimizeManifest(
+      [
+        "apiVersion: v1",
+        "kind: ConfigMap",
+        "metadata:",
+        "  name: cm",
+        "  uid: real-server-uid",
+        "  resourceVersion: '42'",
+        "data:",
+        "  k: v",
+      ].join("\n"),
+    );
+    expect(r.output).not.toContain("real-server-uid");
+    expect(r.output).not.toContain("resourceVersion");
   });
 });

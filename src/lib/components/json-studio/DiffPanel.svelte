@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { monaco, currentMonacoTheme } from "./monaco-setup";
   import { studioStore } from "./studio-store.svelte";
   import { diffJson, summarizeDiff } from "../../core/json-studio/json-diff";
@@ -6,7 +7,8 @@
   import type { DiffEntry } from "../../core/json-studio/types";
 
   let container: HTMLDivElement | undefined = $state();
-  let diffEditor: monaco.editor.IStandaloneDiffEditor | null = null;
+  // $state so the two model-sync effects re-run once the editor exists.
+  let diffEditor = $state<monaco.editor.IStandaloneDiffEditor | null>(null);
   let applyingExternal = false;
 
   // Left side: the working document (read-only mirror, pretty-printed when
@@ -18,18 +20,28 @@
     return parsed.ok ? JSON.stringify(parsed.value, null, 2) : text;
   });
 
+  // Creation depends ONLY on the container. Both text sources are read
+  // through untrack(): tracking them here would tear down and rebuild the
+  // whole diff editor (both models, cursor, scroll, right-pane undo) on every
+  // keystroke — and the seeding write below would make the effect invalidate
+  // itself on mount. Text changes flow through the two sync effects below.
   $effect(() => {
     if (!container) return;
-    const original = monaco.editor.createModel(leftText, "json");
-    const modified = monaco.editor.createModel(
-      studioStore.rightText || leftText,
-      "json",
-    );
-    if (!studioStore.rightText) {
-      // Seed the right side once so there's something to edit against.
-      studioStore.rightText = leftText;
-    }
-    diffEditor = monaco.editor.createDiffEditor(container, {
+
+    const { original, modified } = untrack(() => {
+      if (!studioStore.rightText) {
+        // Seed the right side once so there's something to edit against.
+        studioStore.rightText = leftText;
+      }
+      return {
+        original: monaco.editor.createModel(leftText, "json"),
+        modified: monaco.editor.createModel(studioStore.rightText, "json"),
+      };
+    });
+
+    // LOCAL instance: reading the $state `diffEditor` back inside this effect
+    // would make it self-dependent and loop, re-creating diff editors forever.
+    const instance = monaco.editor.createDiffEditor(container, {
       theme: currentMonacoTheme(),
       automaticLayout: true,
       renderSideBySide: true,
@@ -38,7 +50,7 @@
       fontSize: 12,
       scrollBeyondLastLine: false,
     });
-    diffEditor.setModel({ original, modified });
+    instance.setModel({ original, modified });
 
     const subscription = modified.onDidChangeContent(() => {
       if (applyingExternal) return;
@@ -46,9 +58,11 @@
       studioStore.onDocChanged();
     });
 
+    diffEditor = instance;
+
     return () => {
       subscription.dispose();
-      diffEditor?.dispose();
+      instance.dispose();
       original.dispose();
       modified.dispose();
       diffEditor = null;

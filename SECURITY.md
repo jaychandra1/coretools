@@ -50,13 +50,22 @@ be audited rather than taken on faith.
 ## 3. Minimal, guarded native surface
 
 The Rust backend (`src-tauri/src/lib.rs`, `src-tauri/src/hello.rs`) exposes
-exactly seven commands:
+exactly nine commands. **The dialog-origin rule is enforced in Rust, not by
+frontend convention:** the file dialogs are opened by Rust
+(`pick_open_path` / `pick_save_path`), every path they issue is canonicalized
+and stored in managed state, and each read/write command accepts only a
+stored path — consuming it on use. A compromised webview therefore cannot
+read or write any path the user did not just pick in a native dialog. The
+webview holds no dialog capability of its own
+(`capabilities/default.json` grants only `core:default`).
 
 | Command | Purpose | Guards |
 | --- | --- | --- |
-| `read_text_file(path)` | Read a user-selected file | Path must originate from the native open-dialog; must be a regular file; rejected if larger than 50 MiB; read as UTF-8 only |
-| `write_text_file(path, contents)` | Write to a user-selected path | Path must originate from the native save-dialog |
-| `write_binary_file(path, contents)` | Binary counterpart (e.g. .xlsx exports) | Same save-dialog trust model; refuses writes above 100 MiB |
+| `pick_open_path()` | Native open-dialog | Runs off the main thread; canonicalizes and authorizes the picked file for one read |
+| `pick_save_path(defaultName)` | Native save-dialog | Canonicalizes against the (existing) parent directory; authorizes for one write |
+| `read_text_file(path)` | Read a user-selected file | Path must match a dialog-issued authorization (single use); must be a regular file; rejected if larger than 50 MiB; read as UTF-8 only |
+| `write_text_file(path, contents)` | Write to a user-selected path | Dialog-issued authorization (single use); refuses writes above 100 MiB |
+| `write_binary_file(path, contents)` | Binary counterpart (e.g. .xlsx exports) | Same single-use authorization; refuses writes above 100 MiB |
 | `hello_available()` | Report whether Windows Hello is set up | Read-only capability probe; Windows-only (`false` elsewhere) |
 | `hello_create_key(challenge)` | Create/replace the app's Hello key and sign the enrollment challenge | OS shows the Hello verification prompt; challenge limited to 128 bytes; never sees secrets or passwords |
 | `hello_sign(challenge)` | Sign the stored challenge to unlock | OS enforces a biometric/PIN verification on **every** call; challenge limited to 128 bytes |

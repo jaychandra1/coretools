@@ -74,16 +74,26 @@ function isEmptyContainer(value: unknown): boolean {
  * Recursively clean a parsed value, recording every removal against `changes`.
  * `topLevel` is true only for the root object of a document, which lets us
  * apply rules (like stripping `status`) that only make sense there.
+ *
+ * `inUserData` is true underneath any USER_DATA_KEYS map (labels, data, …):
+ * everything there is the user's payload, not Kubernetes schema, so no
+ * removal rule may touch it — a ConfigMap is allowed to contain a key named
+ * `uid`, a null value, or an empty map. The one exception is tooling-noise
+ * annotations, which by definition live as direct children of an
+ * `annotations` map and are matched by position (`parentKey`), never by
+ * name-anywhere.
  */
 function clean(
   value: unknown,
   path: string,
   changes: OptimizeChange[],
   topLevel: boolean,
+  inUserData = false,
+  parentKey: string | null = null,
 ): unknown {
   if (Array.isArray(value)) {
     return value
-      .map((item, i) => clean(item, `${path}[${i}]`, changes, false))
+      .map((item, i) => clean(item, `${path}[${i}]`, changes, false, inUserData, parentKey))
       .filter((item) => item !== undefined);
   }
 
@@ -94,32 +104,41 @@ function clean(
   for (const [key, raw] of Object.entries(value)) {
     const childPath = path ? `${path}.${key}` : key;
 
-    if (SERVER_MANAGED_FIELDS.has(key)) {
-      changes.push({ path: childPath, action: "removed", reason: "server-managed field" });
-      continue;
-    }
-
-    if (topLevel && key === "status") {
-      changes.push({ path: childPath, action: "removed", reason: "cluster-reconciled status block" });
-      continue;
-    }
-
-    if (NOISE_ANNOTATIONS.has(key)) {
+    if (parentKey === "annotations" && NOISE_ANNOTATIONS.has(key)) {
       changes.push({ path: childPath, action: "removed", reason: "tooling-generated annotation" });
       continue;
     }
 
-    const cleaned = clean(raw, childPath, changes, false);
+    if (!inUserData) {
+      if (SERVER_MANAGED_FIELDS.has(key)) {
+        changes.push({ path: childPath, action: "removed", reason: "server-managed field" });
+        continue;
+      }
 
-    if (cleaned === null) {
-      changes.push({ path: childPath, action: "removed", reason: "null value" });
-      continue;
+      if (topLevel && key === "status") {
+        changes.push({ path: childPath, action: "removed", reason: "cluster-reconciled status block" });
+        continue;
+      }
     }
 
-    // Never drop required scaffolding keys, even if empty after cleaning.
-    if (isEmptyContainer(cleaned) && !(topLevel && REQUIRED_TOP_LEVEL.has(key))) {
-      changes.push({ path: childPath, action: "removed", reason: "empty value" });
-      continue;
+    const childInUserData = inUserData || USER_DATA_KEYS.has(key);
+    // `parentKey` marks only the schema→user-data boundary, so the noise rule
+    // matches metadata.annotations children but never `annotations` nested
+    // inside data/labels/etc.
+    const boundaryKey = !inUserData && childInUserData ? key : null;
+    const cleaned = clean(raw, childPath, changes, false, childInUserData, boundaryKey);
+
+    if (!inUserData) {
+      if (cleaned === null) {
+        changes.push({ path: childPath, action: "removed", reason: "null value" });
+        continue;
+      }
+
+      // Never drop required scaffolding keys, even if empty after cleaning.
+      if (isEmptyContainer(cleaned) && !(topLevel && REQUIRED_TOP_LEVEL.has(key))) {
+        changes.push({ path: childPath, action: "removed", reason: "empty value" });
+        continue;
+      }
     }
 
     result[key] = cleaned;
@@ -698,11 +717,14 @@ export function optimizeManifest(
   }
 
   // Canonical formatting: 2-space indent, no line wrapping, single trailing
-  // newline per document, and no blank lines between documents.
+  // newline per document. Blank lines are trimmed ONLY at each document's
+  // edges — never inside it, because block-scalar values (ConfigMap payloads
+  // like nginx.conf or shell scripts) legitimately contain blank lines and
+  // must survive byte-for-byte.
   const rendered = cleanedDocs
     .map((doc) =>
       stringify(doc, { indent: 2, lineWidth: 0, sortMapEntries: false })
-        .replace(/\n{2,}/g, "\n")
+        .replace(/^\n+/, "")
         .trimEnd(),
     )
     .join("\n---\n")

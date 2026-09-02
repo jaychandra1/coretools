@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { monaco, currentMonacoTheme, type EditorMarker } from "./monaco-setup";
 
   let {
@@ -16,37 +17,52 @@
   } = $props();
 
   let container: HTMLDivElement | undefined = $state();
-  let editor: monaco.editor.IStandaloneCodeEditor | null = null;
+  // $state so the value/readOnly/markers sync effects below re-run when the
+  // editor instance appears (or is ever recreated), not only on prop changes.
+  let editor = $state<monaco.editor.IStandaloneCodeEditor | null>(null);
   let applyingExternal = false;
 
+  // Creation depends ONLY on the container. Every prop is read through
+  // untrack(): reading `value` (which the change handler below writes) as a
+  // tracked dependency would invalidate this effect on each keystroke,
+  // disposing and recreating the editor — destroying cursor, scroll, find
+  // state and the undo stack. Prop changes flow through the sync effects
+  // further down instead.
   $effect(() => {
     if (!container) return;
-    editor = monaco.editor.create(container, {
-      value,
-      language,
-      theme: currentMonacoTheme(),
-      readOnly,
-      automaticLayout: true,
-      minimap: { enabled: false },
-      fontSize: 12.5,
-      fontFamily:
-        'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
-      scrollBeyondLastLine: false,
-      tabSize: 2,
-      wordWrap: "off",
-      renderWhitespace: "none",
-      fixedOverflowWidgets: true,
-      ariaLabel,
+    // Work with a LOCAL instance throughout this effect: reading the $state
+    // `editor` back after writing it would make the effect self-dependent and
+    // loop forever, re-creating editors.
+    const instance = untrack(() =>
+      monaco.editor.create(container!, {
+        value,
+        language,
+        theme: currentMonacoTheme(),
+        readOnly,
+        automaticLayout: true,
+        minimap: { enabled: false },
+        fontSize: 12.5,
+        fontFamily:
+          'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+        scrollBeyondLastLine: false,
+        tabSize: 2,
+        wordWrap: "off",
+        renderWhitespace: "none",
+        fixedOverflowWidgets: true,
+        ariaLabel,
+      }),
+    );
+
+    const subscription = instance.onDidChangeModelContent(() => {
+      if (applyingExternal) return;
+      value = instance.getValue();
     });
 
-    const subscription = editor.onDidChangeModelContent(() => {
-      if (applyingExternal || !editor) return;
-      value = editor.getValue();
-    });
+    editor = instance;
 
     return () => {
       subscription.dispose();
-      editor?.dispose();
+      instance.dispose();
       editor = null;
     };
   });
