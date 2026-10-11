@@ -18,9 +18,14 @@
 #[cfg(windows)]
 const KEY_NAME: &str = "io.coretools.authenticator";
 
+/// Throwaway key used only to make Windows verify the user (cloud restore
+/// gate). Separate from KEY_NAME so it can never disturb Hello unlock.
+#[cfg(windows)]
+const VERIFY_KEY_NAME: &str = "io.coretools.authenticator.verify";
+
 #[cfg(windows)]
 mod imp {
-    use super::KEY_NAME;
+    use super::{KEY_NAME, VERIFY_KEY_NAME};
     use windows::core::{w, HSTRING, PCWSTR};
     use windows::Security::Credentials::{
         KeyCredentialCreationOption, KeyCredentialManager, KeyCredentialStatus,
@@ -133,6 +138,33 @@ mod imp {
         sign_with(&credential, challenge)
     }
 
+    /// Make Windows verify the user (biometric/PIN) by creating a throwaway
+    /// Hello key, then delete it. Creating a key credential always requires
+    /// a successful Hello verification, and this reuses the exact API the
+    /// unlock path already relies on — without touching the unlock key.
+    pub fn verify_user() -> Result<(), String> {
+        foreground_hello_dialog(); // the prompt opens in the background otherwise
+        let result = KeyCredentialManager::RequestCreateAsync(
+            &HSTRING::from(VERIFY_KEY_NAME),
+            KeyCredentialCreationOption::ReplaceExisting,
+        )
+        .map_err(|e| e.to_string())?
+        .get()
+        .map_err(|e| e.to_string())?;
+        let status = result.Status().map_err(|e| e.to_string())?;
+
+        // Best effort cleanup either way; a leftover throwaway key is inert
+        // and is replaced on the next verification.
+        if let Ok(op) = KeyCredentialManager::DeleteAsync(&HSTRING::from(VERIFY_KEY_NAME)) {
+            let _ = op.get();
+        }
+
+        if status != KeyCredentialStatus::Success {
+            return Err(status_error(status));
+        }
+        Ok(())
+    }
+
     pub fn delete() -> Result<(), String> {
         // Deleting a key that no longer exists is fine — disabling is idempotent.
         match KeyCredentialManager::DeleteAsync(&HSTRING::from(KEY_NAME)) {
@@ -190,6 +222,20 @@ pub fn hello_sign(challenge: Vec<u8>) -> Result<Vec<u8>, String> {
     #[cfg(windows)]
     {
         imp::open_and_sign(&challenge)
+    }
+    #[cfg(not(windows))]
+    {
+        Err("hello_unsupported".into())
+    }
+}
+
+/// Cloud-restore gate: Windows verifies the user (biometric/PIN prompt).
+/// Never touches the unlock key; rejects unless verification succeeds.
+#[tauri::command]
+pub fn hello_verify_user() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        imp::verify_user()
     }
     #[cfg(not(windows))]
     {

@@ -21,6 +21,16 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Authenticator cloud backup (opt-in, Google Drive): HTTPS client (rustls,
+# bundled roots — no system OpenSSL), OS keychain for the OAuth refresh
+# token, and PKCE primitives. keyring's platform features are target-gated:
+# each OS only compiles its own store.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.2"
+
 # Windows Hello (Authenticator unlock). WinRT KeyCredentialManager bindings;
 # compiled only on Windows targets.
 [target.'cfg(windows)'.dependencies]

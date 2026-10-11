@@ -111,14 +111,25 @@ export async function unwrapKeyBytes(
   return base64ToBytes(await decryptString(wrappingKey, blob));
 }
 
+function gcmParams(iv: Uint8Array, aad?: Uint8Array): AesGcmParams {
+  return aad
+    ? { name: "AES-GCM", iv: iv as BufferSource, additionalData: aad as BufferSource }
+    : { name: "AES-GCM", iv: iv as BufferSource };
+}
+
+/**
+ * `aad` (additional authenticated data) is bound into the GCM tag without
+ * being encrypted — decryption fails unless the exact same bytes are given.
+ */
 export async function encryptString(
   key: CryptoKey,
   plaintext: string,
+  aad?: Uint8Array,
 ): Promise<EncryptedBlob> {
   const iv = randomBytes(12);
   const ct = new Uint8Array(
     await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv: iv as BufferSource },
+      gcmParams(iv, aad),
       key,
       new TextEncoder().encode(plaintext) as BufferSource,
     ),
@@ -130,9 +141,10 @@ export async function encryptString(
 export async function decryptString(
   key: CryptoKey,
   blob: EncryptedBlob,
+  aad?: Uint8Array,
 ): Promise<string> {
   const plain = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: base64ToBytes(blob.iv) as BufferSource },
+    gcmParams(base64ToBytes(blob.iv), aad),
     key,
     base64ToBytes(blob.ct) as BufferSource,
   );

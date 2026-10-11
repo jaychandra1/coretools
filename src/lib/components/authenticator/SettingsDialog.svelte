@@ -1,13 +1,17 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
   import { authStore } from "./store.svelte";
+  import { cloudBackup } from "./cloud.svelte";
 
   let {
     onclose,
     ontoast,
+    onrestore,
   }: {
     onclose: () => void;
     ontoast: (message: string) => void;
+    /** Open the restore dialog, optionally preselecting a version. */
+    onrestore: (preselectId?: string) => void;
   } = $props();
 
   let error = $state("");
@@ -114,6 +118,108 @@
     }
   }
 
+  // ---- cloud backup ------------------------------------------------------------
+
+  const cloudBusy = $derived(cloudBackup.activity !== null);
+
+  function formatWhen(ms: number | null | undefined): string {
+    if (!ms) return "Never";
+    return new Date(ms).toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+  }
+
+  const cloudStatus = $derived.by((): { tone: "ok" | "muted" | "warn" | "bad"; text: string } => {
+    switch (cloudBackup.status) {
+      case "up-to-date":
+        return { tone: "ok", text: "Up to date" };
+      case "pending":
+        return {
+          tone: "muted",
+          text: authStore.locked
+            ? "Changes waiting — backs up after unlock"
+            : cloudBackup.config?.autoBackup
+              ? "Changes waiting to back up…"
+              : "Changes not backed up yet",
+        };
+      case "working":
+        return {
+          tone: "muted",
+          text:
+            cloudBackup.activity === "backing-up"
+              ? "Backing up…"
+              : cloudBackup.activity === "restoring"
+                ? "Restoring…"
+                : cloudBackup.activity === "deleting"
+                  ? "Deleting backups…"
+                  : "Working…",
+        };
+      case "retrying":
+        return {
+          tone: "warn",
+          text: `Couldn't reach Google Drive — retrying at ${new Date(cloudBackup.retryAt ?? 0).toLocaleTimeString(undefined, { timeStyle: "short" })}`,
+        };
+      case "error":
+        return { tone: "bad", text: cloudBackup.lastError ?? "Backup failed" };
+      case "conflict":
+        return {
+          tone: "warn",
+          text: `Newer backup from ${cloudBackup.conflict?.deviceLabel || "another device"} — resolve below`,
+        };
+      case "needs-password":
+        return { tone: "warn", text: "Paused — set an encryption password" };
+      case "reconnect":
+        return { tone: "bad", text: "Google access lost — reconnect to resume" };
+      default:
+        return { tone: "muted", text: "" };
+    }
+  });
+
+  async function connectCloud() {
+    await cloudBackup.connect();
+  }
+
+  function close() {
+    // Don't leave a sign-in waiting on the browser behind a closed dialog.
+    if (cloudBackup.activity === "connecting") void cloudBackup.cancelSignIn();
+    onclose();
+  }
+
+  async function disconnectCloud() {
+    if (
+      !window.confirm(
+        "Disconnect your Google account? Automatic backups stop. Backups already in Google Drive are kept until you delete them.",
+      )
+    ) {
+      return;
+    }
+    await cloudBackup.disconnect();
+  }
+
+  async function deleteCloudBackups() {
+    if (
+      !window.confirm(
+        "Permanently delete ALL CoreTools backups from your Google Drive? You won't be able to restore them on a new device. This cannot be undone.",
+      )
+    ) {
+      return;
+    }
+    await cloudBackup.deleteAllBackups();
+  }
+
+  async function keepThisDevice() {
+    const other = cloudBackup.conflict?.deviceLabel || "the other device";
+    if (
+      !window.confirm(
+        `Upload this device's accounts as the newest backup? Accounts added on ${other} that aren't here won't be in it (its backup stays available as an older version).`,
+      )
+    ) {
+      return;
+    }
+    await cloudBackup.keepThisDevice();
+  }
+
   // ---- danger zone -----------------------------------------------------------
 
   let wipeConfirm = $state("");
@@ -130,7 +236,7 @@
   }
 </script>
 
-<Modal title="Authenticator settings" {onclose}>
+<Modal title="Authenticator settings" onclose={close}>
   <section>
     <h3>Encryption password</h3>
     {#if settingNew}
@@ -179,7 +285,13 @@
       </button>
     </form>
 
-    {#if !settingNew}
+    {#if !settingNew && cloudBackup.connected}
+      <p class="muted hint">
+        Changing the password re-encrypts future cloud backups; older backup
+        versions keep the password they were made with. To remove the
+        password, disconnect cloud backup first — backups require it.
+      </p>
+    {:else if !settingNew}
       <form class="remove" onsubmit={removePassword}>
         <input
           type="password"
@@ -194,6 +306,128 @@
       </form>
     {/if}
   </section>
+
+  {#if cloudBackup.supported}
+    <section>
+      <h3>Cloud backup (Google Drive)</h3>
+      {#if !cloudBackup.configured}
+        <p class="muted">
+          Google sign-in isn't configured in this build of CoreTools, so cloud
+          backup is unavailable. Use Export for manual backups.
+        </p>
+      {:else if !cloudBackup.connected}
+        <p class="muted">
+          Back up every account automatically to your Google Drive —
+          <strong>end-to-end encrypted</strong> with your encryption password
+          before it leaves this device, so Google can't read it. On a new
+          device or after a reinstall, sign in and restore.
+        </p>
+        {#if cloudBackup.needsReconnect && cloudBackup.config?.email}
+          <p class="notice warning">
+            Backups to {cloudBackup.config.email} stopped because Google access
+            was lost. Reconnect to resume.
+          </p>
+        {/if}
+        {#if !authStore.encrypted}
+          <p class="notice warning">
+            Set an encryption password above first — it encrypts your backups,
+            and you'll need it to restore them.
+          </p>
+        {/if}
+        <div class="row">
+          {#if cloudBackup.activity === "connecting"}
+            <span class="waiting">Waiting for Google sign-in in your browser…</span>
+            <button onclick={() => cloudBackup.cancelSignIn()}>Cancel</button>
+          {:else}
+            <button
+              class="primary"
+              onclick={connectCloud}
+              disabled={!authStore.encrypted || cloudBusy}
+            >
+              {cloudBackup.needsReconnect ? "Reconnect Google account" : "Connect Google Account"}
+            </button>
+            <button onclick={() => onrestore()} disabled={cloudBusy}>
+              Restore from Google Drive…
+            </button>
+          {/if}
+        </div>
+      {:else}
+        <dl class="cloud-status">
+          <dt>Account</dt>
+          <dd>{cloudBackup.account}</dd>
+          <dt>Status</dt>
+          <dd class="tone-{cloudStatus.tone}">{cloudStatus.text}</dd>
+          <dt>Last backup</dt>
+          <dd>{formatWhen(cloudBackup.config?.lastBackupAt)}</dd>
+          {#if cloudBackup.config?.lastRestoreAt}
+            <dt>Last restore</dt>
+            <dd>{formatWhen(cloudBackup.config.lastRestoreAt)}</dd>
+          {/if}
+        </dl>
+
+        {#if cloudBackup.conflict}
+          <p class="notice warning">
+            {cloudBackup.conflict.deviceLabel || "Another device"} backed up at
+            {new Date(cloudBackup.conflict.createdTime).toLocaleString(undefined, {
+              dateStyle: "medium",
+              timeStyle: "short",
+            })}. Automatic backups from this device are paused so its changes
+            aren't buried.
+          </p>
+          <div class="row">
+            <button class="primary" onclick={() => onrestore(cloudBackup.conflict?.id)} disabled={cloudBusy}>
+              Review &amp; merge…
+            </button>
+            <button onclick={keepThisDevice} disabled={cloudBusy}>
+              Keep this device's data
+            </button>
+          </div>
+        {/if}
+
+        {#if cloudBackup.status === "reconnect"}
+          <div class="row">
+            <button class="primary" onclick={connectCloud} disabled={cloudBusy}>
+              Reconnect Google account
+            </button>
+          </div>
+        {/if}
+
+        <label class="inline">
+          <input
+            type="checkbox"
+            checked={cloudBackup.config?.autoBackup ?? true}
+            onchange={(e) => cloudBackup.setAutoBackup(e.currentTarget.checked)}
+          />
+          Back up automatically after every change
+        </label>
+        <div class="row">
+          <button
+            class="primary"
+            onclick={() => cloudBackup.backupNow()}
+            disabled={cloudBusy || !authStore.encrypted || cloudBackup.needsReconnect}
+          >
+            {cloudBackup.activity === "backing-up" ? "Backing up…" : "Backup now"}
+          </button>
+          <button onclick={() => onrestore()} disabled={cloudBusy}>Restore backup…</button>
+        </div>
+        <div class="row">
+          <button onclick={disconnectCloud} disabled={cloudBusy}>Disconnect account</button>
+          <button class="danger-btn" onclick={deleteCloudBackups} disabled={cloudBusy}>
+            Delete cloud backups
+          </button>
+        </div>
+      {/if}
+
+      {#if cloudBackup.notice}
+        <p
+          class="notice {cloudBackup.notice.kind}"
+          role={cloudBackup.notice.kind === "error" ? "alert" : "status"}
+        >
+          {cloudBackup.notice.text}
+        </p>
+      {/if}
+    </section>
+  {/if}
 
   {#if authStore.helloSupported && authStore.encrypted}
     <section>
@@ -273,7 +507,9 @@
     <h3>Danger zone</h3>
     <p class="muted">
       Permanently deletes every account, the encryption settings and all
-      preferences. This cannot be undone — export a backup first.
+      preferences from this device, and disconnects cloud backup. This cannot
+      be undone — export a backup first. Backups already in Google Drive are
+      kept.
     </p>
     <div class="wipe-row">
       <input
@@ -388,5 +624,66 @@
     color: var(--danger);
     font-size: 13px;
     margin: 10px 0 0;
+  }
+  .hint {
+    margin: 12px 0 0;
+    font-size: 12px;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+  .waiting {
+    flex: 1;
+    font-size: 12.5px;
+    color: var(--text-muted);
+  }
+  .cloud-status {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 14px;
+    margin: 0 0 8px;
+    font-size: 12.5px;
+  }
+  .cloud-status dt {
+    color: var(--text-muted);
+  }
+  .cloud-status dd {
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+  .tone-ok {
+    color: var(--added-fg);
+    font-weight: 600;
+  }
+  .tone-muted {
+    color: var(--text-muted);
+  }
+  .tone-warn,
+  .tone-bad {
+    color: var(--danger);
+    font-weight: 600;
+  }
+  .notice {
+    margin: 10px 0 0;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 12.5px;
+  }
+  .notice.success {
+    background: var(--added-bg);
+    color: var(--added-fg);
+  }
+  .notice.warning {
+    background: var(--accent-soft);
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+  .notice.error {
+    background: var(--removed-bg);
+    color: var(--removed-fg);
   }
 </style>

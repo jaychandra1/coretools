@@ -1,3 +1,5 @@
+import type { RemoteBackup } from "../core/authenticator/cloud-sync";
+
 /** A text file loaded into memory. */
 export interface LoadedFile {
   name: string;
@@ -21,6 +23,54 @@ export interface HelloUnlock {
   sign(challenge: Uint8Array): Promise<Uint8Array>;
   /** Remove the app's Hello key. Idempotent. */
   deleteKey(): Promise<void>;
+  /**
+   * Make Windows verify the user (biometric/PIN) without touching the unlock
+   * key — used as the device-authentication gate before a cloud restore.
+   * Rejects (e.g. "hello_canceled") unless verification succeeds.
+   */
+  verifyUser(): Promise<void>;
+}
+
+/** The connected Google account as reported by the native backend. */
+export interface CloudAccount {
+  email: string;
+  /** This computer's name, used to label the backups it uploads. */
+  deviceName: string;
+}
+
+/**
+ * Google Drive transport for the Authenticator cloud backup.
+ *
+ * The native backend owns the whole OAuth flow (system browser + loopback
+ * redirect + PKCE), keeps the refresh token in the OS keychain and performs
+ * every HTTP request itself — the webview never holds a Google token and
+ * cannot reach the network. It also can't redirect uploads: the backend only
+ * ever writes to the connected account's private app-data folder. Content
+ * crossing this boundary is the already-encrypted backup envelope.
+ *
+ * Methods reject with stable string tokens ("cloud_network",
+ * "cloud_auth_revoked", "oauth_canceled", …) — see describeCloudError().
+ */
+export interface CloudBridge {
+  /** Whether this build has a Google OAuth client configured. */
+  available(): Promise<boolean>;
+  /** The connected account, or null. Never touches the network. */
+  status(): Promise<CloudAccount | null>;
+  /** Run Google sign-in in the system browser and store the credential. */
+  connect(): Promise<CloudAccount>;
+  /** Abort a connect() that is waiting for the browser. */
+  cancelConnect(): Promise<void>;
+  /** Forget the credential locally and revoke it at Google (best effort). */
+  disconnect(): Promise<void>;
+  list(): Promise<RemoteBackup[]>;
+  upload(file: {
+    name: string;
+    content: string;
+    deviceId: string;
+    deviceLabel: string;
+  }): Promise<RemoteBackup>;
+  download(id: string): Promise<string>;
+  remove(id: string): Promise<void>;
 }
 
 /**
@@ -39,4 +89,6 @@ export interface Platform {
   saveBinaryFile(suggestedName: string, bytes: Uint8Array): Promise<boolean>;
   /** OS biometric unlock. Absent where the host has no such facility (browser). */
   readonly hello?: HelloUnlock;
+  /** Authenticator cloud backup transport. Desktop only. */
+  readonly cloud?: CloudBridge;
 }

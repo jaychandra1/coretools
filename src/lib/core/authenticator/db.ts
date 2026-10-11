@@ -8,7 +8,10 @@
  *    `{ enc: { iv, ct } }` (AES-256-GCM, see vault-crypto.ts).
  *  - "meta": vault configuration and user settings, keyed by name.
  *
- * Plaintext secrets never leave this device; there is no sync backend.
+ * Plaintext secrets never leave this device. The optional cloud backup
+ * uploads only an end-to-end encrypted envelope (see cloud-backup.ts); its
+ * bookkeeping lives under the "cloud" meta key, while the Google OAuth
+ * credential itself is held by the native backend in the OS keychain.
  */
 
 import type { OtpEntry } from "./types";
@@ -55,6 +58,23 @@ export interface AuthSettings {
   groupCodes: boolean;
   /** Unix ms when the backup reminder was last dismissed. */
   backupReminderDismissedAt: number;
+}
+
+/** Cloud backup bookkeeping (no credentials — those live in the OS keychain). */
+export interface CloudConfig {
+  /** Random per-install id, tagged on every backup this device uploads. */
+  deviceId: string;
+  /** Connected Google account, or null when disconnected. */
+  email: string | null;
+  /** Back up automatically after every change. */
+  autoBackup: boolean;
+  /** Local changes not yet in any backup. */
+  dirty: boolean;
+  lastBackupAt: number | null;
+  lastBackupId: string | null;
+  /** The remote version this device's data is based on (conflict detection). */
+  lastSyncedRemoteId: string | null;
+  lastRestoreAt: number | null;
 }
 
 export const DEFAULT_SETTINGS: AuthSettings = {
@@ -166,6 +186,44 @@ export async function loadSettings(): Promise<AuthSettings> {
 
 export function saveSettings(settings: AuthSettings): Promise<void> {
   return setMeta("settings", settings);
+}
+
+export async function loadCloudConfig(): Promise<CloudConfig> {
+  const stored = await getMeta<Partial<CloudConfig>>("cloud");
+  return {
+    deviceId: stored?.deviceId || crypto.randomUUID(),
+    email: stored?.email ?? null,
+    autoBackup: stored?.autoBackup ?? true,
+    dirty: stored?.dirty ?? false,
+    lastBackupAt: stored?.lastBackupAt ?? null,
+    lastBackupId: stored?.lastBackupId ?? null,
+    lastSyncedRemoteId: stored?.lastSyncedRemoteId ?? null,
+    lastRestoreAt: stored?.lastRestoreAt ?? null,
+  };
+}
+
+export function saveCloudConfig(config: CloudConfig): Promise<void> {
+  return setMeta("cloud", config);
+}
+
+/**
+ * Write the vault config and the full entry set in ONE transaction, so an
+ * interruption (crash, closed window) can never leave a vault whose verifier
+ * doesn't match its entries — it's all or nothing.
+ */
+export async function saveVaultAndEntries(
+  vault: VaultConfig,
+  entries: StoredEntry[],
+): Promise<void> {
+  const database = await db();
+  const tx = database.transaction(["entries", "meta"], "readwrite");
+  const store = tx.objectStore("entries");
+  store.clear();
+  for (const entry of entries) {
+    store.put(JSON.parse(JSON.stringify(entry)));
+  }
+  tx.objectStore("meta").put(JSON.parse(JSON.stringify(vault)), "vault");
+  await txDone(tx);
 }
 
 /** Danger zone: delete every entry, the vault config and all settings. */

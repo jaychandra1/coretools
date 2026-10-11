@@ -1,4 +1,5 @@
 import type { Platform, LoadedFile } from "./types";
+import { mockCloud } from "./mock-cloud"; // TEMP-VERIFY
 
 /**
  * Browser implementation used by the Vite dev preview and any non-Tauri host.
@@ -9,6 +10,7 @@ import type { Platform, LoadedFile } from "./types";
  */
 export const browserPlatform: Platform = {
   kind: "browser",
+  cloud: mockCloud, // TEMP-VERIFY
 
   openTextFile(): Promise<LoadedFile | null> {
     return new Promise((resolve) => {

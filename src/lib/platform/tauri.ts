@@ -1,4 +1,11 @@
-import type { Platform, LoadedFile, HelloUnlock } from "./types";
+import type {
+  Platform,
+  LoadedFile,
+  HelloUnlock,
+  CloudBridge,
+  CloudAccount,
+} from "./types";
+import type { RemoteBackup } from "../core/authenticator/cloud-sync";
 
 /**
  * Windows Hello bridge. Challenges/signatures cross the IPC boundary as plain
@@ -35,6 +42,71 @@ const tauriHello: HelloUnlock = {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("hello_delete_key");
   },
+
+  async verifyUser(): Promise<void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("hello_verify_user");
+  },
+};
+
+/**
+ * Google Drive bridge. Only opaque, already-encrypted backup text and file
+ * metadata cross the IPC boundary; OAuth tokens never leave Rust.
+ */
+const tauriCloud: CloudBridge = {
+  async available(): Promise<boolean> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    try {
+      return await invoke<boolean>("cloud_available");
+    } catch {
+      return false;
+    }
+  },
+
+  async status(): Promise<CloudAccount | null> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<CloudAccount | null>("cloud_status");
+  },
+
+  async connect(): Promise<CloudAccount> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<CloudAccount>("cloud_connect");
+  },
+
+  async cancelConnect(): Promise<void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("cloud_cancel_connect");
+  },
+
+  async disconnect(): Promise<void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("cloud_disconnect");
+  },
+
+  async list(): Promise<RemoteBackup[]> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<RemoteBackup[]>("cloud_list");
+  },
+
+  async upload(file): Promise<RemoteBackup> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<RemoteBackup>("cloud_upload", {
+      name: file.name,
+      content: file.content,
+      deviceId: file.deviceId,
+      deviceLabel: file.deviceLabel,
+    });
+  },
+
+  async download(id: string): Promise<string> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<string>("cloud_download", { id });
+  },
+
+  async remove(id: string): Promise<void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("cloud_delete", { id });
+  },
 };
 
 /**
@@ -48,6 +120,7 @@ const tauriHello: HelloUnlock = {
 export const tauriPlatform: Platform = {
   kind: "tauri",
   hello: tauriHello,
+  cloud: tauriCloud,
 
   // Dialogs are opened in RUST (`pick_open_path` / `pick_save_path`), which
   // canonicalizes and remembers the chosen path; the read/write commands only

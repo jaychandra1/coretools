@@ -6,9 +6,13 @@
 //! only a remembered path — exactly once. A compromised webview can therefore
 //! never read or write a path the user did not just pick in a native dialog.
 //!
-//! There are no network dependencies, no persistence, and no logging of file
-//! contents.
+//! No logging of file contents and no persistence of its own. The only
+//! network code is the opt-in Authenticator cloud backup (`cloud.rs`), which
+//! talks exclusively to Google's OAuth/Drive endpoints, keeps its credential
+//! in the OS keychain, and only ever uploads content the frontend has
+//! already encrypted end-to-end.
 
+mod cloud;
 mod hello;
 
 use std::collections::HashSet;
@@ -183,6 +187,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AuthorizedPaths::default())
+        .manage(cloud::CloudState::default())
         .invoke_handler(tauri::generate_handler![
             pick_open_path,
             pick_save_path,
@@ -192,7 +197,17 @@ pub fn run() {
             hello::hello_available,
             hello::hello_create_key,
             hello::hello_sign,
-            hello::hello_delete_key
+            hello::hello_delete_key,
+            hello::hello_verify_user,
+            cloud::cloud_available,
+            cloud::cloud_status,
+            cloud::cloud_connect,
+            cloud::cloud_cancel_connect,
+            cloud::cloud_disconnect,
+            cloud::cloud_list,
+            cloud::cloud_upload,
+            cloud::cloud_download,
+            cloud::cloud_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while running CoreTools");

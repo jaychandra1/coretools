@@ -7,6 +7,8 @@
   import ImportDialog from "./ImportDialog.svelte";
   import ExportDialog from "./ExportDialog.svelte";
   import SettingsDialog from "./SettingsDialog.svelte";
+  import RestoreDialog from "./RestoreDialog.svelte";
+  import { cloudBackup } from "./cloud.svelte";
   import { previewImport, type ExportableEntry } from "../../core/authenticator/backup";
   import type { ParsedAccount } from "../../core/authenticator/types";
   import type { StoredEntry } from "../../core/authenticator/db";
@@ -19,6 +21,7 @@
 
   $effect(() => {
     authStore.init();
+    cloudBackup.init();
     const touch = () => authStore.touch();
     window.addEventListener("pointerdown", touch);
     window.addEventListener("keydown", touch);
@@ -96,8 +99,15 @@
 
   // ---- dialogs --------------------------------------------------------------
 
-  type Dialog = null | "add" | "import" | "export" | "settings";
+  type Dialog = null | "add" | "import" | "export" | "settings" | "restore";
   let dialog = $state<Dialog>(null);
+  /** Backup version the restore dialog should start on (conflict review). */
+  let restorePreselect = $state<string | null>(null);
+
+  function openRestore(preselectId?: string) {
+    restorePreselect = preselectId ?? null;
+    dialog = "restore";
+  }
   let editMode = $state(false);
   let renaming = $state<StoredEntry | null>(null);
   let deleting = $state<StoredEntry | null>(null);
@@ -197,8 +207,34 @@
     authStore.ready &&
       !authStore.locked &&
       authStore.entries.length > 0 &&
+      // A working cloud backup already covers what the reminder is about.
+      !(cloudBackup.connected && cloudBackup.config?.lastBackupAt) &&
       authStore.now - authStore.settings.backupReminderDismissedAt > THIRTY_DAYS,
   );
+  /** Cloud states that need the user — everything else lives in Settings. */
+  const cloudAttention = $derived(
+    authStore.ready && !authStore.locked && cloudBackup.ready
+      ? cloudBackup.status === "conflict" ||
+          cloudBackup.status === "reconnect" ||
+          cloudBackup.status === "error"
+        ? cloudBackup.status
+        : null
+      : null,
+  );
+  const cloudIndicator = $derived.by(() => {
+    switch (cloudBackup.status) {
+      case "up-to-date":
+        return { tone: "ok", label: "Cloud backup: up to date" };
+      case "working":
+        return { tone: "busy", label: "Cloud backup: working…" };
+      case "pending":
+        return { tone: "busy", label: "Cloud backup: changes waiting" };
+      case "retrying":
+        return { tone: "warn", label: "Cloud backup: offline, will retry" };
+      default:
+        return { tone: "warn", label: "Cloud backup needs attention" };
+    }
+  });
 </script>
 
 <svelte:window onkeydown={onGlobalKeydown} />
@@ -239,6 +275,19 @@
         >
           {editMode ? "Done" : "Edit"}
         </button>
+        {#if cloudBackup.connected}
+          <button
+            class="cloud-indicator tone-{cloudIndicator.tone}"
+            onclick={() => (dialog = "settings")}
+            title={cloudIndicator.label}
+            aria-label={cloudIndicator.label}
+          >
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M17.5 19H8a5 5 0 1 1 1.6-9.74A6 6 0 0 1 21 12.5 4.5 4.5 0 0 1 17.5 19z" />
+            </svg>
+            <span class="dot" aria-hidden="true"></span>
+          </button>
+        {/if}
         <button onclick={() => (dialog = "settings")} title="Settings" aria-label="Settings">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <circle cx="12" cy="12" r="3" />
@@ -263,6 +312,28 @@
           Set an encryption password to protect them at rest.
         </span>
         <button onclick={() => (dialog = "settings")}>Set password</button>
+      </div>
+    {/if}
+
+    {#if cloudAttention === "conflict"}
+      <div class="banner info" role="status">
+        <span>
+          <strong>{cloudBackup.conflict?.deviceLabel || "Another device"}</strong>
+          made a newer cloud backup. Automatic backups from here are paused
+          until you merge it or keep this device's data.
+        </span>
+        <button onclick={() => openRestore(cloudBackup.conflict?.id)}>Review &amp; merge</button>
+        <button onclick={() => (dialog = "settings")}>Options</button>
+      </div>
+    {:else if cloudAttention === "reconnect"}
+      <div class="banner warn" role="status">
+        <span>Cloud backup stopped: Google access was lost. Reconnect your account to resume.</span>
+        <button onclick={() => (dialog = "settings")}>Reconnect</button>
+      </div>
+    {:else if cloudAttention === "error"}
+      <div class="banner warn" role="status">
+        <span>Cloud backup failed: {cloudBackup.lastError}</span>
+        <button onclick={() => cloudBackup.backupNow()}>Try again</button>
       </div>
     {/if}
 
@@ -295,6 +366,9 @@
         <div class="empty-actions">
           <button class="primary" onclick={() => (dialog = "add")}>Add account</button>
           <button onclick={openImport}>Import backup</button>
+          {#if cloudBackup.available}
+            <button onclick={() => openRestore()}>Restore from Google Drive</button>
+          {/if}
         </div>
       </div>
     {:else if visibleEntries.length === 0}
@@ -345,7 +419,17 @@
       ontoast={showToast}
     />
   {:else if dialog === "settings"}
-    <SettingsDialog onclose={() => (dialog = null)} ontoast={showToast} />
+    <SettingsDialog
+      onclose={() => (dialog = null)}
+      ontoast={showToast}
+      onrestore={openRestore}
+    />
+  {:else if dialog === "restore"}
+    <RestoreDialog
+      preselectId={restorePreselect}
+      onclose={() => (dialog = null)}
+      ontoast={showToast}
+    />
   {/if}
 {/if}
 
@@ -447,6 +531,30 @@
   .toolbar-actions {
     display: flex;
     gap: 6px;
+    flex-wrap: wrap;
+  }
+  .cloud-indicator {
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+  }
+  .cloud-indicator .dot {
+    position: absolute;
+    right: 5px;
+    bottom: 5px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    border: 1.5px solid var(--surface);
+    background: var(--text-muted);
+  }
+  .cloud-indicator.tone-ok .dot {
+    background: var(--added-fg);
+  }
+  .cloud-indicator.tone-warn .dot {
+    background: var(--danger);
+  }
+  .empty-actions {
     flex-wrap: wrap;
   }
   .toolbar-actions .active-toggle {

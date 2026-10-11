@@ -15,9 +15,9 @@ import {
   loadEntries,
   loadSettings,
   loadVaultConfig,
-  replaceAllEntries,
   saveEntries,
   saveSettings,
+  saveVaultAndEntries,
   saveVaultConfig,
   wipeAll,
   type AuthSettings,
@@ -43,8 +43,31 @@ import {
   bytesToBase64,
 } from "../../core/authenticator/legacy-crypto";
 import { normalizeBase32 } from "../../core/authenticator/base32";
-import type { ExportableEntry } from "../../core/authenticator/backup";
+import { accountKey, type ExportableEntry } from "../../core/authenticator/backup";
+import {
+  openCloudBackup,
+  parseCloudBackup,
+  sealCloudBackup,
+  type CloudBackupDevice,
+  type CloudBackupFile,
+  type CloudBackupPayload,
+  type CloudBackupSettings,
+} from "../../core/authenticator/cloud-backup";
 import { getPlatform } from "../../platform";
+
+/**
+ * Lifecycle notifications for observers such as the cloud backup:
+ *  - "change": entries were added/edited/removed/reordered (persisted);
+ *  - "unlock": the vault key is available again;
+ *  - "password": the vault key changed (new password → new salt);
+ *  - "wipe": everything local was deleted.
+ */
+export type AuthEvent = "change" | "unlock" | "password" | "wipe";
+
+export interface RestoreResult {
+  added: number;
+  skipped: number;
+}
 
 export class AuthStore {
   ready = $state(false);
@@ -68,6 +91,24 @@ export class AuthStore {
   #secrets = new Map<string, string>();
   #lastActivity = Date.now();
   #ticker: ReturnType<typeof setInterval> | null = null;
+  #initPromise: Promise<void> | null = null;
+  #listeners = new Set<(event: AuthEvent) => void>();
+
+  /** Observe lifecycle events; returns an unsubscribe function. */
+  subscribe(listener: (event: AuthEvent) => void): () => void {
+    this.#listeners.add(listener);
+    return () => this.#listeners.delete(listener);
+  }
+
+  #emit(event: AuthEvent): void {
+    for (const listener of this.#listeners) {
+      try {
+        listener(event);
+      } catch {
+        // An observer's failure must never break a vault operation.
+      }
+    }
+  }
 
   get encrypted(): boolean {
     return this.vault?.encrypted === true;
@@ -83,8 +124,13 @@ export class AuthStore {
     return this.helloEnabled && this.helloSupported;
   }
 
-  async init(): Promise<void> {
-    if (this.ready) return;
+  /** Idempotent and safe to call concurrently (UI + cloud backup both do). */
+  init(): Promise<void> {
+    this.#initPromise ??= this.#init();
+    return this.#initPromise;
+  }
+
+  async #init(): Promise<void> {
     const [vault, settings, entries] = await Promise.all([
       loadVaultConfig(),
       loadSettings(),
@@ -178,6 +224,7 @@ export class AuthStore {
     this.touch();
     this.locked = false;
     this.lockReason = null;
+    this.#emit("unlock");
   }
 
   async unlock(password: string): Promise<void> {
@@ -320,6 +367,7 @@ export class AuthStore {
       this.vault = { encrypted: false };
       await saveVaultConfig({ encrypted: false });
     }
+    this.#emit("change");
   }
 
   async rename(id: string, issuer: string, account: string): Promise<void> {
@@ -328,12 +376,14 @@ export class AuthStore {
     entry.issuer = issuer.trim();
     entry.account = account.trim();
     await saveEntries([entry]);
+    this.#emit("change");
   }
 
   async remove(id: string): Promise<void> {
     this.entries = this.entries.filter((e) => e.id !== id);
     this.#secrets.delete(id);
     await dbDeleteEntry(id);
+    this.#emit("change");
   }
 
   async togglePin(id: string): Promise<void> {
@@ -341,6 +391,7 @@ export class AuthStore {
     if (!entry) return;
     entry.pinned = !entry.pinned;
     await saveEntries([entry]);
+    this.#emit("change");
   }
 
   async incrementCounter(id: string): Promise<void> {
@@ -348,6 +399,7 @@ export class AuthStore {
     if (!entry || entry.type !== "hotp") return;
     entry.counter += 1;
     await saveEntries([entry]);
+    this.#emit("change");
   }
 
   /** Move `fromId` to the position of `toId`, persisting the new order. */
@@ -359,6 +411,7 @@ export class AuthStore {
     this.entries.splice(to, 0, moved);
     this.entries.forEach((entry, i) => (entry.index = i));
     await saveEntries(this.entries);
+    this.#emit("change");
   }
 
   /** Entries + plaintext secrets for export/backup. Requires unlocked. */
@@ -383,8 +436,39 @@ export class AuthStore {
   }
 
   /**
+   * Derive a fresh salt + key from `password` and build encrypted copies of
+   * `entries` (secrets taken from `secrets`). Pure: touches no state.
+   */
+  async #sealVault(
+    password: string,
+    entries: StoredEntry[],
+    secrets: Map<string, string>,
+  ): Promise<{ key: CryptoKey; vault: VaultConfig; entries: StoredEntry[] }> {
+    const salt = bytesToBase64(randomBytes(16));
+    const key = await deriveVaultKey(password, salt, PBKDF2_ITERATIONS);
+    const verifier = await encryptString(key, VERIFIER_PLAINTEXT);
+
+    const sealed: StoredEntry[] = [];
+    for (const entry of entries) {
+      const secret = secrets.get(entry.id);
+      if (!secret) throw new Error(`Missing secret for ${entry.issuer}`);
+      sealed.push({
+        ...$state.snapshot(entry),
+        secret: { enc: await encryptString(key, secret) },
+      });
+    }
+    return {
+      key,
+      vault: { encrypted: true, salt, iterations: PBKDF2_ITERATIONS, verifier },
+      entries: sealed,
+    };
+  }
+
+  /**
    * Set (or change) the encryption password: derives a fresh salt + key,
    * stores a verifier, and re-encrypts every secret currently in memory.
+   * The vault config and entries are written in one transaction, and the
+   * in-memory state only switches over once that write succeeded.
    */
   async setPassword(password: string): Promise<void> {
     if (this.locked) throw new Error("Unlock first");
@@ -396,26 +480,14 @@ export class AuthStore {
       await getPlatform().hello?.deleteKey().catch(() => {});
     }
 
-    const salt = bytesToBase64(randomBytes(16));
-    const key = await deriveVaultKey(password, salt, PBKDF2_ITERATIONS);
-    const verifier = await encryptString(key, VERIFIER_PLAINTEXT);
+    const sealed = await this.#sealVault(password, this.entries, this.#secrets);
+    await saveVaultAndEntries(sealed.vault, sealed.entries);
 
-    for (const entry of this.entries) {
-      const secret = this.#secrets.get(entry.id);
-      if (!secret) throw new Error(`Missing secret for ${entry.issuer}`);
-      entry.secret = { enc: await encryptString(key, secret) };
-    }
-
-    this.#key = key;
-    this.vault = {
-      encrypted: true,
-      salt,
-      iterations: PBKDF2_ITERATIONS,
-      verifier,
-    };
-    await saveVaultConfig(this.vault);
-    await replaceAllEntries(this.entries);
+    this.#key = sealed.key;
+    this.vault = sealed.vault;
+    this.entries = sealed.entries;
     this.touch();
+    this.#emit("password");
   }
 
   /** Verify the current password (used before change/remove). */
@@ -438,15 +510,192 @@ export class AuthStore {
       await getPlatform().hello?.deleteKey().catch(() => {});
     }
 
+    const plain: StoredEntry[] = [];
     for (const entry of this.entries) {
       const secret = this.#secrets.get(entry.id);
       if (!secret) throw new Error(`Missing secret for ${entry.issuer}`);
-      entry.secret = { plain: secret };
+      plain.push({ ...$state.snapshot(entry), secret: { plain: secret } });
     }
+    const vault: VaultConfig = { encrypted: false };
+    await saveVaultAndEntries(vault, plain);
+
     this.#key = null;
-    this.vault = { encrypted: false };
-    await saveVaultConfig(this.vault);
-    await replaceAllEntries(this.entries);
+    this.vault = vault;
+    this.entries = plain;
+    this.#emit("password");
+  }
+
+  // ---- cloud backup support ----------------------------------------------------
+  // These need the in-memory vault key, so they live here; the transport and
+  // scheduling live in cloud.svelte.ts.
+
+  /**
+   * Encrypt the whole vault into a cloud backup file. The result is opened
+   * again with the same key and checked before it is returned, so a file
+   * that couldn't be restored never leaves the device.
+   */
+  async sealCloudBackup(device: CloudBackupDevice): Promise<string> {
+    const vault = this.vault;
+    const key = this.#key;
+    if (this.locked || !key) throw new Error("Unlock first");
+    if (!vault?.encrypted || !vault.salt || !vault.verifier) {
+      throw new Error("Set an encryption password first");
+    }
+    const entries = this.exportables();
+    const settings: CloudBackupSettings = {
+      autoLockMinutes: this.settings.autoLockMinutes,
+      clipboardClear: this.settings.clipboardClear,
+      groupCodes: this.settings.groupCodes,
+    };
+    const text = await sealCloudBackup({
+      key,
+      salt: vault.salt,
+      iterations: vault.iterations ?? PBKDF2_ITERATIONS,
+      verifier: vault.verifier,
+      device,
+      entries,
+      settings,
+    });
+
+    const check = await openCloudBackup(parseCloudBackup(text), key);
+    if (check.entryCount !== entries.length) {
+      throw new Error("Backup self-check failed");
+    }
+    return text;
+  }
+
+  /**
+   * Open a backup sealed under this vault's CURRENT key (same salt and
+   * iterations — i.e. made on this device since the last password change)
+   * without asking for the password. Returns null when the key can't apply.
+   */
+  async openCloudBackupWithVaultKey(
+    file: CloudBackupFile,
+  ): Promise<CloudBackupPayload | null> {
+    const vault = this.vault;
+    if (this.locked || !this.#key || !vault?.encrypted || !vault.salt) return null;
+    if (
+      file.kdf.salt !== vault.salt ||
+      file.kdf.iterations !== (vault.iterations ?? PBKDF2_ITERATIONS)
+    ) {
+      return null;
+    }
+    return openCloudBackup(file, this.#key);
+  }
+
+  /**
+   * Device-authentication gate before restoring secrets. Returns true after
+   * a successful Windows Hello verification, false when this device has no
+   * OS verifier (the caller then requires the password instead). Rejects if
+   * the user cancels or fails verification.
+   */
+  async verifyUserPresence(): Promise<boolean> {
+    const hello = getPlatform().hello;
+    if (!hello || !this.helloSupported) return false;
+    await hello.verifyUser();
+    return true;
+  }
+
+  /**
+   * Restore accounts from a decrypted cloud backup.
+   *  - "merge":   add only accounts that aren't here yet (same secret +
+   *               issuer + account), after the existing ones;
+   *  - "replace": the vault becomes exactly the backup (rollback).
+   *
+   * Pins and order come back as they were. When no encryption password is
+   * set yet (fresh install), `password` — the one the backup was made with —
+   * becomes the vault password, so the device ends up as the original was.
+   *
+   * Everything is built in memory first and persisted in ONE transaction:
+   * an interrupted restore changes nothing.
+   */
+  async restoreFromBackup(
+    payload: CloudBackupPayload,
+    mode: "merge" | "replace",
+    password?: string,
+  ): Promise<RestoreResult> {
+    if (this.locked) throw new Error("Unlock first");
+    if (!this.encrypted && !password) {
+      throw new Error("The backup's password is required to restore it");
+    }
+
+    const secrets = new Map<string, string>();
+    const kept: StoredEntry[] = [];
+    if (mode === "merge") {
+      for (const entry of this.entries) {
+        const secret = this.#secrets.get(entry.id);
+        if (!secret) throw new Error(`Missing secret for ${entry.issuer}`);
+        secrets.set(entry.id, secret);
+        kept.push($state.snapshot(entry) as StoredEntry);
+      }
+    }
+    const seen = new Set(
+      kept.map((entry) =>
+        accountKey({
+          secret: secrets.get(entry.id) ?? "",
+          issuer: entry.issuer,
+          account: entry.account,
+        }),
+      ),
+    );
+
+    let index = kept.reduce((max, e) => Math.max(max, e.index), -1) + 1;
+    let skipped = 0;
+    const created: StoredEntry[] = [];
+    for (const item of [...payload.entries].sort((a, b) => a.index - b.index)) {
+      const key = accountKey(item);
+      if (seen.has(key)) {
+        skipped++;
+        continue;
+      }
+      seen.add(key);
+      const secret = normalizeBase32(item.secret);
+      const entry: StoredEntry = {
+        id: crypto.randomUUID(),
+        hash: await sha256Hex(secret),
+        issuer: item.issuer.trim(),
+        account: item.account.trim(),
+        type: item.type,
+        algorithm: item.algorithm,
+        digits: item.digits,
+        period: item.period,
+        counter: item.counter,
+        index: index++,
+        pinned: item.pinned,
+        secret: {},
+      };
+      secrets.set(entry.id, secret);
+      created.push(entry);
+    }
+
+    if (this.encrypted) {
+      const key = this.#key;
+      const vault = this.vault;
+      if (!key || !vault) throw new Error("Unlock first");
+      for (const entry of created) {
+        entry.secret = { enc: await encryptString(key, secrets.get(entry.id) ?? "") };
+      }
+      const all = [...kept, ...created];
+      await saveVaultAndEntries($state.snapshot(vault) as VaultConfig, all);
+      this.entries = all;
+      this.#secrets = secrets;
+    } else {
+      const sealed = await this.#sealVault(
+        password ?? "",
+        [...kept, ...created],
+        secrets,
+      );
+      await saveVaultAndEntries(sealed.vault, sealed.entries);
+      this.#key = sealed.key;
+      this.vault = sealed.vault;
+      this.entries = sealed.entries;
+      this.#secrets = secrets;
+      this.#emit("password");
+    }
+
+    this.touch();
+    this.#emit("change");
+    return { added: created.length, skipped };
   }
 
   async updateSettings(patch: Partial<AuthSettings>): Promise<void> {
@@ -466,6 +715,7 @@ export class AuthStore {
     this.vault = null;
     this.locked = false;
     this.settings = { ...DEFAULT_SETTINGS };
+    this.#emit("wipe");
   }
 }
 
