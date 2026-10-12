@@ -13,6 +13,14 @@ the version everywhere else. CI refuses a tag that doesn't match
 
 ### Changed
 
+- **Downloads now come from the public `jaychandra1/artifacts` repository**
+  while the source stays private. Each version is published as release
+  `coretools-v<version>` and kept forever. `coretools-latest` gives the
+  website stable links that only a newer version can move, and a generated
+  `coretools/releases/` index lists every version with SHA-256 checksums. The
+  same repo can host other applications. An "Import old release" workflow
+  publishes the last pre-0.2.0 build (0.1.0) into that history.
+
 - **Honest connectivity badge.** The header badge now reflects each section.
   It reads **Offline** in every tool, and **Online · Drive backup** only on
   the Authenticator tab while Google Drive backup is connected. It also reads

@@ -1,0 +1,197 @@
+name: Publish to the public artifacts repository
+description: >
+  Publish installers as GitHub Releases of a public artifacts repository —
+  <app>-v<version> (kept forever) plus <app>-latest (stable links, moved only
+  by the newest version) — and update the generated <app>/releases/ index.
+  Expects the caller to have checked out this repo (for scripts/) and placed
+  the installers + SHA256SUMS.txt in `assets-dir`.
+
+inputs:
+  app:
+    description: Lowercase slug, used for the folder and tag prefix (e.g. coretools)
+    required: true
+  app-name:
+    description: Display name (e.g. CoreTools)
+    required: true
+  version:
+    description: Semver without the leading v (e.g. 0.3.0)
+    required: true
+  artifacts-repo:
+    description: owner/name of the public artifacts repository
+    required: true
+  token:
+    description: Token with Contents read/write on the artifacts repository
+    required: true
+  assets-dir:
+    description: Directory with the installers and SHA256SUMS.txt
+    required: true
+  date:
+    description: Release date (YYYY-MM-DD) for the index; defaults to today
+    required: false
+    default: ""
+  summary:
+    description: Release-notes body; defaults to the CHANGELOG.md section
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # Inputs reach the shell only through env, never by ${{ }} interpolation.
+    - name: Check the publishing token
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        if [ -z "$GH_TOKEN" ]; then
+          echo "::error::The ARTIFACTS_REPO_TOKEN secret is not set (see DEPLOYMENT.md §2)."
+          exit 1
+        fi
+
+    - name: Write release notes
+      shell: bash
+      env:
+        APP: ${{ inputs.app }}
+        APP_NAME: ${{ inputs.app-name }}
+        VERSION: ${{ inputs.version }}
+        ARTIFACTS_REPO: ${{ inputs.artifacts-repo }}
+        ASSETS: ${{ inputs.assets-dir }}
+        SUMMARY: ${{ inputs.summary }}
+      run: |
+        set -euo pipefail
+        extra=()
+        if [ -n "$SUMMARY" ]; then extra=(--summary "$SUMMARY"); fi
+        node "$GITHUB_WORKSPACE/scripts/artifacts-release.mjs" notes \
+          --app "$APP" --name "$APP_NAME" --version "$VERSION" \
+          --artifacts-repo "$ARTIFACTS_REPO" --assets-dir "$ASSETS" \
+          --changelog "$GITHUB_WORKSPACE/CHANGELOG.md" "${extra[@]}" \
+          --out "$RUNNER_TEMP/release-notes.md" \
+          --latest-out "$RUNNER_TEMP/latest-notes.md"
+
+    - name: Clone the artifacts repository
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        ARTIFACTS_REPO: ${{ inputs.artifacts-repo }}
+      run: |
+        set -euo pipefail
+        dir="$RUNNER_TEMP/artifacts-repo"
+        git clone "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACTS_REPO}.git" "$dir"
+        cd "$dir"
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        if ! git rev-parse --verify -q HEAD >/dev/null; then
+          # Brand-new empty repository: releases need a commit to tag.
+          git symbolic-ref HEAD refs/heads/main
+          printf '# %s\n\nPublic release downloads.\n' "${ARTIFACTS_REPO#*/}" > README.md
+          git add README.md
+          git commit -m "Initialize artifacts repository"
+          git push origin main
+        fi
+
+    - name: Publish the versioned release
+      shell: bash
+      working-directory: ${{ inputs.assets-dir }}
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        APP: ${{ inputs.app }}
+        APP_NAME: ${{ inputs.app-name }}
+        VERSION: ${{ inputs.version }}
+        ARTIFACTS_REPO: ${{ inputs.artifacts-repo }}
+      run: |
+        set -euo pipefail
+        tag="${APP}-v${VERSION}"
+        # Installers first, checksums last.
+        mapfile -t files < <(ls | grep -v '^SHA256SUMS.txt$'; echo SHA256SUMS.txt)
+        if gh release view "$tag" --repo "$ARTIFACTS_REPO" >/dev/null 2>&1; then
+          echo "Release $tag exists — replacing its files (re-run)."
+          gh release upload "$tag" "${files[@]}" --repo "$ARTIFACTS_REPO" --clobber
+          gh release edit "$tag" --repo "$ARTIFACTS_REPO" --notes-file "$RUNNER_TEMP/release-notes.md"
+        else
+          gh release create "$tag" "${files[@]}" --repo "$ARTIFACTS_REPO" \
+            --target main --title "$APP_NAME v$VERSION" \
+            --notes-file "$RUNNER_TEMP/release-notes.md" --latest=false
+        fi
+
+    - name: Update the release index
+      id: index
+      shell: bash
+      env:
+        APP: ${{ inputs.app }}
+        APP_NAME: ${{ inputs.app-name }}
+        VERSION: ${{ inputs.version }}
+        ARTIFACTS_REPO: ${{ inputs.artifacts-repo }}
+        ASSETS: ${{ inputs.assets-dir }}
+        DATE: ${{ inputs.date }}
+      run: |
+        set -euo pipefail
+        extra=()
+        if [ -n "$DATE" ]; then extra=(--date "$DATE"); fi
+        node "$GITHUB_WORKSPACE/scripts/artifacts-release.mjs" index \
+          --app "$APP" --name "$APP_NAME" --version "$VERSION" \
+          --artifacts-repo "$ARTIFACTS_REPO" --assets-dir "$ASSETS" \
+          --repo-dir "$RUNNER_TEMP/artifacts-repo" "${extra[@]}"
+
+    - name: Move the stable "latest" links
+      if: steps.index.outputs.is_newest == 'true'
+      shell: bash
+      working-directory: ${{ inputs.assets-dir }}
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        APP: ${{ inputs.app }}
+        APP_NAME: ${{ inputs.app-name }}
+        VERSION: ${{ inputs.version }}
+        ARTIFACTS_REPO: ${{ inputs.artifacts-repo }}
+      run: |
+        set -euo pipefail
+        tag="${APP}-latest"
+        mapfile -t files < <(ls | grep -v '^SHA256SUMS.txt$'; echo SHA256SUMS.txt)
+        if gh release view "$tag" --repo "$ARTIFACTS_REPO" >/dev/null 2>&1; then
+          # Each file is swapped in place (a few seconds per file); the
+          # checksum file goes last so it never describes files not yet live.
+          gh release upload "$tag" "${files[@]}" --repo "$ARTIFACTS_REPO" --clobber
+        else
+          gh release create "$tag" "${files[@]}" --repo "$ARTIFACTS_REPO" \
+            --target main --latest=false --notes-file "$RUNNER_TEMP/latest-notes.md"
+        fi
+        gh release edit "$tag" --repo "$ARTIFACTS_REPO" \
+          --title "$APP_NAME — latest (v$VERSION)" \
+          --notes-file "$RUNNER_TEMP/latest-notes.md"
+
+    - name: Commit the release index
+      shell: bash
+      env:
+        APP: ${{ inputs.app }}
+        APP_NAME: ${{ inputs.app-name }}
+        VERSION: ${{ inputs.version }}
+        ARTIFACTS_REPO: ${{ inputs.artifacts-repo }}
+        ASSETS: ${{ inputs.assets-dir }}
+        DATE: ${{ inputs.date }}
+      run: |
+        set -euo pipefail
+        assets="$(realpath "$ASSETS")" # resolve before leaving the workspace
+        cd "$RUNNER_TEMP/artifacts-repo"
+        extra=()
+        if [ -n "$DATE" ]; then extra=(--date "$DATE"); fi
+        for attempt in 1 2 3 4 5; do
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Index already up to date."
+            exit 0
+          fi
+          git commit -q -m "$APP_NAME v$VERSION"
+          if git push -q origin HEAD:main; then
+            exit 0
+          fi
+          # Another app published meanwhile. Regenerate on top of its commit
+          # instead of rebasing — the root README is shared and would conflict.
+          echo "Push rejected (attempt $attempt); regenerating on the latest main."
+          git fetch -q origin main
+          git reset -q --hard origin/main
+          node "$GITHUB_WORKSPACE/scripts/artifacts-release.mjs" index \
+            --app "$APP" --name "$APP_NAME" --version "$VERSION" \
+            --artifacts-repo "$ARTIFACTS_REPO" --assets-dir "$assets" \
+            --repo-dir "$RUNNER_TEMP/artifacts-repo" "${extra[@]}"
+        done
+        echo "::error::Could not push the release index after 5 attempts."
+        exit 1

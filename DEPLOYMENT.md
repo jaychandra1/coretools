@@ -67,7 +67,7 @@ A real `.exe` / `.dmg` / `.AppImage` is compiled native code produced by
 **`tauri build`**, which needs **Rust** and must run **on each target OS**. This
 can't happen on Vercel (web-only) — Vercel only builds web assets.
 
-### How installers are released (tag-triggered, GitHub Releases)
+### How installers are released (tag-triggered, public artifacts repo)
 
 Two workflows own quality and distribution:
 
@@ -94,22 +94,68 @@ The release workflow then:
 2. Builds on **Windows, macOS, and Linux** runners.
 3. Publishes **all three or nothing** — a failed platform build fails the
    release; no mixed-version download sets.
-4. Creates a GitHub Release for the tag with stable asset names
-   (`CoreTools-Windows-Setup.exe`, `CoreTools-macOS.dmg`,
-   `CoreTools-Linux.AppImage`) plus a `SHA256SUMS.txt` generated over the
-   exact published files, auto-generated release notes, and the source commit.
+4. Publishes to the **public** repository
+   [`jaychandra1/artifacts`](https://github.com/jaychandra1/artifacts). This
+   source repo stays private. Stable asset names (`CoreTools-Windows-Setup.exe`,
+   `CoreTools-macOS.dmg`, `CoreTools-Linux.AppImage`) plus a `SHA256SUMS.txt`
+   generated over the exact published files.
 
-The site's download buttons (`website/scripts/downloads.js`) point at the
-stable **`releases/latest/download/<asset>`** URLs, so they always serve the
-newest release with no site edit; every previous version stays downloadable
-from the Releases page. **Binaries are never committed to git** — the old
-per-push publish flow grew `.git` by ~90 MB per release and gave SmartScreen a
-fresh unknown hash on every push; tag-only releases also keep macOS CI minutes
-(billed at 10×) for actual releases.
+### Where releases live: `jaychandra1/artifacts`
 
-All workflow actions are **pinned to commit SHAs**, the default token is
-read-only (`contents: write` exists only on the publish job), and Dependabot
-(`.github/dependabot.yml`) keeps npm, cargo, and the pinned actions patched.
+One public repo serves the downloads for **several applications**. Code stays
+in each app's private repo; only installers and a generated index go public.
+For CoreTools each release produces:
+
+| What | Example | Notes |
+| --- | --- | --- |
+| Versioned release | tag `coretools-v0.3.0` | Kept forever; notes come from this version's `CHANGELOG.md` section |
+| Stable "latest" release | tag `coretools-latest` | Same files, replaced on each **newer** release (an older hotfix never moves it) |
+| Index folder | `coretools/releases/` | `README.md` (latest links, SHA-256, every version), `latest.json`, `index.json` |
+| Root README | `README.md` | Table of all apps, between `<!-- apps:start/end -->` markers |
+
+Stable link the website uses (never changes):
+`https://github.com/jaychandra1/artifacts/releases/download/coretools-latest/CoreTools-Windows-Setup.exe`.
+Any version:
+`https://github.com/jaychandra1/artifacts/releases/download/coretools-v0.3.0/CoreTools-Windows-Setup.exe`.
+
+The installers are **release assets, not git files**. The artifacts repo
+stays a few KB however many apps and versions it holds, assets can be up to
+2 GB each, and downloads have no bandwidth quota. The old per-push flow
+committed binaries and grew `.git` by ~90 MB per release; tag-only releases
+also keep macOS CI minutes (billed at 10×) for actual releases.
+
+The publishing logic is a reusable local action
+(`.github/actions/publish-artifacts`) plus an app-agnostic script
+(`scripts/artifacts-release.mjs`). To publish another app to the same repo,
+copy both and call the action with that app's slug and name. Concurrent
+publishes from different apps are safe: the index commit regenerates and
+retries if another app pushed first.
+
+**One-time setup: the `ARTIFACTS_REPO_TOKEN` secret.** In GitHub, create a
+**fine-grained personal access token** (Settings → Developer settings →
+Personal access tokens → Fine-grained):
+- Repository access: **Only select repositories → `jaychandra1/artifacts`**.
+- Permissions: **Contents: Read and write**. That covers creating releases,
+  uploading assets and pushing the index.
+- Pick an expiry you'll remember to renew; the release fails with a clear
+  error when it lapses.
+
+Add it to **this** (private) repo under Settings → Secrets and variables →
+Actions as **`ARTIFACTS_REPO_TOKEN`**. The artifacts repo can start completely
+empty; the first publish initializes it.
+
+**Keeping old releases.** Every version stays published; nothing is pruned.
+Builds from before tagged releases (committed to `website/downloads/` by the
+old flow, all labelled 0.1.0) can be imported once with **Actions → Import old
+release → Run workflow**. The defaults publish the final pre-0.2.0 build
+(commit `8f016a5`, 2 Sep 2026) as `coretools-v0.1.0`, after checking its
+committed SHA-256 sums. It won't move the `coretools-latest` links if newer
+versions exist. (0.2.0 was never built, so there is no 0.2.0 download.)
+
+All workflow actions are **pinned to commit SHAs**, this repo's `GITHUB_TOKEN`
+is read-only in every job (publishing uses the scoped token above), and
+Dependabot (`.github/dependabot.yml`) keeps npm, cargo, and the pinned actions
+patched.
 
 > **One-time follow-ups:** commit `src-tauri/Cargo.lock`
 > (`cd src-tauri && cargo generate-lockfile`) so builds are reproducible, and
@@ -267,12 +313,14 @@ the app makes no network requests, and it never phones home to check for
 versions (see SECURITY.md). The manual-update policy is:
 
 - The app shows its version in the header; each release lists changes in
-  `CHANGELOG.md` and on the GitHub Release.
+  `CHANGELOG.md` and on its `coretools-v<version>` release in
+  `jaychandra1/artifacts`.
 - Users update by downloading the new installer over the old one; Authenticator
   and JSON-Studio data live in the webview profile and survive reinstalls.
-- **Watch releases**: GitHub → Watch → Custom → Releases gives an
-  email/notification feed; the Releases page also serves an Atom feed
-  (`/releases.atom`).
+- **Watch releases**: on `jaychandra1/artifacts`, GitHub → Watch → Custom →
+  Releases gives an email/notification feed (it covers every app published
+  there); `https://github.com/jaychandra1/artifacts/releases.atom` is the
+  Atom feed.
 - If a security fix ever ships, announce it prominently on the download page —
   there is no other channel to reach installed copies. Revisit
   `tauri-plugin-updater` (opt-in prompt, signed manifests) if the user base
@@ -283,7 +331,13 @@ versions (see SECURITY.md). The manual-update policy is:
 - [ ] Push to `master` → **CI** must be green (types, tests, audit, clippy,
       version sync).
 - [ ] Release: `npm version X.Y.Z -m "release: v%s"` → `git push origin HEAD --follow-tags`
-      → verify the GitHub Release has all three installers + `SHA256SUMS.txt`.
+      → verify `coretools-v<version>` and `coretools-latest` in
+      `jaychandra1/artifacts` have all three installers + `SHA256SUMS.txt`,
+      and `coretools/releases/README.md` lists the new version.
+- [ ] One-time: `ARTIFACTS_REPO_TOKEN` secret (fine-grained PAT, Contents
+      read/write on `jaychandra1/artifacts` only) so releases can publish (§2).
+- [ ] (Optional) Actions → **Import old release** to publish the last 0.1.0
+      build into the public history.
 - [ ] One-time: Google OAuth client + `CORETOOLS_GOOGLE_CLIENT_ID` /
       `CORETOOLS_GOOGLE_CLIENT_SECRET` repo secrets for cloud backup (§4).
 - [ ] One-time: commit `src-tauri/Cargo.lock` from a machine with Rust.

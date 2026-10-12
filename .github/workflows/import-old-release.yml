@@ -1,0 +1,75 @@
+name: Import old release
+
+# One-off, manual: publish installers that were committed to
+# website/downloads/ by the old per-push flow (before tag-based releases)
+# into jaychandra1/artifacts, so the public version history includes them.
+#
+# Defaults import the final pre-0.2.0 build (commit 8f016a5, labelled 0.1.0).
+# Run it from Actions → "Import old release" → Run workflow. It never moves
+# the stable coretools-latest links unless the imported version is newer
+# than everything already published.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Full commit SHA whose website/downloads/ holds the installers
+        required: true
+        default: 8f016a555ab5d46e2182348a5adf1435f9784413
+      version:
+        description: Version to publish them as (no leading v)
+        required: true
+        default: 0.1.0
+      date:
+        description: Original build date (YYYY-MM-DD)
+        required: true
+        default: 2026-09-02
+
+permissions:
+  contents: read
+
+concurrency:
+  group: import-old-release
+  cancel-in-progress: false
+
+jobs:
+  import:
+    name: Import ${{ inputs.version }} from ${{ inputs.ref }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (publish script)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Extract the installers from git history
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          git fetch -q --depth=1 origin "$REF"
+          mkdir -p incoming
+          for f in CoreTools-Windows-Setup.exe CoreTools-macOS.dmg CoreTools-Linux.AppImage SHA256SUMS.txt; do
+            git show "FETCH_HEAD:website/downloads/$f" > "incoming/$f"
+          done
+          ls -lh incoming
+          # The committed checksums must still match the committed binaries.
+          (cd incoming && sha256sum -c SHA256SUMS.txt)
+
+      - name: Publish as an old release
+        uses: ./.github/actions/publish-artifacts
+        with:
+          app: coretools
+          app-name: CoreTools
+          version: ${{ inputs.version }}
+          artifacts-repo: jaychandra1/artifacts
+          token: ${{ secrets.ARTIFACTS_REPO_TOKEN }}
+          assets-dir: incoming
+          date: ${{ inputs.date }}
+          summary: >-
+            Historical build imported from the previous download page
+            (built ${{ inputs.date }}, before tagged releases existed). Kept
+            for reference; newer versions are recommended.
