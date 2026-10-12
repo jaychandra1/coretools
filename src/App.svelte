@@ -28,11 +28,29 @@
 </script>
 
 <div class="shell">
+  <!-- One bar: tool tabs on the left, status + theme on the right. The app
+       name lives in the window title, so it doesn't take a row here. -->
   <header>
-    <div class="brand">
-      <span class="logo" aria-hidden="true">◧</span>
-      <h1>CoreTools</h1>
-    </div>
+    <nav class="tabs" aria-label="Tools">
+      <button class:active={tab === "diff"} onclick={() => (tab = "diff")}>
+        Diff-Checker
+      </button>
+      <button class:active={tab === "yaml"} onclick={() => (tab = "yaml")}>
+        YML-Validator
+      </button>
+      <button class:active={tab === "polish"} onclick={() => (tab = "polish")}>
+        Grammar-Polisher
+      </button>
+      <button
+        class:active={tab === "authenticator"}
+        onclick={() => (tab = "authenticator")}
+      >
+        Authenticator
+      </button>
+      <button class:active={tab === "json"} onclick={() => (tab = "json")}>
+        JSON-Studio
+      </button>
+    </nav>
     <div class="header-right">
       <span class="mode muted" title="Everything runs locally. No network access.">
         ● Offline · {platform.kind === "tauri" ? "Desktop" : "Preview"} ·
@@ -57,27 +75,6 @@
       </button>
     </div>
   </header>
-
-  <nav class="tabs">
-    <button class:active={tab === "diff"} onclick={() => (tab = "diff")}>
-      Diff-Checker
-    </button>
-    <button class:active={tab === "yaml"} onclick={() => (tab = "yaml")}>
-      YML-Validator
-    </button>
-    <button class:active={tab === "polish"} onclick={() => (tab = "polish")}>
-      Grammar-Polisher
-    </button>
-    <button
-      class:active={tab === "authenticator"}
-      onclick={() => (tab = "authenticator")}
-    >
-      Authenticator
-    </button>
-    <button class:active={tab === "json"} onclick={() => (tab = "json")}>
-      JSON-Studio
-    </button>
-  </nav>
 
   <main>
     {#key tab}
@@ -110,28 +107,18 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 16px 24px 12px;
     gap: 16px;
-  }
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-  .logo {
-    font-size: 26px;
-    color: var(--accent);
-    line-height: 1;
-  }
-  h1 {
-    font-size: 18px;
-    margin: 0;
-    letter-spacing: -0.01em;
+    /* 10px + the tab's 14px padding = the first label lines up with the
+       24px content gutter below. */
+    padding: 6px 24px 0 10px;
+    border-bottom: 1px solid var(--border);
   }
   .header-right {
     display: flex;
     align-items: center;
     gap: 12px;
+    flex-shrink: 0;
+    padding-bottom: 6px;
   }
   .mode {
     font-size: 12px;
@@ -152,19 +139,27 @@
   }
   .tabs {
     display: flex;
+    align-self: stretch;
+    align-items: flex-end;
     gap: 4px;
-    padding: 0 24px;
-    border-bottom: 1px solid var(--border);
+    min-width: 0;
+    /* Narrow windows: tabs scroll sideways instead of pushing the status
+       off the bar. */
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar {
+    display: none;
   }
   .tabs button {
+    flex-shrink: 0;
     border: none;
     border-radius: 0;
     background: transparent;
-    padding: 10px 14px;
+    padding: 12px 14px;
     font-weight: 500;
     color: var(--text-muted);
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
+    white-space: nowrap;
   }
   .tabs button:hover {
     background: transparent;
@@ -172,7 +167,8 @@
   }
   .tabs button.active {
     color: var(--accent);
-    border-bottom-color: var(--accent);
+    /* Inset underline: a negative margin would be clipped by the scroller. */
+    box-shadow: inset 0 -2px 0 var(--accent);
     font-weight: 600;
   }
   main {
