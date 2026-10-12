@@ -9,7 +9,25 @@ Releases are cut with `npm version X.Y.Z -m "release: v%s"`, then
 the version everywhere else. CI refuses a tag that doesn't match
 `package.json`.
 
-## [Unreleased]
+## [1.0.1] — 2026-10-12
+
+### Added
+
+- **Google Drive backup is switched on in the desktop app.** Release builds
+  now include CoreTools' Google sign-in client, so *Connect Google Account*
+  and *Restore from Google Drive* work in the Authenticator. Builds before
+  this one reported the feature as "not configured".
+- **Privacy policy** at `/privacy.html`: what stays on your device, exactly
+  what the optional Drive backup can access (your email and a hidden
+  app-only folder), how it is encrypted, and how to disconnect or delete it.
+  Linked from the website footer.
+
+### Changed
+
+- The website's Privacy section now describes the optional, end-to-end
+  encrypted Drive backup instead of claiming the app never goes online.
+
+## [1.0.0] — 2026-10-12
 
 ### Changed
 
