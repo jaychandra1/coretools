@@ -6,7 +6,7 @@
     <title>CoreTools</title>
     <meta
       name="description"
-      content="CoreTools — a fully offline desktop toolkit by JDG Initiates. File diff & merge, Kubernetes YAML optimizing, and sentence polishing. No trackers, no data transfer, complete privacy."
+      content="CoreTools — an offline-first desktop toolkit by JDG Initiates. File diff & merge, Kubernetes YAML optimizing, sentence polishing, a 2FA authenticator and a JSON studio. No trackers, no telemetry, private by design."
     />
     <meta name="author" content="JDG Initiates" />
     <meta name="theme-color" content="#0b0d12" />
@@ -160,26 +160,33 @@
         <div class="container privacy-inner">
           <div class="privacy-copy reveal">
             <p class="eyebrow">Privacy by design</p>
-            <h2>Your data never leaves your device</h2>
+            <h2>Your data stays on your device</h2>
             <p>
-              CoreTools is fully offline: no external API calls, no telemetry,
-              no analytics, no hidden background activity. All processing is
-              in-memory — nothing is stored, cached, or transferred. Even this
-              website ships zero trackers and makes no third-party requests.
+              CoreTools is offline-first: no telemetry, no analytics, no hidden
+              background activity, and no CoreTools servers. The only feature
+              that ever goes online is the Authenticator's optional Google
+              Drive backup, and it uploads only data encrypted on your device
+              first. Even this website ships zero trackers and makes no
+              third-party requests.
+              <a href="privacy.html">Read the privacy policy</a>.
             </p>
           </div>
           <ul class="privacy-list">
             <li class="reveal">
-              <strong>Fully offline.</strong> No network code in the app — enforced
-              by a strict Content Security Policy.
+              <strong>Offline by default.</strong> The tools make no network
+              requests, enforced by a strict Content Security Policy. The app
+              shows <em>Online</em> only while the opt-in Drive backup is
+              connected.
             </li>
             <li class="reveal">
-              <strong>No data transfer.</strong> Nothing you load, type, or generate
-              is ever uploaded, shared, or synced.
+              <strong>End-to-end encrypted backup.</strong> If you turn it on,
+              Authenticator backups are encrypted with your own password before
+              they reach your Google Drive. Neither Google nor we can read them.
             </li>
             <li class="reveal">
-              <strong>No storage.</strong> All processing happens in memory. Files are
-              written only when you explicitly save them.
+              <strong>Minimal storage.</strong> The text tools work in memory and
+              write files only when you save. The Authenticator keeps your
+              accounts encrypted on your device.
             </li>
             <li class="reveal">
               <strong>Safe by construction.</strong> Sandboxed, data-only parsing with
@@ -301,6 +308,7 @@
           © <span data-year>2026</span> <strong>JDG Initiates</strong> · MIT License
         </p>
         <p class="footer-contact">
+          <a href="privacy.html">Privacy Policy</a> ·
           <a href="mailto:hello@coretools.app">hello@coretools.app</a>
         </p>
       </div>
