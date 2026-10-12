@@ -17,6 +17,12 @@ name: Release
 #   - a regenerated index in coretools/releases/ (README, latest.json).
 # Publishing needs the ARTIFACTS_REPO_TOKEN secret — see DEPLOYMENT.md §2.
 #
+# GitHub runs the workflow as it exists IN THE TAGGED COMMIT. Commit every
+# change first, then `npm version`: a tag on an older commit runs that
+# commit's (possibly outdated) release steps. To (re)publish the version in
+# package.json from master without a new tag: Actions → Release → Run
+# workflow (same gates; the tag-match check is skipped).
+#
 # Release flow:  npm version 0.3.0 -m "release: v%s"
 #                git push origin HEAD --follow-tags
 #
@@ -44,6 +50,21 @@ jobs:
     name: Gate — tests, types, audit, version match
     runs-on: ubuntu-latest
     steps:
+      # Fail in seconds, not after the ~20-minute platform builds: the
+      # publish job needs a working token for the public artifacts repo.
+      - name: Publishing token is set and valid
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACTS_REPO_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::The ARTIFACTS_REPO_TOKEN secret is missing — add it before releasing (DEPLOYMENT.md §2)."
+            exit 1
+          fi
+          if ! gh api repos/jaychandra1/artifacts --jq .full_name >/dev/null; then
+            echo "::error::ARTIFACTS_REPO_TOKEN was rejected by GitHub (expired or revoked?) — regenerate it (DEPLOYMENT.md §2)."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
