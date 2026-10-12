@@ -9,6 +9,58 @@ Releases are cut with `npm version X.Y.Z -m "release: v%s"`, then
 the version everywhere else. CI refuses a tag that doesn't match
 `package.json`.
 
+## [Unreleased]
+
+### Changed
+
+- **Honest connectivity badge.** The header badge now reflects each section.
+  It reads **Offline** in every tool, and **Online · Drive backup** only on
+  the Authenticator tab while Google Drive backup is connected. It also reads
+  **Online · Syncing…** on any tab while a backup or sign-in is actually
+  running. Previously it always said "Offline" with a "No network access"
+  tooltip, which stopped being true once cloud backup existed.
+- Docs: README, SECURITY.md (§1 network model, §3 command table, §8 cloud
+  backup threat model and trade-offs), DEPLOYMENT.md (§4 Google OAuth client
+  setup; no billing needed) and the Authenticator README now cover cloud
+  backup.
+
+## [0.3.0] — 2026-10-12
+
+### Added — Authenticator: Google Drive backup & restore (desktop, opt-in)
+
+- **Connect Google Account** in Authenticator settings (requires an
+  encryption password). Every change is backed up automatically, debounced, to
+  a hidden app-only Drive folder (`drive.appdata` scope).
+- **End-to-end encrypted**: the whole vault, secrets *and* account names,
+  order and pins, is sealed as one AES-256-GCM blob under the vault key, with
+  the header bound as authenticated data. Google stores an opaque file.
+- **Integrity checks** at every step: local self-check before upload, Drive
+  MD5 verification after upload, and on restore the verifier, GCM tag, entry
+  count, SHA-256 digest and per-record validation.
+- **Restore** after a reinstall or on a new device: sign in, pick a version,
+  enter the backup's password, verify with Windows Hello, then **merge**
+  (never duplicates) or **replace** (rollback). Restores are atomic.
+- **10 versions** kept for rollback; settings show account, status, last
+  backup and last restore, with Backup now / Restore / Disconnect / Delete
+  cloud backups.
+- **Multi-device safety**: a newer backup from another device pauses
+  automatic backup until you merge it or keep this device's data.
+- **Resilient**: offline and Google-side failures retry with back-off and on
+  reconnect; revoked access shows a reconnect banner.
+- OAuth (PKCE, loopback redirect) and all HTTP run in Rust; the refresh token
+  is stored in the OS keychain and never reaches the webview, whose CSP is
+  unchanged. Release builds need a Google OAuth client (DEPLOYMENT.md §4);
+  without one, the feature reports "not configured".
+
+### Changed
+
+- **One-row header**: tool tabs now share the top bar with the status badge
+  and theme toggle (the "CoreTools" title row was removed — the window title
+  carries the name), giving each tool more vertical space.
+- Changing or removing the encryption password now writes the vault config
+  and all entries in a single IndexedDB transaction (previously two), so an
+  interruption can't leave them out of step.
+
 ## [0.2.0] — 2026-09-02
 
 First versioned release. Everything before this shipped as untagged "0.1.0"

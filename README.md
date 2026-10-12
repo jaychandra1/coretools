@@ -1,6 +1,6 @@
 # CoreTools
 
-A lightweight, **fully offline** desktop toolkit by **JDG Initiates**, built
+A lightweight, **offline-first** desktop toolkit by **JDG Initiates**, built
 with **Tauri v2 + Svelte 5 + TypeScript**.
 
 It bundles five focused utilities:
@@ -20,8 +20,9 @@ It bundles five focused utilities:
    import/export of the extension's backup files (including encrypted ones).
    Secrets can be encrypted at rest with a password (PBKDF2 + AES-256-GCM),
    and the desktop build can optionally unlock with **Windows Hello**
-   (fingerprint / face / PIN, TPM-backed). See [SECURITY.md](./SECURITY.md)
-   for the storage and unlock model.
+   (fingerprint / face / PIN, TPM-backed) and back up to **Google Drive**,
+   end-to-end encrypted, for restore after a reinstall or on a new device.
+   See [SECURITY.md](./SECURITY.md) for the storage, unlock and backup model.
 5. **JSON-Studio** — a full JSON workbench: Monaco editor with live
    validation, tree editing, JSON Schema validation & generation, JSONPath /
    JMESPath explorers, side-by-side + semantic diff, JSON repair, OpenAPI
@@ -34,8 +35,12 @@ The app ships with a premium dark/light theme (toggle in the header; the
 choice is kept in memory only — never persisted) and self-hosted Inter
 typography, so it makes zero network requests even for fonts.
 
-Everything runs locally. There are **no network calls and no telemetry.** The
-three text tools keep everything in memory and write nothing to disk unless
+Everything runs locally, and there is **no telemetry.** The only network
+feature is the Authenticator's **opt-in Google Drive backup** (desktop only).
+It does nothing until you connect an account, and it only ever uploads data
+that was encrypted on your device first. The header badge reads **Offline**
+in every tool, and **Online** only while that backup is connected or running.
+The three text tools keep everything in memory and write nothing to disk unless
 you explicitly save it. Two tools are deliberate exceptions with their own
 local IndexedDB databases: the **Authenticator** (its purpose is to keep your
 2FA accounts — encrypted with AES-256-GCM once you set a password) and
@@ -298,6 +303,17 @@ follow professional conventions; the style choice applies to the body):
    modern encrypted format (this app only), and per-account QR codes with a
    print-all view. Imports show a preview and skip duplicates; exports are
    generated entirely on-device.
+5. **Back up to Google Drive** (desktop) — in Settings, set an encryption
+   password, then **Connect Google Account**. Every change is then backed up
+   automatically, end-to-end encrypted with that password, into a hidden
+   app-only folder in your Drive. The last 10 versions are kept. Settings shows
+   the account, status and last backup, with **Backup now**, **Restore
+   backup**, **Disconnect** and **Delete cloud backups**. After a reinstall or
+   on a new device, choose **Restore from Google Drive**, sign in, and enter
+   the same password; Windows Hello verifies you before anything is restored.
+   If two devices back up to one account, the app asks you to merge rather
+   than overwrite. Release builds need a Google OAuth client — see
+   [DEPLOYMENT.md](./DEPLOYMENT.md#4-cloud-backup-google-sign-in-setup).
 
 See [src/lib/core/authenticator/README.md](./src/lib/core/authenticator/README.md)
 for the feature's full design and security notes.

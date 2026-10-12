@@ -1,17 +1,29 @@
 # Privacy & Security Model
 
-CoreTools is designed to be a **trustworthy, fully offline** local tool. This
+CoreTools is designed to be a **trustworthy, offline-first** local tool. This
 document describes the concrete measures that back that claim, so the design can
 be audited rather than taken on faith.
 
-## 1. Fully offline — no network, no telemetry
+## 1. Offline by default — one opt-in network feature, no telemetry
 
-- **No network code.** The application makes no HTTP/WebSocket/fetch calls. There
-  is no analytics SDK, no update pinger, no crash reporter, and no external font
-  or asset loading. This includes the Authenticator: QR codes are decoded
+- **No telemetry, ever.** There is no analytics SDK, no update pinger, no crash
+  reporter, and no external font or asset loading. QR codes are decoded
   (`jsqr`) and generated (`qrcode`) entirely in-page from canvas pixels and
   `data:` URLs, service icons are locally-computed monogram avatars (no
   favicon fetching), and camera frames never leave the device.
+- **Exactly one feature uses the network, and only if you turn it on:** the
+  Authenticator's **Google Drive backup** (desktop build only). Until you
+  click *Connect Google Account*, the app makes no network request at all.
+  When connected, it talks only to Google's OAuth and Drive endpoints, and
+  only ever uploads a backup that was **end-to-end encrypted on this device**
+  first. Every other tool — Diff-Checker, YML-Validator, Grammar-Polisher,
+  JSON-Studio — has no network path whatsoever. Details in
+  [§8](#google-drive-backup-optional-desktop-only).
+- **That network code lives in Rust, not the webview.** All HTTP is made by
+  `src-tauri/src/cloud.rs` to fixed Google endpoints. The webview itself
+  still cannot reach any remote origin (see the CSP below), so the page that
+  holds decrypted secrets has no way to send anything off the device; it can
+  only ask the backend for a fixed set of backup operations.
 - **Content Security Policy.** The packaged app runs under a strict CSP defined
   in `src-tauri/tauri.conf.json`:
   ```
@@ -20,12 +32,16 @@ be audited rather than taken on faith.
   object-src 'none'; base-uri 'self'; frame-src 'none'
   ```
   `connect-src` permits only the local Tauri IPC channel — **no remote origin is
-  reachable**, so even an accidental network call would be blocked by the
-  runtime. `object-src 'none'` and `frame-src 'none'` disable plugins/embeds.
-- **No outbound capability is granted.** Tauri's capability model
-  (`src-tauri/capabilities/default.json`) grants only `dialog:allow-open` and
-  `dialog:allow-save`. There is no HTTP plugin, no shell plugin, and no
-  filesystem-scope plugin enabled.
+  reachable from the webview**, so even an accidental `fetch` would be blocked
+  by the runtime. `object-src 'none'` and `frame-src 'none'` disable
+  plugins/embeds. Cloud backup did not relax this policy.
+- **No outbound capability is granted to the webview.** Tauri's capability
+  model (`src-tauri/capabilities/default.json`) grants only `core:default`.
+  There is no HTTP plugin, no shell plugin, and no filesystem-scope plugin.
+- **The header badge tells the truth per section.** It reads **Offline** in
+  every tool, and **Online** only on the Authenticator tab while Google Drive
+  backup is connected — or, on any tab, while a backup or sign-in is actually
+  in flight. The badge only observes state; it never triggers a request.
 
 ## 2. In-memory by default — persistence only where it *is* the feature
 
@@ -49,8 +65,9 @@ be audited rather than taken on faith.
 
 ## 3. Minimal, guarded native surface
 
-The Rust backend (`src-tauri/src/lib.rs`, `src-tauri/src/hello.rs`) exposes
-exactly nine commands. **The dialog-origin rule is enforced in Rust, not by
+The Rust backend (`src-tauri/src/lib.rs`, `src-tauri/src/hello.rs`,
+`src-tauri/src/cloud.rs`) exposes exactly nineteen commands: five for files,
+five for Windows Hello, nine for cloud backup. **The dialog-origin rule is enforced in Rust, not by
 frontend convention:** the file dialogs are opened by Rust
 (`pick_open_path` / `pick_save_path`), every path they issue is canonicalized
 and stored in managed state, and each read/write command accepts only a
@@ -70,11 +87,25 @@ webview holds no dialog capability of its own
 | `hello_create_key(challenge)` | Create/replace the app's Hello key and sign the enrollment challenge | OS shows the Hello verification prompt; challenge limited to 128 bytes; never sees secrets or passwords |
 | `hello_sign(challenge)` | Sign the stored challenge to unlock | OS enforces a biometric/PIN verification on **every** call; challenge limited to 128 bytes |
 | `hello_delete_key()` | Remove the app's Hello key | Idempotent; used when Hello unlock is disabled |
+| `hello_verify_user()` | Device check before a cloud restore | OS biometric/PIN prompt via a throwaway key under a separate name — never touches the unlock key |
+| `cloud_available()` | Is a Google OAuth client compiled into this build? | Pure check; no I/O |
+| `cloud_status()` | Connected account email + computer name | Reads the OS keychain only; no network |
+| `cloud_connect()` | Google sign-in | System browser + loopback redirect + PKCE (S256) + CSRF state; 5-minute timeout; refuses if Drive access was unticked; refresh token stored in the OS keychain, never returned to the webview |
+| `cloud_cancel_connect()` | Abort a waiting sign-in | Sets a flag the listener polls |
+| `cloud_disconnect()` | Forget + revoke the credential | Deletes the keychain entry first, then revokes at Google (best effort) |
+| `cloud_list()` | List backup versions | App-data folder only (`drive.appdata` scope) |
+| `cloud_upload(name, content, deviceId, deviceLabel)` | Upload one encrypted backup version | Name must match `coretools-authenticator-*.json` (charset-restricted); content ≤ 5 MiB; labels sanitized and byte-capped; always written to the connected account's app-data folder |
+| `cloud_download(id)` | Fetch one version | Id charset-restricted; response ≤ 5 MiB; UTF-8 only |
+| `cloud_delete(id)` | Delete one version | Id charset-restricted; already-gone counts as success |
 
-No business logic runs in the backend, minimising the trusted native surface. No
+Business logic stays out of the backend, keeping the trusted native surface small.
+The one exception is the OAuth/HTTP plumbing in `cloud.rs`. No
 paths are ever constructed from untrusted/manifest content — they come only from
 dialog results. The Hello commands (§8) handle only opaque challenge/signature
 byte arrays — vault keys, secrets and passwords never cross the IPC boundary.
+The cloud commands accept only already-encrypted backup text and file
+metadata. They never accept a token **from** the webview, so a compromised
+page cannot point uploads at another Google account.
 
 ## 4. Safe, sandboxed YAML parsing
 
@@ -134,8 +165,10 @@ inside the app, so even typography triggers no network request.
   `src/lib/core/authenticator/db.ts`, the Authenticator's isolated IndexedDB
   boundary (§8); all crypto and parsing modules beside it remain pure.
 - **UI** (`src/lib/components`) renders state only.
-- **Platform layer** (`src/lib/platform`) is the single file-I/O boundary.
-- **Rust backend** is a thin, guarded I/O shell.
+- **Platform layer** (`src/lib/platform`) is the single file-I/O and
+  cloud-transport boundary.
+- **Rust backend** is a thin, guarded I/O shell, plus the cloud backup
+  transport (`cloud.rs`).
 
 This layering means a reviewer can verify the security-relevant behaviour by
 reading a small number of well-isolated files.
@@ -159,6 +192,11 @@ reading a small number of well-isolated files.
   — HMAC, PBKDF2, AES-GCM and SHA-256 are never reimplemented in JS. The one
   hand-written primitive is MD5, required solely for compatibility with the
   Authenticator browser extension's legacy backup format (see §8).
+- The Rust backend adds, for cloud backup only: `reqwest` (HTTPS via
+  **rustls** with bundled Mozilla roots — no system OpenSSL), `keyring` (OS
+  keychain: Windows Credential Manager, macOS Keychain, Secret Service on
+  Linux), and `sha2` / `base64` / `getrandom` for PKCE. Backup encryption
+  itself is done in the frontend with Web Crypto, like the vault.
 - Build-time tooling (Vite/esbuild) never ships in the packaged application, so
   dev-server advisories do not affect the distributed binary.
 
@@ -172,8 +210,9 @@ database. This section specifies exactly what that means.
 
 - **Database**: IndexedDB `coretools-authenticator`, local to this device
   (the WebView2 profile directory in the packaged app; per-origin browser
-  storage in the web preview). It is never synced or transmitted — there is no
-  backend and the CSP forbids network access.
+  storage in the web preview). It is never transmitted as-is. The only copy
+  that ever leaves the device is the optional, end-to-end encrypted Google
+  Drive backup described below.
 - **Entry metadata** (issuer, account name, code type, digits, period,
   counter, ordering, pinned flag) is stored **in the clear** — the same model
   the Authenticator browser extension uses.
@@ -202,7 +241,9 @@ database. This section specifies exactly what that means.
 
 - Secrets, generated codes and passwords are never logged (there are no
   `console.*` calls in `src/lib`), never placed in URLs or query strings,
-  never written to `localStorage`/cookies, and never leave the device.
+  never written to `localStorage`/cookies, and never leave the device
+  unencrypted. The cloud backup carries them only inside its encrypted
+  payload.
 - QR scanning (camera or image) and QR generation for export run entirely
   in-page; exports are produced client-side and written only through the
   user-driven Save dialog.
@@ -248,6 +289,80 @@ The desktop build can optionally unlock the vault with Windows Hello
   the password again.
 - In the browser build the feature is absent (`hello_available` is
   Windows-desktop only); nothing is degraded.
+
+### Google Drive backup (optional, desktop only)
+
+Off until the user clicks *Connect Google Account* in Authenticator settings,
+which requires an encryption password to be set first. Code:
+`src/lib/core/authenticator/cloud-backup.ts` (envelope),
+`cloud-sync.ts` (policy), `src/lib/components/authenticator/cloud.svelte.ts`
+(scheduling) and `src-tauri/src/cloud.rs` (transport).
+
+**What gets uploaded.** One JSON file per backup version. The **entire vault**
+— secrets *and* issuer, account names, order, pins, counters and display
+settings — is serialized and encrypted as a single **AES-256-GCM** blob under
+the **vault key** (PBKDF2-SHA256 of the encryption password, 310,000
+iterations). The only cleartext fields are what restore needs before it can
+decrypt: the format name, creation time, a random per-install device id and
+the computer name, the KDF salt and iteration count, and the vault's password
+verifier (itself AES-GCM ciphertext).
+
+**Integrity, in layers.**
+- The cleartext header is bound into the GCM tag as additional authenticated
+  data, so a header field can't be swapped or edited without restore failing.
+- The verifier distinguishes "wrong password" from "damaged file" so the user
+  gets an accurate message.
+- The decrypted payload carries an entry count and a SHA-256 digest of the
+  entry list, both checked, and every record is validated before anything is
+  written.
+- Before upload, each sealed file is decrypted again locally and checked. After
+  upload, Drive's MD5 of the stored bytes is compared with what was sent. A
+  mismatch deletes the upload and retries; older versions are never touched.
+- KDF parameters from a downloaded header are bounded (100k–5M iterations),
+  so a tampered file can't stall a restore.
+
+**Credentials and scope.**
+- Sign-in is OAuth 2.0 with PKCE in the user's own browser, with a loopback
+  redirect (RFC 8252). The app never sees the Google password.
+- The only scopes requested are `openid email` (to show which account is
+  connected) and `drive.appdata`: a hidden per-app folder. CoreTools cannot
+  see or touch any other file in the user's Drive.
+- The refresh token lives in the **OS keychain** and never crosses into the
+  webview. Access tokens are held in Rust memory only.
+
+**Versions, devices and conflicts.**
+- Every backup is a new immutable version; the newest **10** are kept for
+  rollback. Retention runs only after a new version has uploaded and
+  verified, so an interruption at any point leaves every earlier version
+  intact.
+- Each device remembers which remote version its data is based on. If another
+  device made a newer backup, automatic backups pause instead of burying it.
+  The user then merges (duplicates are never created) or explicitly keeps this
+  device's data; the other version stays available as an older version.
+- Failures that heal on their own (offline, Google 5xx/429) retry with
+  back-off and when the OS reports the network is back. Revoked access shows
+  a "reconnect" banner.
+
+**Restore.**
+- Requires the password the backup was made with. On a device with Windows
+  Hello, it also requires a Hello verification (`hello_verify_user`).
+- Everything is decrypted and validated in memory first, then written in
+  **one IndexedDB transaction** — an interrupted restore changes nothing.
+- On a fresh install, the backup's password becomes the vault password, so
+  the device ends up exactly as the original was.
+
+**Trade-offs, stated plainly.**
+- Anyone who obtains the backup file (e.g. a compromised Google account) can
+  attempt an offline password guess against PBKDF2 at 310,000 iterations,
+  exactly as with an exported encrypted backup. Use a strong encryption
+  password.
+- Google can see metadata, not content: that backups exist, their times and
+  sizes (which loosely track the number of accounts), the computer name, and
+  the Google account they belong to.
+- After a password change, new backups use the new password; older versions
+  keep the password they were made with.
+- *Wipe all data* disconnects this device but leaves the Drive backups in
+  place. *Delete cloud backups* removes every version.
 
 ### Legacy-format compatibility (deliberate, contained weakness)
 

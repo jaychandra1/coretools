@@ -192,10 +192,79 @@ The fix there is an Apple Developer ID ($99/yr) + notarization.
 - Releases are already tag-only, so each installer hash lives long enough to
   accumulate reputation instead of being replaced on every push.
 
+## 4. Cloud backup: Google sign-in setup
+
+The Authenticator's Google Drive backup needs a Google **OAuth client**. Its id
+is compiled into the desktop app at build time. Without it, the build still
+succeeds and the feature simply says "not configured in this build".
+
+**Cost: none.** You need a Google account, but no billing account or credit
+card. Creating a Cloud project, enabling the Drive API and creating an OAuth
+client are all free; if the console offers a "free trial", you can dismiss
+it. Each user's backups (a few KB each) count against *their own* Drive
+storage, not yours.
+
+### One-time setup (about 10 minutes)
+
+1. Go to <https://console.cloud.google.com>, sign in, and **create a project**
+   (e.g. "CoreTools").
+2. **APIs & Services → Library →** search **Google Drive API → Enable**.
+3. **Google Auth Platform** (older consoles: *OAuth consent screen*) →
+   **Get started**: app name `CoreTools`, a user-support email,
+   **Audience: External**, a developer contact email.
+4. **Data access → Add or remove scopes**: add `openid`,
+   `.../auth/userinfo.email` and `.../auth/drive.appdata`. All three are
+   **non-sensitive**, so Google's app verification isn't required. Skip
+   uploading a logo for now, because a logo sends the app through Google's
+   brand verification.
+5. **Clients → Create client → Application type: Desktop app** → copy the
+   **Client ID** and **Client secret**. No redirect URI is needed, because
+   desktop clients accept the app's `http://127.0.0.1:<port>` loopback
+   redirect automatically.
+6. **Audience → Publish app** (status *In production*). **Don't skip this:**
+   while the app is in *Testing*, only listed test users can sign in, and
+   Google expires their sign-in after **7 days**, so everyone's backups would
+   stop weekly with "reconnect".
+
+### Wire it into releases
+
+In GitHub: **Settings → Secrets and variables → Actions → New repository
+secret**:
+
+| Secret | Value |
+| --- | --- |
+| `CORETOOLS_GOOGLE_CLIENT_ID` | the Client ID (`…apps.googleusercontent.com`) |
+| `CORETOOLS_GOOGLE_CLIENT_SECRET` | the Client secret |
+
+`release.yml` passes both to `tauri build`. Google documents desktop-app
+client secrets as *not confidential*, since they ship inside the app and PKCE
+is what protects sign-in. Keeping them in secrets just keeps them out of the
+repo.
+
+Because the client is compiled in, **adding or changing the secrets only
+takes effect in the next release** (`npm version patch -m "release: v%s"` →
+`git push origin HEAD --follow-tags`). Installers built before that still
+report "not configured".
+
+### Local builds
+
+Set the variables in the shell that runs the build (PowerShell shown):
+
+```powershell
+$env:CORETOOLS_GOOGLE_CLIENT_ID = "<client id>"
+$env:CORETOOLS_GOOGLE_CLIENT_SECRET = "<client secret>"
+npm run tauri build
+```
+
+`build.rs` declares both with `rerun-if-env-changed`, so changing them
+triggers a rebuild. The browser build (`/app` on Vercel) never includes cloud
+backup.
+
 ## Updates for installed copies
 
-There is no auto-updater (by design, the app makes no network requests — see
-SECURITY.md). The manual-update policy is:
+There is no auto-updater: apart from the opt-in Authenticator cloud backup,
+the app makes no network requests, and it never phones home to check for
+versions (see SECURITY.md). The manual-update policy is:
 
 - The app shows its version in the header; each release lists changes in
   `CHANGELOG.md` and on the GitHub Release.
@@ -215,6 +284,8 @@ SECURITY.md). The manual-update policy is:
       version sync).
 - [ ] Release: `npm version X.Y.Z -m "release: v%s"` → `git push origin HEAD --follow-tags`
       → verify the GitHub Release has all three installers + `SHA256SUMS.txt`.
+- [ ] One-time: Google OAuth client + `CORETOOLS_GOOGLE_CLIENT_ID` /
+      `CORETOOLS_GOOGLE_CLIENT_SECRET` repo secrets for cloud backup (§4).
 - [ ] One-time: commit `src-tauri/Cargo.lock` from a machine with Rust.
 - [ ] (Optional) purge historical binaries from git history (filter-repo).
 - [ ] (Recommended) set up code signing — Windows cert + macOS Developer ID —

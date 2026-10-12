@@ -4,12 +4,43 @@
   import SentencePolisher from "./lib/components/SentencePolisher.svelte";
   import Authenticator from "./lib/components/authenticator/Authenticator.svelte";
   import JsonStudio from "./lib/components/json-studio/JsonStudio.svelte";
+  import { cloudBackup } from "./lib/components/authenticator/cloud.svelte";
   import { getPlatform } from "./lib/platform";
 
   type Tab = "diff" | "yaml" | "polish" | "authenticator" | "json";
   let tab = $state<Tab>("diff");
 
   const platform = getPlatform();
+
+  // Connectivity badge — must tell the truth per section. Every tool is
+  // offline except the Authenticator once Google Drive backup is connected;
+  // and while a backup/sign-in is actually running (debounced backups can
+  // finish after the user switched tabs) it reads "Online" wherever you are.
+  // The badge only observes: it never starts cloud activity itself.
+  const connectivity = $derived.by(() => {
+    if (cloudBackup.activity) {
+      return {
+        online: true,
+        label: "Online · Syncing…",
+        title: "Talking to Google Drive for Authenticator backup (end-to-end encrypted). Other tools stay offline.",
+      };
+    }
+    if (tab === "authenticator" && cloudBackup.connected) {
+      return {
+        online: true,
+        label: "Online · Drive backup",
+        title: "This section backs up to your Google Drive, end-to-end encrypted — Google can't read it. All other tools stay offline.",
+      };
+    }
+    return {
+      online: false,
+      label: "Offline",
+      title:
+        tab === "authenticator" && cloudBackup.available
+          ? "This section is offline. Connect Google Drive backup in Authenticator settings to back up (end-to-end encrypted)."
+          : "Everything in this tool runs locally. No network access.",
+    };
+  });
 
   // Theme toggle. Initial value follows the OS preference; kept in memory
   // only (never persisted) in line with the no-storage privacy model.
@@ -52,8 +83,9 @@
       </button>
     </nav>
     <div class="header-right">
-      <span class="mode muted" title="Everything runs locally. No network access.">
-        ● Offline · {platform.kind === "tauri" ? "Desktop" : "Preview"} ·
+      <span class="mode muted" title={connectivity.title}>
+        <span class="dot" class:online={connectivity.online} aria-hidden="true">●</span>
+        {connectivity.label} · {platform.kind === "tauri" ? "Desktop" : "Preview"} ·
         v{__APP_VERSION__}
       </span>
       <button
@@ -124,6 +156,9 @@
     font-size: 12px;
     white-space: nowrap;
   }
+  .dot.online {
+    color: var(--added-fg);
+  }
   .theme-toggle {
     display: inline-grid;
     place-items: center;
@@ -165,11 +200,24 @@
     background: transparent;
     color: var(--text);
   }
+  .tabs button {
+    position: relative;
+  }
   .tabs button.active {
     color: var(--accent);
-    /* Inset underline: a negative margin would be clipped by the scroller. */
-    box-shadow: inset 0 -2px 0 var(--accent);
     font-weight: 600;
+  }
+  /* Underline drawn inside the button box: a negative margin would be
+     clipped by the scroller, and an inset box-shadow leaves faint vertical
+     edge lines in Chromium/WebView2. */
+  .tabs button.active::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    background: var(--accent);
   }
   main {
     flex: 1;
