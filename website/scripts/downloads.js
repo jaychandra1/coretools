@@ -16,7 +16,7 @@
    ============================================================ */
 window.CORETOOLS_DOWNLOADS = {
   // Current release version, shown across the site (synced from package.json).
-  version: "0.3.0",
+  version: "0.4.0",
 
   // All published versions + per-release checksums.
   releaseUrl: "https://github.com/jaychandra1/coretools/releases",
