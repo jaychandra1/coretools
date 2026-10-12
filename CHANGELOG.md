@@ -4,9 +4,10 @@ All notable changes to CoreTools are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
-Releases are cut by tagging: `git tag vX.Y.Z && git push origin vX.Y.Z`
-(after `node scripts/sync-version.mjs` — CI refuses tags that don't match
-`package.json`).
+Releases are cut with `npm version X.Y.Z -m "release: v%s"`, then
+`git push origin HEAD --follow-tags`. That bumps `package.json` and copies
+the version everywhere else. CI refuses a tag that doesn't match
+`package.json`.
 
 ## [0.2.0] — 2026-09-02
 

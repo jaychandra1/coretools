@@ -8,11 +8,16 @@
  *   - website/scripts/downloads.js (CORETOOLS_DOWNLOADS.version)
  *
  * Usage:
+ *   npm version 0.3.0                       # bump package.json + lockfile,
+ *                                           # sync the three targets, commit, tag
  *   node scripts/sync-version.mjs           # rewrite the three targets
  *   node scripts/sync-version.mjs --check   # exit 1 if any target disagrees
  *
- * CI runs --check on every push and before every release, so the four copies
- * can never drift again. Zero dependencies.
+ * `npm version` is the release command. It bumps package.json and
+ * package-lock.json, then runs the `version` script (this file, plus
+ * `git add` of the three targets) before it commits and tags. CI runs
+ * --check on every push and before every release, so the four copies can
+ * never drift again. Zero dependencies.
  */
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -71,7 +76,7 @@ for (const target of targets) {
 
 if (drift) {
   console.error(
-    "\nVersion drift detected. Run `node scripts/sync-version.mjs` and commit.",
+    "\nVersion drift detected. Bump with `npm version <x.y.z>`, or run `node scripts/sync-version.mjs` if package.json is already set.",
   );
   process.exit(1);
 }

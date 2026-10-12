@@ -1,6 +1,6 @@
 {
   "name": "coretools",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Lightweight, fully offline desktop toolkit: file diff & merge + Kubernetes YAML optimizer.",
@@ -9,6 +9,7 @@
   },
   "scripts": {
     "version:sync": "node scripts/sync-version.mjs",
+    "version": "node scripts/sync-version.mjs && git add src-tauri/Cargo.toml src-tauri/tauri.conf.json website/scripts/downloads.js",
     "dev": "vite",
     "build": "svelte-check --tsconfig ./tsconfig.json && vite build",
     "build:web": "vite build --mode web && node scripts/build-web.mjs",

@@ -77,14 +77,14 @@ Two workflows own quality and distribution:
 - **`.github/workflows/release.yml`** — runs when you push a version tag:
 
 ```bash
-# 1. Set the version once (package.json is the single source):
-#    edit package.json "version", then propagate it:
-node scripts/sync-version.mjs
-git commit -am "release: v0.3.0"
+# One command. package.json is the source of truth; npm bumps it and
+# package-lock.json, scripts/sync-version.mjs copies that version into
+# Cargo.toml, tauri.conf.json, and website/scripts/downloads.js, then
+# npm commits and tags (v0.3.0). The working tree must be clean.
+npm version 0.3.0 -m "release: v%s"
 
-# 2. Tag and push — this is the entire release action:
-git tag v0.3.0
-git push origin master v0.3.0
+# Push the commit and the tag — this is the entire release action:
+git push origin HEAD --follow-tags
 ```
 
 The release workflow then:
@@ -213,9 +213,8 @@ SECURITY.md). The manual-update policy is:
 
 - [ ] Push to `master` → **CI** must be green (types, tests, audit, clippy,
       version sync).
-- [ ] Release: bump `package.json` version → `node scripts/sync-version.mjs`
-      → commit → `git tag vX.Y.Z && git push origin vX.Y.Z` → verify the
-      GitHub Release has all three installers + `SHA256SUMS.txt`.
+- [ ] Release: `npm version X.Y.Z -m "release: v%s"` → `git push origin HEAD --follow-tags`
+      → verify the GitHub Release has all three installers + `SHA256SUMS.txt`.
 - [ ] One-time: commit `src-tauri/Cargo.lock` from a machine with Rust.
 - [ ] (Optional) purge historical binaries from git history (filter-repo).
 - [ ] (Recommended) set up code signing — Windows cert + macOS Developer ID —

@@ -12,7 +12,8 @@ name: Release
 #   https://github.com/<owner>/<repo>/releases/latest/download/CoreTools-Windows-Setup.exe
 # so asset names stay stable across versions and no site edit is needed.
 #
-# Release flow:  git tag v0.2.0 && git push origin v0.2.0
+# Release flow:  npm version 0.3.0 -m "release: v%s"
+#                git push origin HEAD --follow-tags
 #
 # Code signing (when certificates are available): add the secrets and wire
 # `bundle.windows.signCommand` (Azure Trusted Signing) or
