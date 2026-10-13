@@ -1,0 +1,48 @@
+name: Generate Cargo.lock
+
+# One-off / on demand (audit F-05): resolves the Rust dependency graph and
+# pushes src-tauri/Cargo.lock to the `chore/cargo-lock` branch for review.
+# Merge it through a pull request; from then on CI and releases verify the
+# lockfile (`cargo metadata --locked`) and Dependabot proposes updates to it.
+#
+# Run: Actions → "Generate Cargo.lock" → Run workflow.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write # pushes the review branch only
+
+jobs:
+  lock:
+    name: Generate src-tauri/Cargo.lock
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned master
+        with:
+          toolchain: stable
+
+      # Resolution only — nothing is compiled, so no system libraries needed.
+      # The lockfile covers every target (Windows, macOS, Linux).
+      - name: Resolve dependencies
+        working-directory: src-tauri
+        run: cargo generate-lockfile
+
+      - name: Push to the review branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b chore/cargo-lock
+          git add src-tauri/Cargo.lock
+          git commit -m "chore: commit src-tauri/Cargo.lock for reproducible builds (audit F-05)"
+          git push --force origin chore/cargo-lock
+          {
+            echo "### Cargo.lock generated"
+            echo ""
+            echo "Open a pull request: https://github.com/${GITHUB_REPOSITORY}/compare/master...chore/cargo-lock?expand=1"
+          } >> "$GITHUB_STEP_SUMMARY"

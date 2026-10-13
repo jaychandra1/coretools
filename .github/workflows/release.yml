@@ -98,6 +98,19 @@ jobs:
             exit 1
           fi
 
+      # Only reviewed code may ship (audit F-03/F-04): the commit being
+      # released must already be part of master's history. A tag on a side
+      # commit — or on anything pushed around branch protection — is refused.
+      - name: Released commit is on master
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          status=$(gh api "repos/${GITHUB_REPOSITORY}/compare/master...${GITHUB_SHA}" --jq .status)
+          if [ "$status" != "identical" ] && [ "$status" != "behind" ]; then
+            echo "::error::${GITHUB_SHA} is not on master (compare status: ${status}) — release only merged commits."
+            exit 1
+          fi
+
   build:
     name: Build (${{ matrix.platform }})
     needs: quality
@@ -157,6 +170,18 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # Reproducible builds (audit F-05): with Cargo.lock committed, the
+      # release builds exactly the reviewed dependency set or fails.
+      - name: Cargo.lock is committed and current
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          if [ -f Cargo.lock ]; then
+            cargo metadata --locked --format-version 1 > /dev/null
+          else
+            echo "::warning::src-tauri/Cargo.lock is not committed — this build resolved dependencies freshly (audit F-05)."
+          fi
+
       - name: Generate app icons
         run: npm run icon
 
@@ -193,10 +218,20 @@ jobs:
     # nothing is overwritten. No mixed-version download sets, ever.
     needs: build
     runs-on: ubuntu-latest
+    # Publishing pauses here for a required reviewer once the `release`
+    # environment has protection rules (DEPLOYMENT.md §2 · audit F-03): no
+    # one — not a stolen session, not a bad merge — publishes installers
+    # without an explicit approval. (ARTIFACTS_REPO_TOKEN stays a repository
+    # secret so the quality job can fail fast on an expired token.)
+    environment:
+      name: release
+      url: https://github.com/jaychandra1/artifacts/tree/main/coretools/releases
     # Publishing goes to ANOTHER (public) repository with its own token, so
-    # this repo's GITHUB_TOKEN stays read-only.
+    # this repo's GITHUB_TOKEN stays read-only. id-token lets Sigstore issue
+    # a short-lived signing certificate bound to this workflow run.
     permissions:
       contents: read
+      id-token: write
     steps:
       - name: Checkout (publish script + changelog)
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -226,6 +261,18 @@ jobs:
           sha256sum CoreTools-Windows-Setup.exe CoreTools-macOS.dmg CoreTools-Linux.AppImage > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
+      # Keyless Sigstore signature over the checksum file (which pins every
+      # installer). The certificate names this repository + workflow + tag,
+      # so someone holding only ARTIFACTS_REPO_TOKEN can replace the files
+      # but cannot produce a signature that verifies (audit F-03). The
+      # signature is recorded in Sigstore's public transparency log.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Sign the checksums
+        working-directory: incoming
+        run: cosign sign-blob --yes --bundle SHA256SUMS.txt.sigstore.json SHA256SUMS.txt
+
       # package.json is the version source; the quality job already refused
       # any tag that doesn't match it.
       - name: Resolve version
@@ -241,3 +288,5 @@ jobs:
           artifacts-repo: jaychandra1/artifacts
           token: ${{ secrets.ARTIFACTS_REPO_TOKEN }}
           assets-dir: incoming
+          # Lets the notes print the exact `cosign verify-blob` command.
+          signer: https://github.com/${{ github.repository }}/.github/workflows/release.yml

@@ -197,6 +197,46 @@
     });
   }
 
+  /* ------------------- published release truth ------------------- */
+
+  /**
+   * The release workflow writes latest.json only AFTER the installers are
+   * uploaded, so it is the source of truth for what a visitor will actually
+   * download. Showing its version (instead of the package.json version baked
+   * into this deploy, which goes live minutes before — or without — a
+   * successful release) means the label can never claim a build that isn't
+   * there. Read-only GET of a public file; on any failure the static values
+   * stay.
+   */
+  function syncWithPublishedRelease() {
+    if (!cfg.latestUrl || !window.fetch) return;
+    fetch(cfg.latestUrl, { cache: "no-store", credentials: "omit", referrerPolicy: "no-referrer" })
+      .then(function (res) {
+        return res.ok ? res.json() : null;
+      })
+      .then(function (latest) {
+        if (!latest || typeof latest.version !== "string") return;
+        if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(latest.version)) return;
+        cfg.version = latest.version;
+        setText("[data-version]", "v" + latest.version);
+
+        var sizes = {};
+        (latest.assets || []).forEach(function (a) {
+          if (a && typeof a.name === "string") sizes[a.name] = a.size;
+        });
+        Object.keys(cfg.platforms || {}).forEach(function (osKey) {
+          var data = cfg.platforms[osKey];
+          var card = document.querySelector('[data-download-grid] [data-os="' + osKey + '"]');
+          var sizeEl = card && card.querySelector("[data-os-size]");
+          if (!sizeEl) return;
+          var file = (data.url || "").split("/").pop();
+          var size = formatBytes(sizes[file]);
+          sizeEl.textContent = "v" + latest.version + (size ? " · " + size : "");
+        });
+      })
+      .catch(function () {});
+  }
+
   /* --------------------------- meta --------------------------- */
 
   function updateMeta(detected) {
@@ -219,6 +259,7 @@
     var detected = detectOS();
     updateMeta(detected);
     populateDownloads(detected);
+    syncWithPublishedRelease();
     loadChecksums();
     initReveal();
   }

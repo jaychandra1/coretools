@@ -11,6 +11,58 @@ the version everywhere else. CI refuses a tag that doesn't match
 
 ## [Unreleased]
 
+### Changed
+
+- **Each module now backs up separately to Google Drive.** Authenticator
+  accounts are saved as `coretools-authenticator-<time>-<device>.json` and
+  Credential Manager logins as `coretools-credmanager-<time>-<device>.json`.
+  Each series keeps its own 10 versions, its own conflict check and its own
+  "pending" state. Adding a login no longer re-uploads your 2FA accounts, and
+  a conflict in one module never pauses backups of the other. Existing
+  backups keep working: older single-file backups appear under the
+  Authenticator and restore its accounts.
+- **Each section shows only its own things.** The Authenticator's settings
+  show its backup status, versions, "Back up now", restore and delete; the
+  Credential Manager's settings show its own. Options that belong to the
+  other section (code grouping, password-reveal confirmation) are no longer
+  shown there. The Google connection itself is shared.
+- **The cloud backup panel no longer shows the Drive folder path or file
+  name.** The "Open Google Drive settings" button is gone too, along with
+  the native command behind it.
+- **Releases are signed and gated.** `SHA256SUMS.txt` is signed with Sigstore
+  (keyless; `SHA256SUMS.txt.sigstore.json`) and the release notes print the
+  verify command. A release builds only commits already on `master` and
+  waits for approval in the `release` environment. The website deploys from
+  a `production` branch that CI moves only after the web checks pass.
+- CI verifies `src-tauri/Cargo.lock` once committed (`cargo metadata --locked`),
+  runs the Rust unit tests, and refuses temporary test code. A one-click
+  **Generate Cargo.lock** workflow proposes the lockfile for review.
+
+### Fixed
+
+- **The website shows the version you actually download.** The download
+  cards read the newest published release (`coretools/releases/latest.json`)
+  instead of a version baked in at build time. Before, the site could
+  advertise a release that hadn't finished publishing.
+- **Google Drive "403" errors are told apart.** Full storage, rate limiting
+  (retried automatically), a Workspace administrator's policy, and revoked
+  permission each get their own message. An unrecognised 403 no longer
+  claims your access was revoked.
+
+- **No more "http://tauri.localhost wants to use your cameras" prompt** in
+  the Windows app. That address is Tauri's internal name for the app's own
+  pages, so the prompt looked like a foreign site asking. The app now answers
+  WebView2's camera request itself when you start the QR scanner. It covers
+  the camera only, and only the app's own pages can be in the webview;
+  Windows' camera privacy switch and in-use light still apply.
+
+### Changed
+
+- CI compiles the Windows-only Rust code (Windows Hello, WebView2) on every
+  push, instead of discovering mistakes there only in a release build.
+
+## [1.1.0] — 2026-10-13
+
 ### Added
 
 - **Credential Manager** (new tab): store platform logins — name, login URL,

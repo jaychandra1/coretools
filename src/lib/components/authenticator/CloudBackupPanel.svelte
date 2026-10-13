@@ -1,19 +1,37 @@
 <script lang="ts">
   import { authStore } from "./store.svelte";
   import { cloudBackup, type CloudNotice } from "./cloud.svelte";
-  import { MAX_VERSIONS } from "../../core/authenticator/cloud-sync";
+  import {
+    BACKUP_KIND_LABELS,
+    MAX_VERSIONS,
+    ofKind,
+    type BackupKind,
+  } from "../../core/authenticator/cloud-sync";
 
   let {
+    scope,
     onrestore,
   }: {
+    /**
+     * The section showing the panel. Each module backs up separately, so the
+     * panel shows and acts on that module's backups only; the Google
+     * connection itself is shared.
+     */
+    scope: BackupKind;
     /** Open the restore dialog, optionally preselecting a version. */
     onrestore: (preselectId?: string) => void;
   } = $props();
 
   const busy = $derived(cloudBackup.activity !== null);
+  const label = $derived(BACKUP_KIND_LABELS[scope]);
+  /** "accounts" / "saved logins", for sentences. */
+  const things = $derived(scope === "authenticator" ? "accounts" : "saved logins");
+  const status = $derived(cloudBackup.statusOf(scope));
+  const conflict = $derived(cloudBackup.conflictOf(scope));
+  const lastBackupAt = $derived(cloudBackup.lastBackupAtOf(scope));
 
-  // Version count, size and newest file name for the "stored in" block —
-  // fetched once quietly when the panel opens, then kept current by backups.
+  // Version count and size — fetched once quietly when the panel opens, then
+  // kept current by backups.
   $effect(() => {
     if (cloudBackup.connected && cloudBackup.versions === null) {
       void cloudBackup.refreshVersions();
@@ -59,17 +77,20 @@
     return `${bytes} B`;
   }
 
-  const versionCount = $derived(cloudBackup.versions?.length ?? null);
-  const totalSize = $derived(
-    cloudBackup.versions?.reduce((sum, v) => sum + (v.size || 0), 0) ?? 0,
-  );
-  const newestFile = $derived(cloudBackup.versions?.[0]?.name ?? null);
+  /** This module's versions in Drive; null until known. */
+  const versions = $derived(cloudBackup.versions ? ofKind(cloudBackup.versions, scope) : null);
+  const versionCount = $derived(versions?.length ?? null);
+  const totalSize = $derived(versions?.reduce((sum, v) => sum + (v.size || 0), 0) ?? 0);
 
   type Tone = "ok" | "busy" | "warn" | "bad";
   const pill = $derived.by((): { tone: Tone; label: string; detail: string } => {
-    switch (cloudBackup.status) {
+    switch (status) {
       case "up-to-date":
-        return { tone: "ok", label: "Up to date", detail: "Every change is backed up." };
+        return {
+          tone: "ok",
+          label: "Up to date",
+          detail: versionCount === 0 ? `Your ${things} back up after the first change.` : "Every change is backed up.",
+        };
       case "working":
         return {
           tone: "busy",
@@ -117,7 +138,7 @@
   async function disconnect() {
     if (
       !window.confirm(
-        "Disconnect your Google account? Automatic backups stop. Backups already in Google Drive are kept until you delete them.",
+        "Disconnect your Google account? Automatic backups stop here and in the other vault section, which shares this connection. Backups already in Google Drive are kept until you delete them.",
       )
     ) {
       return;
@@ -128,24 +149,24 @@
   async function deleteBackups() {
     if (
       !window.confirm(
-        "Permanently delete ALL CoreTools backups from your Google Drive? You won't be able to restore them on a new device. This cannot be undone.",
+        `Permanently delete ALL ${label} backups from your Google Drive? You won't be able to restore them on a new device. This cannot be undone.`,
       )
     ) {
       return;
     }
-    await cloudBackup.deleteAllBackups();
+    await cloudBackup.deleteAllBackups(scope);
   }
 
   async function keepThisDevice() {
-    const other = cloudBackup.conflict?.deviceLabel || "the other device";
+    const other = conflict?.deviceLabel || "the other device";
     if (
       !window.confirm(
-        `Upload this device's accounts as the newest backup? Accounts added on ${other} that aren't here won't be in it (its backup stays available as an older version).`,
+        `Upload this device's ${things} as the newest backup? Changes made on ${other} that aren't here won't be in it (its backup stays available as an older version).`,
       )
     ) {
       return;
     }
-    await cloudBackup.keepThisDevice();
+    await cloudBackup.keepThisDevice(scope);
   }
 </script>
 
@@ -189,7 +210,7 @@
         <span class="badge-icon">{@render cloudIcon(22)}</span>
         <div class="head-text">
           <span class="title">Google Drive backup</span>
-          <span class="subtitle">Never lose your 2FA accounts</span>
+          <span class="subtitle">Never lose your {scope === "authenticator" ? "2FA accounts" : "saved logins"}</span>
         </div>
         <span class="pill tone-off">Off</span>
       </div>
@@ -220,7 +241,7 @@
         {:else}
           <button
             class="primary"
-            onclick={() => cloudBackup.connect()}
+            onclick={() => cloudBackup.connect(scope)}
             disabled={!authStore.encrypted || busy}
           >
             {cloudBackup.needsReconnect ? "Reconnect Google account" : "Connect Google Account"}
@@ -247,9 +268,9 @@
       </div>
 
       <div class="stats">
-        <div class="stat" title={absolute(cloudBackup.config?.lastBackupAt)}>
+        <div class="stat" title={absolute(lastBackupAt)}>
           <span class="stat-label">Last backup</span>
-          <span class="stat-value">{relative(cloudBackup.config?.lastBackupAt)}</span>
+          <span class="stat-value">{relative(lastBackupAt)}</span>
         </div>
         <div class="stat">
           <span class="stat-label">Versions kept</span>
@@ -267,13 +288,13 @@
 
       <p class="status-line tone-text-{pill.tone}">{pill.detail}</p>
 
-      {#if cloudBackup.conflict}
+      {#if conflict}
         <div class="callout warn">
-          <strong>{cloudBackup.conflict.deviceLabel || "Another device"}</strong>
-          backed up {relative(Date.parse(cloudBackup.conflict.createdTime)).toLowerCase()}.
+          <strong>{conflict.deviceLabel || "Another device"}</strong>
+          backed up {relative(Date.parse(conflict.createdTime)).toLowerCase()}.
           Automatic backups from here are paused so its changes aren't buried.
           <div class="callout-actions">
-            <button class="primary small" onclick={() => onrestore(cloudBackup.conflict?.id)} disabled={busy}>
+            <button class="primary small" onclick={() => onrestore(conflict?.id)} disabled={busy}>
               Review &amp; merge…
             </button>
             <button class="ghost small" onclick={keepThisDevice} disabled={busy}>
@@ -283,42 +304,16 @@
         </div>
       {/if}
 
-      {#if cloudBackup.status === "reconnect"}
+      {#if status === "reconnect"}
         <div class="callout bad">
           Google access was revoked or expired.
           <div class="callout-actions">
-            <button class="primary small" onclick={() => cloudBackup.connect()} disabled={busy}>
+            <button class="primary small" onclick={() => cloudBackup.connect(scope)} disabled={busy}>
               Reconnect Google account
             </button>
           </div>
         </div>
       {/if}
-
-      <!-- Where the data actually lives. -->
-      <div class="location">
-        <div class="location-head">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-          </svg>
-          <span class="crumbs">
-            <span>Google Drive</span><span class="sep">›</span><span>Hidden app data</span><span class="sep">›</span><span>CoreTools</span>
-          </span>
-        </div>
-        {#if newestFile}
-          <code class="file" title="Newest backup file">{newestFile}</code>
-        {/if}
-        <p class="location-note">
-          A private folder only CoreTools can access — it doesn't appear in My
-          Drive or search. See or delete it under Drive settings → <em>Manage
-          apps</em> → CoreTools.
-        </p>
-        <button class="link" onclick={() => cloudBackup.openDriveSettings()}>
-          Open Google Drive settings
-          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M7 17 17 7M9 7h8v8" />
-          </svg>
-        </button>
-      </div>
 
       <label class="switch-row">
         <span class="switch-text">
@@ -338,10 +333,10 @@
         <div class="group">
           <button
             class="primary"
-            onclick={() => cloudBackup.backupNow()}
+            onclick={() => cloudBackup.backupNow({ series: [scope] })}
             disabled={busy || !authStore.encrypted || cloudBackup.needsReconnect}
           >
-            {#if cloudBackup.activity === "backing-up"}{@render spinner()} Backing up…{:else}Back up now{/if}
+            {#if cloudBackup.activity === "backing-up" && cloudBackup.backingUp === scope}{@render spinner()} Backing up…{:else}Back up now{/if}
           </button>
           <button class="ghost" onclick={() => onrestore()} disabled={busy}>Restore…</button>
         </div>
@@ -351,8 +346,8 @@
             class="ghost danger"
             onclick={deleteBackups}
             disabled={busy}
-            title="Delete all cloud backups"
-            aria-label="Delete all cloud backups"
+            title="Delete all {label} backups"
+            aria-label="Delete all {label} backups"
           >
             <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
               <path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3" />
@@ -536,67 +531,6 @@
   :global(:root[data-theme="dark"]) .tone-warn,
   :global(:root[data-theme="dark"]) .tone-text-warn {
     color: #f6c26b;
-  }
-
-  /* ---- storage location ---- */
-  .location {
-    border: 1px dashed var(--border);
-    border-radius: 9px;
-    padding: 10px 11px;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-  .location-head {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    color: var(--accent);
-  }
-  .crumbs {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 5px;
-    font-size: 12.5px;
-    font-weight: 600;
-    color: var(--text);
-  }
-  .crumbs .sep {
-    color: var(--text-muted);
-    font-weight: 400;
-  }
-  .file {
-    font-family: var(--mono);
-    font-size: 11px;
-    color: var(--text-muted);
-    background: var(--surface-2);
-    padding: 3px 7px;
-    border-radius: 5px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .location-note {
-    margin: 0;
-    font-size: 11.5px;
-    line-height: 1.5;
-    color: var(--text-muted);
-  }
-  .link {
-    align-self: flex-start;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 0;
-    border: none;
-    background: none;
-    color: var(--accent);
-    font-size: 12px;
-    font-weight: 600;
-  }
-  .link:hover:not(:disabled) {
-    background: none;
-    text-decoration: underline;
   }
 
   /* ---- switch ---- */

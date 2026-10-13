@@ -32,19 +32,24 @@ both:
 Result: `dist/` (marketing) + `dist/app/` (tool) → Vercel serves it as
 `outputDirectory: dist`.
 
-### To apply it
+### How the site deploys (only after CI passes)
 
-Commit and push these changes to the branch Vercel deploys (your `master`):
+Vercel does **not** deploy `master` directly: `vercel.json` sets
+`git.deploymentEnabled.master: false`. When a push to `master` passes CI's
+web checks (types, tests, audit, the no-test-code guard), the `promote-web`
+job in `ci.yml` moves a **`production`** branch to that commit. Vercel
+deploys `production`. A commit that fails CI never reaches the public site.
 
-```bash
-git add .
-git commit -m "Serve landing page at / and app at /app; add release pipeline & icons"
-git push
-```
+> **One-time Vercel setting — do it before merging a `vercel.json` with that
+> `git` block:** Project → Settings → Git → **Production Branch =
+> `production`**. Without it, Vercel still treats `master` as production.
+> With master deployments disabled, the site would then stop updating. The
+> first green push to `master` creates the `production` branch.
 
-Vercel will redeploy automatically. Confirm:
+After a green push, confirm:
 
-- `/` shows the landing page.
+- `/` shows the landing page, with the version and sizes of the newest
+  published release (read from `coretools/releases/latest.json`).
 - `/app` shows the tool.
 
 > **Check the Vercel project settings** once: Build & Development Settings should
@@ -73,7 +78,11 @@ Two workflows own quality and distribution:
 
 - **`.github/workflows/ci.yml`** — every push/PR: `svelte-check`, the full
   vitest suite, a production `npm audit` (must be clean), a version-drift
-  check, and `cargo clippy` on the Rust backend. Nothing publishes from CI.
+  check, a guard against temporary test code, `cargo clippy` + `cargo test`
+  on Linux, and a `cargo check` on Windows (Windows Hello and WebView2 code
+  only compiles there). Once `Cargo.lock` is committed, every Rust job
+  verifies it. CI publishes nothing. Its only write is moving the
+  `production` branch for the website (§1).
 - **`.github/workflows/release.yml`** — runs when you push a version tag:
 
 ```bash
@@ -89,12 +98,17 @@ git push origin HEAD --follow-tags
 
 The release workflow then:
 
-1. Re-runs the quality gates and **refuses tags that don't match
-   `package.json`**.
+1. Re-runs the quality gates. It **refuses tags that don't match
+   `package.json`**, and tags on a commit that isn't on `master`.
 2. Builds on **Windows, macOS, and Linux** runners.
 3. Publishes **all three or nothing** — a failed platform build fails the
    release; no mixed-version download sets.
-4. Publishes to the **public** repository
+4. **Waits for approval** in the `release` environment (once you add a
+   required reviewer — see "Repository protection" below).
+5. **Signs `SHA256SUMS.txt` with Sigstore** (keyless, bound to this
+   workflow), then publishes the signature bundle
+   `SHA256SUMS.txt.sigstore.json` with the installers.
+6. Publishes to the **public** repository
    [`jaychandra1/artifacts`](https://github.com/jaychandra1/artifacts). This
    source repo stays private. Stable asset names (`CoreTools-Windows-Setup.exe`,
    `CoreTools-macOS.dmg`, `CoreTools-Linux.AppImage`) plus a `SHA256SUMS.txt`
@@ -137,8 +151,10 @@ Personal access tokens → Fine-grained):
 - Repository access: **Only select repositories → `jaychandra1/artifacts`**.
 - Permissions: **Contents: Read and write**. That covers creating releases,
   uploading assets and pushing the index.
-- Pick an expiry you'll remember to renew; the release fails with a clear
-  error when it lapses.
+- Expiry: **90 days or less**. The release fails with a clear error when it
+  lapses — renew it then. A short-lived token limits the damage if it ever
+  leaks, and the Sigstore signature means a leaked token still can't
+  produce installers that verify.
 
 Add it to **this** (private) repo under Settings → Secrets and variables →
 Actions as **`ARTIFACTS_REPO_TOKEN`**. The artifacts repo can start completely
@@ -157,9 +173,47 @@ is read-only in every job (publishing uses the scoped token above), and
 Dependabot (`.github/dependabot.yml`) keeps npm, cargo, and the pinned actions
 patched.
 
-> **One-time follow-ups:** commit `src-tauri/Cargo.lock`
-> (`cd src-tauri && cargo generate-lockfile`) so builds are reproducible, and
-> optionally purge the historical binaries from git history
+### Verifying a download
+
+Releases signed by this workflow ship `SHA256SUMS.txt.sigstore.json`.
+With [cosign](https://docs.sigstore.dev/cosign/system_config/installation/)
+installed, download it together with `SHA256SUMS.txt` and the installer,
+then run:
+
+```bash
+cosign verify-blob SHA256SUMS.txt --bundle SHA256SUMS.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/jaychandra1/coretools/\.github/workflows/release\.yml@refs/(tags/v.+|heads/master)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum --check --ignore-missing SHA256SUMS.txt
+```
+
+The release notes and `coretools/releases/README.md` print the same command.
+
+### Repository protection (one-time, in GitHub settings)
+
+The workflows assume these settings. Without them, the gates above are
+advisory.
+
+1. **Protect `master`** — Settings → Rules → Rulesets → New branch ruleset,
+   target `master`. Enable *Restrict deletions*, *Block force pushes*,
+   *Require a pull request before merging* (with *Require review from Code
+   Owners*; `.github/CODEOWNERS` names the owner) and *Require status checks
+   to pass*. The required checks are the `ci.yml` jobs **Web**, **Rust lint
+   (clippy), tests and format** and **Rust build check (Windows)**. Working
+   solo? Put yourself on the bypass list for pull requests only, so the status
+   checks still apply.
+2. **Protect release tags** — New tag ruleset, target `v*`: *Restrict
+   creations*, *Restrict updates*, *Restrict deletions*, with yourself on the
+   bypass list. Only you can cut a release.
+3. **Approve each publish** — Settings → Environments → New environment
+   `release` → *Required reviewers*: yourself. Under *Deployment branches and
+   tags*, allow only tags matching `v*`. Every release then pauses at
+   "Publish" until you approve it.
+4. **Generate `Cargo.lock`** — Actions → **Generate Cargo.lock** → Run
+   workflow, then open the pull request it links and merge it. From then on
+   CI and releases build exactly the locked dependency set.
+
+> **Optional:** purge the historical binaries from git history
 > (`git filter-repo --path website/downloads --invert-paths` + coordinated
 > force-push) to reclaim the ~680 MB `.git`.
 
@@ -329,18 +383,23 @@ versions (see SECURITY.md). The manual-update policy is:
 ## Summary checklist
 
 - [ ] Push to `master` → **CI** must be green (types, tests, audit, clippy,
-      version sync).
+      Windows check, version sync); `promote-web` then deploys the site.
 - [ ] Release: `npm version X.Y.Z -m "release: v%s"` → `git push origin HEAD --follow-tags`
-      → verify `coretools-v<version>` and `coretools-latest` in
-      `jaychandra1/artifacts` have all three installers + `SHA256SUMS.txt`,
-      and `coretools/releases/README.md` lists the new version.
+      → approve the **release** environment → verify `coretools-v<version>`
+      and `coretools-latest` in `jaychandra1/artifacts` have all three
+      installers + `SHA256SUMS.txt` + `SHA256SUMS.txt.sigstore.json`, and
+      `coretools/releases/README.md` lists the new version.
+- [ ] One-time: Vercel **Production Branch = `production`** (§1).
+- [ ] One-time: `master` and `v*` rulesets, and a `release` environment with
+      a required reviewer (§2, "Repository protection").
 - [ ] One-time: `ARTIFACTS_REPO_TOKEN` secret (fine-grained PAT, Contents
-      read/write on `jaychandra1/artifacts` only) so releases can publish (§2).
+      read/write on `jaychandra1/artifacts` only, expiry ≤ 90 days) so
+      releases can publish (§2).
 - [ ] (Optional) Actions → **Import old release** to publish the last 0.1.0
       build into the public history.
 - [ ] One-time: Google OAuth client + `CORETOOLS_GOOGLE_CLIENT_ID` /
       `CORETOOLS_GOOGLE_CLIENT_SECRET` repo secrets for cloud backup (§4).
-- [ ] One-time: commit `src-tauri/Cargo.lock` from a machine with Rust.
+- [ ] One-time: Actions → **Generate Cargo.lock** → merge its pull request.
 - [ ] (Optional) purge historical binaries from git history (filter-repo).
 - [ ] (Recommended) set up code signing — Windows cert + macOS Developer ID —
       to remove OS "unknown publisher" warnings.

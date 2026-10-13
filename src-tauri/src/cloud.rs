@@ -52,7 +52,9 @@ const SCOPES: &str = "openid email https://www.googleapis.com/auth/drive.appdata
 const KEYRING_SERVICE: &str = "io.coretools.authenticator.cloud";
 const KEYRING_USER: &str = "google";
 
-const FILE_PREFIX: &str = "coretools-authenticator-";
+/// One series per module: 2FA accounts, and Credential Manager logins.
+/// Nothing else in the app-data folder is listed, read or written.
+const FILE_PREFIXES: [&str; 2] = ["coretools-authenticator-", "coretools-credmanager-"];
 const FILE_FIELDS: &str = "id,name,createdTime,size,md5Checksum,appProperties";
 /// Backups are a few KiB; anything near this is not ours.
 const MAX_BACKUP_BYTES: usize = 5 * 1024 * 1024;
@@ -217,12 +219,40 @@ fn net_error(_: reqwest::Error) -> String {
     "cloud_network".into()
 }
 
+/// The `reason` codes in a Google API error body:
+/// `{"error":{"errors":[{"domain":"usageLimits","reason":"userRateLimitExceeded"}]}}`.
+fn error_reasons(body: &str) -> Vec<String> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|json| {
+            json.get("error")?.get("errors")?.as_array().map(|errors| {
+                errors
+                    .iter()
+                    .filter_map(|e| e.get("reason")?.as_str().map(str::to_owned))
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
+/// Map an HTTP failure to a stable token. Google uses 403 for very different
+/// things (storage full, rate limits, missing scope, admin policy), so a 403
+/// is classified by the error's structured `reason`, never by a substring.
+/// An unrecognised 403 is reported as such — never as revoked access, which
+/// would stop backups and push every user to reconnect.
 fn status_error(status: StatusCode, body: &str) -> String {
+    let reasons = error_reasons(body);
+    let has = |wanted: &[&str]| reasons.iter().any(|r| wanted.contains(&r.as_str()));
     match status.as_u16() {
         401 => "cloud_auth_revoked".into(),
-        403 if body.contains("storageQuotaExceeded") => "cloud_quota".into(),
-        403 if body.contains("rateLimitExceeded") => "cloud_unavailable".into(),
-        403 => "cloud_auth_revoked".into(),
+        403 if has(&["storageQuotaExceeded"]) => "cloud_quota".into(),
+        403 if has(&["rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded"]) => {
+            "cloud_unavailable".into()
+        }
+        403 if has(&["domainPolicy"]) => "cloud_domain_policy".into(),
+        403 if has(&["insufficientPermissions", "insufficientScopes", "authError"]) => {
+            "cloud_auth_revoked".into()
+        }
         404 => "cloud_not_found".into(),
         408 | 429 | 500..=599 => "cloud_unavailable".into(),
         code => format!("cloud_http_{code}"),
@@ -242,8 +272,12 @@ fn clean_label(value: &str, max_bytes: usize) -> String {
     out.trim().to_string()
 }
 
+fn is_backup_name(name: &str) -> bool {
+    FILE_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+}
+
 fn validate_name(name: &str) -> Result<(), String> {
-    let ok = name.starts_with(FILE_PREFIX)
+    let ok = is_backup_name(name)
         && name.ends_with(".json")
         && name.len() <= 128
         && name
@@ -709,7 +743,7 @@ pub async fn cloud_list(state: tauri::State<'_, CloudState>) -> Result<Vec<Remot
     Ok(list
         .files
         .into_iter()
-        .filter(|file| file.name.starts_with(FILE_PREFIX))
+        .filter(|file| is_backup_name(&file.name))
         .map(RemoteFile::from)
         .collect())
 }
@@ -791,17 +825,6 @@ pub async fn cloud_download(
     String::from_utf8(bytes.to_vec()).map_err(|_| "cloud_corrupt".to_string())
 }
 
-/// Where Google Drive lists apps with hidden data (Manage apps → CoreTools
-/// shows the backup's size and offers "Delete hidden app data").
-const DRIVE_SETTINGS_URL: &str = "https://drive.google.com/drive/settings";
-
-/// Open Google Drive's settings in the system browser. The URL is fixed
-/// here, so the webview cannot use this to open anything else.
-#[tauri::command]
-pub fn cloud_open_drive_settings() -> Result<(), String> {
-    open_browser(DRIVE_SETTINGS_URL)
-}
-
 /// Delete one backup version. Already-gone counts as success.
 #[tauri::command]
 pub async fn cloud_delete(state: tauri::State<'_, CloudState>, id: String) -> Result<(), String> {
@@ -840,6 +863,8 @@ mod tests {
     #[test]
     fn validates_names_and_ids() {
         assert!(validate_name("coretools-authenticator-20261011T103000123Z-1a2b3c4d.json").is_ok());
+        assert!(validate_name("coretools-credmanager-20261011T103000123Z-1a2b3c4d.json").is_ok());
+        assert!(validate_name("coretools-credmanager-../x.json").is_err());
         assert!(validate_name("other.json").is_err());
         assert!(validate_name("coretools-authenticator-../x.json").is_err());
         assert!(validate_id("1AbC_d-9").is_ok());
@@ -856,11 +881,32 @@ mod tests {
     #[test]
     fn maps_http_status_to_tokens() {
         assert_eq!(status_error(StatusCode::NOT_FOUND, ""), "cloud_not_found");
-        assert_eq!(
-            status_error(StatusCode::FORBIDDEN, "storageQuotaExceeded"),
-            "cloud_quota"
-        );
+        assert_eq!(status_error(StatusCode::UNAUTHORIZED, ""), "cloud_auth_revoked");
+        assert_eq!(status_error(StatusCode::TOO_MANY_REQUESTS, ""), "cloud_unavailable");
         assert_eq!(status_error(StatusCode::SERVICE_UNAVAILABLE, ""), "cloud_unavailable");
         assert_eq!(status_error(StatusCode::IM_A_TEAPOT, ""), "cloud_http_418");
+    }
+
+    /// A Google API error body carrying one `reason`.
+    fn google_error(reason: &str) -> String {
+        format!(
+            r#"{{"error":{{"code":403,"message":"x","errors":[{{"domain":"usageLimits","reason":"{reason}","message":"x"}}]}}}}"#
+        )
+    }
+
+    #[test]
+    fn classifies_403_by_structured_reason() {
+        let forbidden = |reason: &str| status_error(StatusCode::FORBIDDEN, &google_error(reason));
+        // The audit's F-22: Google's per-user limit (capital R) is a retryable
+        // rate limit, not revoked access.
+        assert_eq!(forbidden("userRateLimitExceeded"), "cloud_unavailable");
+        assert_eq!(forbidden("rateLimitExceeded"), "cloud_unavailable");
+        assert_eq!(forbidden("dailyLimitExceeded"), "cloud_unavailable");
+        assert_eq!(forbidden("storageQuotaExceeded"), "cloud_quota");
+        assert_eq!(forbidden("insufficientPermissions"), "cloud_auth_revoked");
+        assert_eq!(forbidden("domainPolicy"), "cloud_domain_policy");
+        // Unknown or unparseable 403s are reported as such, never as revoked.
+        assert_eq!(forbidden("somethingNew"), "cloud_http_403");
+        assert_eq!(status_error(StatusCode::FORBIDDEN, "<html>Forbidden</html>"), "cloud_http_403");
     }
 }

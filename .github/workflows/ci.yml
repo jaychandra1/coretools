@@ -1,8 +1,10 @@
 name: CI
 
-# Quality gates on every push and pull request. Nothing here publishes
-# anything — releases are cut by release.yml on version tags, and that
-# workflow runs these same gates before building installers.
+# Quality gates on every push and pull request. The only thing this workflow
+# ever changes is the `production` branch pointer (promote-web, below), which
+# the Vercel site deploys from — so the website ships only commits that
+# passed these gates. Releases are cut by release.yml on version tags, which
+# runs the same gates before building installers.
 
 on:
   push:
@@ -30,6 +32,15 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
+      # A test-only fake Google Drive once reached the public web app
+      # (audit F-04). Temporary verification code is marked; refuse it.
+      - name: No temporary test code
+        run: |
+          if grep -rnE "TEMP-VERIFY|__TEMP_DELETE_ME|mock-cloud" src; then
+            echo "::error::Temporary test code found in src/ — remove it before merging (audit F-04)."
+            exit 1
+          fi
+
       - name: Install dependencies (lockfile-exact)
         run: npm ci
 
@@ -46,7 +57,7 @@ jobs:
         run: node scripts/sync-version.mjs --check
 
   rust:
-    name: Rust lint (clippy) and format
+    name: Rust lint (clippy), tests and format
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
@@ -75,6 +86,17 @@ jobs:
             libdbus-1-dev \
             pkg-config
 
+      # Reproducible builds (audit F-05): once Cargo.lock is committed, any
+      # change that would need it updated fails here instead of drifting.
+      - name: Cargo.lock is committed and current
+        working-directory: src-tauri
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            echo "::warning::src-tauri/Cargo.lock is not committed — builds are not reproducible. Run Actions → 'Generate Cargo.lock' and merge its branch (audit F-05)."
+          else
+            cargo metadata --locked --format-version 1 > /dev/null
+          fi
+
       # tauri::generate_context! requires the frontendDist directory to exist
       # at compile time; a stub is enough for lint builds.
       - name: Stub frontend dist
@@ -88,3 +110,76 @@ jobs:
       - name: Clippy (deny warnings)
         working-directory: src-tauri
         run: cargo clippy --all-targets -- -D warnings
+
+      - name: Unit tests
+        working-directory: src-tauri
+        run: cargo test --all-targets
+
+  rust-windows:
+    # The Linux job above never compiles `cfg(windows)` code — Windows Hello
+    # (hello.rs) and the WebView2 camera permission (webview_permissions.rs).
+    # Without this job, a mistake there only surfaces in a release build.
+    name: Rust build check (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned master
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Cargo.lock is committed and current
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          if [ -f Cargo.lock ]; then cargo metadata --locked --format-version 1 > /dev/null; fi
+
+      - name: Stub frontend dist
+        shell: bash
+        run: mkdir -p dist && touch dist/index.html
+
+      # The gate: Windows-only code must compile (incl. that webview2-com
+      # matches the version tauri uses).
+      - name: Compile check (Windows targets)
+        working-directory: src-tauri
+        run: cargo check --all-targets
+
+      # Advisory until the Windows-only code has a clean clippy baseline.
+      - name: Clippy (advisory)
+        working-directory: src-tauri
+        continue-on-error: true
+        run: cargo clippy --all-targets -- -D warnings
+
+  promote-web:
+    # Vercel deploys the `production` branch, not `master` (vercel.json
+    # disables master deployments). This job moves `production` to a master
+    # commit only after the web checks pass, so an untested commit can never
+    # reach the public site (audit F-04).
+    name: Promote to production (website)
+    needs: [web]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # moves one branch pointer; nothing else
+    steps:
+      - name: Point `production` at this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/production" >/dev/null 2>&1; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/heads/production" \
+              -f sha="${GITHUB_SHA}" -F force=true >/dev/null
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f ref=refs/heads/production -f sha="${GITHUB_SHA}" >/dev/null
+          fi
+          echo "production → ${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"

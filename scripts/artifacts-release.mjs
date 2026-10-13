@@ -108,12 +108,40 @@ function kind(file) {
   return "";
 }
 
-const VERIFY = [
-  "Verify a download against `SHA256SUMS.txt`:",
-  "",
-  "- Windows (PowerShell): `Get-FileHash <file> -Algorithm SHA256`",
-  "- macOS / Linux: `shasum -a 256 <file>`",
-].join("\n");
+const BUNDLE = "SHA256SUMS.txt.sigstore.json";
+/** Sigstore bundle present = the release workflow signed SHA256SUMS.txt. */
+const signed = existsSync(join(assetsDir, BUNDLE));
+
+/**
+ * How to verify: checksums always; plus the Sigstore signature when the
+ * release was signed (--signer = the signing workflow's URL, no ref). The
+ * signature proves the checksums came from that workflow on a release tag —
+ * the protection against a stolen publishing token (audit F-03).
+ */
+function verifyText(isSigned = signed) {
+  const lines = [
+    "Verify a download against `SHA256SUMS.txt`:",
+    "",
+    "- Windows (PowerShell): `Get-FileHash <file> -Algorithm SHA256`",
+    "- macOS / Linux: `shasum -a 256 <file>`",
+  ];
+  if (isSigned && args.signer) {
+    const identity = args.signer.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    lines.push(
+      "",
+      `\`SHA256SUMS.txt\` is signed with [Sigstore](https://www.sigstore.dev/) by the release workflow. Check the signature first ([cosign](https://docs.sigstore.dev/cosign/system_config/installation/)), with \`${BUNDLE}\` beside it:`,
+      "",
+      "```",
+      `cosign verify-blob SHA256SUMS.txt --bundle ${BUNDLE} \\`,
+      `  --certificate-identity-regexp '^${identity}@refs/(tags/v.+|heads/master)$' \\`,
+      "  --certificate-oidc-issuer https://token.actions.githubusercontent.com",
+      "```",
+      "",
+      "A file that fails this check did not come from the CoreTools release pipeline — don't install it.",
+    );
+  }
+  return lines.join("\n");
+}
 
 // ---- notes -----------------------------------------------------------------------
 
@@ -149,7 +177,7 @@ function writeNotes() {
     "",
     table,
     "",
-    VERIFY,
+    verifyText(),
     "",
     "Installers are currently unsigned; Windows SmartScreen or macOS Gatekeeper may warn.",
     "",
@@ -164,6 +192,7 @@ function writeNotes() {
     "",
     ...assets.map((a) => `- [\`${a.name}\`](${downloadUrl(latestTag, a.name)})`),
     `- [\`SHA256SUMS.txt\`](${downloadUrl(latestTag, "SHA256SUMS.txt")})`,
+    ...(signed ? [`- [\`${BUNDLE}\`](${downloadUrl(latestTag, BUNDLE)}) (Sigstore signature)`] : []),
     "",
     `Release notes for this version: https://github.com/${repo}/releases/tag/${tag}`,
     "",
@@ -203,7 +232,7 @@ function appReadme(index) {
       (a) => `| [${a.name}](${downloadUrl(latestTag, a.name)}) | ${formatSize(a.size)} | \`${a.sha256}\` |`,
     ),
     "",
-    VERIFY,
+    verifyText(latest.signed === true),
     "",
     "## All versions",
     "",
@@ -214,6 +243,7 @@ function appReadme(index) {
       const links = [
         ...v.assets.map((a) => `[${kind(a.name) || a.name}](${downloadUrl(releaseTag, a.name)})`),
         `[SHA256SUMS](${downloadUrl(releaseTag, "SHA256SUMS.txt")})`,
+        ...(v.signed ? [`[signature](${downloadUrl(releaseTag, BUNDLE)})`] : []),
       ].join(" · ");
       return `| [v${v.version}](https://github.com/${repo}/releases/tag/${releaseTag}) | ${v.date} | ${links} |`;
     }),
@@ -278,7 +308,7 @@ function writeIndex() {
   index.name = name;
   // Re-publishing a version replaces its entry (e.g. a re-run release).
   index.versions = index.versions.filter((v) => v.version !== version);
-  index.versions.push({ version, date, assets });
+  index.versions.push({ version, date, assets, signed });
   index.versions.sort((a, b) => compareSemver(b.version, a.version));
 
   const newest = index.versions[0];

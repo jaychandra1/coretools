@@ -25,10 +25,13 @@ backup files, including encrypted ones.
   fallback; changing/removing it invalidates the Hello setup. Absent in the
   browser build.
 - **Google Drive backup & restore (desktop, opt-in)**: requires the
-  encryption password. The whole vault (secrets *and* metadata) is sealed as
-  one AES-256-GCM blob under the vault key, header bound as AAD, and uploaded
-  automatically (debounced) after every change to the hidden `appDataFolder`.
-  Ten versions are kept for rollback. Multi-device conflicts pause automatic
+  encryption password. Each module backs up as its own series —
+  `coretools-authenticator-*.json` (accounts, secrets *and* metadata, plus
+  settings) and `coretools-credmanager-*.json` (Credential Manager logins).
+  Each file is one AES-256-GCM blob under the vault key, header bound as AAD,
+  and uploaded automatically (debounced) after every change in that module to
+  the hidden `appDataFolder`. Ten versions of each are kept for rollback,
+  and each section's settings show and restore only its own series. Multi-device conflicts pause automatic
   backup until the user merges or keeps this device's data. Offline failures
   retry with back-off. Restore needs the backup's password plus a Windows
   Hello check, dedupes on merge, and is written in one IndexedDB transaction.

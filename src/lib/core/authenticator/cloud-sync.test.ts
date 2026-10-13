@@ -2,24 +2,32 @@ import { describe, it, expect } from "vitest";
 import { createHash } from "node:crypto";
 import {
   backupFileName,
-  BACKUP_FILE_PREFIX,
+  backupKindOf,
+  BACKUP_PREFIXES,
   CloudSyncError,
   describeCloudError,
   detectConflict,
   MAX_VERSIONS,
   md5Hex,
+  ofKind,
   performBackup,
   planPrune,
   retryDelayMs,
   sortNewestFirst,
+  type BackupKind,
   type BackupTransport,
   type RemoteBackup,
 } from "./cloud-sync";
 
-function remote(id: string, minute: number, deviceId = "dev-a"): RemoteBackup {
+function remote(
+  id: string,
+  minute: number,
+  deviceId = "dev-a",
+  kind: BackupKind = "authenticator",
+): RemoteBackup {
   return {
     id,
-    name: `${BACKUP_FILE_PREFIX}${id}.json`,
+    name: `${BACKUP_PREFIXES[kind]}${id}.json`,
     createdTime: new Date(Date.UTC(2026, 9, 11, 10, minute)).toISOString(),
     size: 100,
     md5Checksum: "",
@@ -62,10 +70,23 @@ class FakeTransport implements BackupTransport {
 }
 
 describe("naming & ordering", () => {
-  it("builds sortable, transport-safe file names", () => {
-    const name = backupFileName(new Date("2026-10-11T10:30:00.123Z"), "1a2b3c4d-5e6f");
+  it("builds sortable, transport-safe file names per series", () => {
+    const at = new Date("2026-10-11T10:30:00.123Z");
+    const name = backupFileName("authenticator", at, "1a2b3c4d-5e6f");
     expect(name).toBe("coretools-authenticator-20261011T103000123Z-1a2b3c4d.json");
     expect(name).toMatch(/^[A-Za-z0-9._-]+$/);
+    expect(backupFileName("credmanager", at, "1a2b3c4d-5e6f")).toBe(
+      "coretools-credmanager-20261011T103000123Z-1a2b3c4d.json",
+    );
+  });
+
+  it("tells the series apart by file name", () => {
+    expect(backupKindOf("coretools-authenticator-x.json")).toBe("authenticator");
+    expect(backupKindOf("coretools-credmanager-x.json")).toBe("credmanager");
+    expect(backupKindOf("something-else.json")).toBeNull();
+    const list = [remote("a", 1), remote("c", 2, "dev-a", "credmanager"), remote("b", 3)];
+    expect(ofKind(list, "authenticator").map((f) => f.id)).toEqual(["a", "b"]);
+    expect(ofKind(list, "credmanager").map((f) => f.id)).toEqual(["c"]);
   });
 
   it("sorts newest first", () => {
@@ -131,6 +152,10 @@ describe("describeCloudError", () => {
     expect(describeCloudError("cloud_quota").kind).toBe("quota");
     expect(describeCloudError("oauth_scope_denied").kind).toBe("auth");
     expect(describeCloudError("cloud_http_418").message).not.toContain("418");
+    expect(describeCloudError("cloud_domain_policy").message).toMatch(/administrator/);
+    // An unrecognised 403 must not be treated as revoked access (F-22): that
+    // would stop backups and push every user to reconnect.
+    expect(describeCloudError("cloud_http_403")).toMatchObject({ kind: "other", retryable: false });
     expect(describeCloudError(new CloudSyncError("cloud_integrity", "x")).retryable).toBe(true);
   });
 
@@ -144,6 +169,7 @@ describe("describeCloudError", () => {
 
 describe("performBackup", () => {
   const base = {
+    series: "authenticator" as BackupKind,
     deviceId: "dev-me",
     deviceLabel: "MY-PC",
     seal: async () => '{"sealed":true}',
@@ -156,6 +182,36 @@ describe("performBackup", () => {
     expect(transport.files).toHaveLength(1);
     expect(transport.files[0].content).toBe('{"sealed":true}');
     expect(transport.files[0].deviceId).toBe("dev-me");
+    expect(transport.files[0].name).toMatch(/^coretools-authenticator-/);
+  });
+
+  it("keeps the series independent: conflicts, naming and retention", async () => {
+    const transport = new FakeTransport();
+    // Another device's credential backup must not block an authenticator one…
+    transport.files.push({ ...remote("cred", 1, "dev-other", "credmanager"), content: "{}" });
+    const auth = await performBackup({ ...base, transport, lastSyncedRemoteId: null });
+    expect(auth.kind).toBe("uploaded");
+    if (auth.kind !== "uploaded") throw new Error("expected upload");
+    expect(auth.versions.map((v) => backupKindOf(v.name))).toEqual(["authenticator"]);
+
+    // …but it does conflict with a credential backup from this device.
+    const cred = await performBackup({
+      ...base,
+      series: "credmanager",
+      transport,
+      lastSyncedRemoteId: null,
+    });
+    expect(cred).toMatchObject({ kind: "conflict", remote: { id: "cred" } });
+
+    // Pruning one series never deletes the other's versions.
+    for (let i = 0; i < MAX_VERSIONS + 2; i++) {
+      transport.files.push({ ...remote(`a${i}`, 10 + i, "dev-me"), content: "{}" });
+    }
+    const latest = sortNewestFirst(ofKind(await transport.list(), "authenticator"))[0];
+    await performBackup({ ...base, transport, lastSyncedRemoteId: latest.id });
+    const left = await transport.list();
+    expect(ofKind(left, "authenticator")).toHaveLength(MAX_VERSIONS);
+    expect(ofKind(left, "credmanager").map((f) => f.id)).toEqual(["cred"]);
   });
 
   it("stops on a conflict without sealing or uploading", async () => {

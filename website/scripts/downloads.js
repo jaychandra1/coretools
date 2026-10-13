@@ -19,6 +19,13 @@ window.CORETOOLS_DOWNLOADS = {
   // Current release version, shown across the site (synced from package.json).
   version: "1.1.0",
 
+  // What is ACTUALLY published (written by the release workflow after the
+  // installers are live). The page shows this version and these sizes, so the
+  // label can never run ahead of the binaries; `version` above is only the
+  // fallback if this can't be fetched.
+  latestUrl:
+    "https://raw.githubusercontent.com/jaychandra1/artifacts/main/coretools/releases/latest.json",
+
   // All published versions + per-release checksums.
   releaseUrl: "https://github.com/jaychandra1/artifacts/tree/main/coretools/releases",
 

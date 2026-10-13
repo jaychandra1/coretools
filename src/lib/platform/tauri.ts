@@ -107,11 +107,6 @@ const tauriCloud: CloudBridge = {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("cloud_delete", { id });
   },
-
-  async openDriveSettings(): Promise<void> {
-    const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("cloud_open_drive_settings");
-  },
 };
 
 /**

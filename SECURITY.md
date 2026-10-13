@@ -10,7 +10,12 @@ be audited rather than taken on faith.
   reporter, and no external font or asset loading. QR codes are decoded
   (`jsqr`) and generated (`qrcode`) entirely in-page from canvas pixels and
   `data:` URLs, service icons are locally-computed monogram avatars (no
-  favicon fetching), and camera frames never leave the device.
+  favicon fetching), and camera frames never leave the device. On Windows
+  the app grants WebView2's *camera* permission to its own pages itself
+  (`src-tauri/src/webview_permissions.rs`) rather than showing a prompt
+  attributed to `http://tauri.localhost`. No other permission kind is
+  granted, no third-party origin can be loaded into the webview (CSP), and
+  Windows' camera privacy setting still applies.
 - **Exactly one feature uses the network, and only if you turn it on:** the
   Authenticator's **Google Drive backup** (desktop build only). Until you
   click *Connect Google Account*, the app makes no network request at all.
@@ -96,10 +101,9 @@ webview holds no dialog capability of its own
 | `cloud_cancel_connect()` | Abort a waiting sign-in | Sets a flag the listener polls |
 | `cloud_disconnect()` | Forget + revoke the credential | Deletes the keychain entry first, then revokes at Google (best effort) |
 | `cloud_list()` | List backup versions | App-data folder only (`drive.appdata` scope) |
-| `cloud_upload(name, content, deviceId, deviceLabel)` | Upload one encrypted backup version | Name must match `coretools-authenticator-*.json` (charset-restricted); content ≤ 5 MiB; labels sanitized and byte-capped; always written to the connected account's app-data folder |
+| `cloud_upload(name, content, deviceId, deviceLabel)` | Upload one encrypted backup version | Name must match `coretools-authenticator-*.json` or `coretools-credmanager-*.json` (charset-restricted); content ≤ 5 MiB; labels sanitized and byte-capped; always written to the connected account's app-data folder |
 | `cloud_download(id)` | Fetch one version | Id charset-restricted; response ≤ 5 MiB; UTF-8 only |
 | `cloud_delete(id)` | Delete one version | Id charset-restricted; already-gone counts as success |
-| `cloud_open_drive_settings()` | Open Google Drive settings (Manage apps → CoreTools) | The URL is a constant in Rust; takes no input, so it can't open anything else |
 
 Business logic stays out of the backend, keeping the trusted native surface small.
 The one exception is the OAuth/HTTP plumbing in `cloud.rs`. No
@@ -203,6 +207,25 @@ reading a small number of well-isolated files.
 - Build-time tooling (Vite/esbuild) never ships in the packaged application, so
   dev-server advisories do not affect the distributed binary.
 
+### Release and deployment integrity
+
+- **Signed checksums.** Each release's `SHA256SUMS.txt`, which pins every
+  installer, is signed keylessly with **Sigstore** by the release workflow.
+  The bundle `SHA256SUMS.txt.sigstore.json` ships beside it, and the release
+  notes print the exact `cosign verify-blob` command. The signing
+  certificate names this repository's release workflow and the tag, so
+  someone holding only the artifacts-repo token can replace files but can't
+  produce a signature that verifies. Every signature is also recorded in
+  Sigstore's public transparency log.
+- **Only reviewed code ships.** A release builds only a commit that is
+  already on `master`, and publishing waits for an approval in the
+  `release` environment. The website deploys from a `production` branch
+  that CI moves only after the web checks pass on `master`. CI also refuses
+  temporary test code (such as a fake cloud backend) in `src/`.
+- **Reproducible Rust builds.** Once `src-tauri/Cargo.lock` is committed, CI
+  and releases verify it (`cargo metadata --locked`), so a build can't
+  silently resolve different dependencies from the reviewed set.
+
 ## 8. Authenticator: local persistence & encryption model
 
 The Authenticator (`src/lib/core/authenticator/`,
@@ -301,9 +324,15 @@ which requires an encryption password to be set first. Code:
 `cloud-sync.ts` (policy), `src/lib/components/authenticator/cloud.svelte.ts`
 (scheduling) and `src-tauri/src/cloud.rs` (transport).
 
-**What gets uploaded.** One JSON file per backup version. The **entire vault**
-— secrets *and* issuer, account names, order, pins, counters and display
-settings — is serialized and encrypted as a single **AES-256-GCM** blob under
+**What gets uploaded.** Each module backs up as its own series of JSON
+files, one file per version:
+- `coretools-authenticator-<time>-<device>.json` holds the 2FA accounts —
+  secrets *and* issuer, account names, order, pins and counters — plus
+  display settings;
+- `coretools-credmanager-<time>-<device>.json` holds the Credential Manager
+  logins.
+
+Each file is serialized and encrypted as a single **AES-256-GCM** blob under
 the **vault key** (PBKDF2-SHA256 of the encryption password, 310,000
 iterations). The only cleartext fields are what restore needs before it can
 decrypt: the format name, creation time, a random per-install device id and
@@ -315,9 +344,10 @@ verifier (itself AES-GCM ciphertext).
   data, so a header field can't be swapped or edited without restore failing.
 - The verifier distinguishes "wrong password" from "damaged file" so the user
   gets an accurate message.
-- The decrypted payload carries an entry count and a SHA-256 digest of the
-  entry list, both checked, and every record is validated before anything is
-  written.
+- The decrypted payload names the series it holds. That name is inside the
+  ciphertext, so renaming a file can't change what a restore overwrites. The
+  payload also carries a record count and a SHA-256 digest of its records,
+  both checked, and every record is validated before anything is written.
 - Before upload, each sealed file is decrypted again locally and checked. After
   upload, Drive's MD5 of the stored bytes is compared with what was sent. A
   mismatch deletes the upload and retries; older versions are never touched.
@@ -334,17 +364,24 @@ verifier (itself AES-GCM ciphertext).
   webview. Access tokens are held in Rust memory only.
 
 **Versions, devices and conflicts.**
-- Every backup is a new immutable version; the newest **10** are kept for
-  rollback. Retention runs only after a new version has uploaded and
+- Every backup is a new immutable version. The newest **10** of each series
+  are kept for rollback, and a change in one module uploads only that
+  module's series. Retention runs only after a new version has uploaded and
   verified, so an interruption at any point leaves every earlier version
   intact.
-- Each device remembers which remote version its data is based on. If another
-  device made a newer backup, automatic backups pause instead of burying it.
+- Each device remembers, per series, which remote version its data is based
+  on. If another device made a newer backup of a series, automatic backups of
+  that series pause instead of burying it.
   The user then merges (duplicates are never created) or explicitly keeps this
   device's data; the other version stays available as an older version.
 - Failures that heal on their own (offline, Google 5xx/429) retry with
   back-off and when the OS reports the network is back. Revoked access shows
   a "reconnect" banner.
+- A Google 403 is classified by its structured error reason, never by the
+  status code alone. Full storage, rate limiting (retried), a Workspace
+  administrator's policy, and revoked or missing permission each get their
+  own message. An unrecognised 403 is reported as a failure, not as revoked
+  access.
 
 **Restore.**
 - Requires the password the backup was made with. On a device with Windows
@@ -353,15 +390,21 @@ verifier (itself AES-GCM ciphertext).
   **one IndexedDB transaction** — an interrupted restore changes nothing.
 - On a fresh install, the backup's password becomes the vault password, so
   the device ends up exactly as the original was.
+- Each section restores only its own series: restoring in the Authenticator
+  never touches saved logins, and restoring in the Credential Manager never
+  touches 2FA accounts, even in *Replace* mode. Older backups that hold
+  accounts (and, from v1.1.0 builds, credentials) in one file appear in the
+  Authenticator, which restores only their accounts.
 
 **Trade-offs, stated plainly.**
 - Anyone who obtains the backup file (e.g. a compromised Google account) can
   attempt an offline password guess against PBKDF2 at 310,000 iterations,
   exactly as with an exported encrypted backup. Use a strong encryption
   password.
-- Google can see metadata, not content: that backups exist, their times and
-  sizes (which loosely track the number of accounts), the computer name, and
-  the Google account they belong to.
+- Google can see metadata, not content: that backups exist and for which
+  module (the file names), their times and sizes (which loosely track the
+  number of accounts and logins), the computer name, and the Google account
+  they belong to.
 - After a password change, new backups use the new password; older versions
   keep the password they were made with.
 - *Wipe all data* disconnects this device but leaves the Drive backups in
@@ -404,10 +447,11 @@ both.
   restrict to http(s).
 - **Trash.** Deleting is a soft delete: items can be restored for 30 days,
   then are purged permanently.
-- **Cloud backup.** Credentials, including trashed ones, travel inside the
-  same end-to-end encrypted payload as the Authenticator, with their own
-  SHA-256 checksum. A rollback to a backup made before the Credential
-  Manager existed leaves current credentials untouched.
+- **Cloud backup.** Credentials, including trashed ones, back up as their own
+  end-to-end encrypted series (`coretools-credmanager-*.json`), under the
+  same vault key and with their own SHA-256 checksum. Restoring or rolling
+  back the Authenticator never touches credentials, and the reverse holds
+  too.
 
 ### Legacy-format compatibility (deliberate, contained weakness)
 

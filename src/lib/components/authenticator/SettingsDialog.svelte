@@ -3,20 +3,28 @@
   import { authStore } from "./store.svelte";
   import { cloudBackup } from "./cloud.svelte";
   import CloudBackupPanel from "./CloudBackupPanel.svelte";
+  import type { BackupKind } from "../../core/authenticator/cloud-sync";
 
   let {
     onclose,
     ontoast,
     onrestore,
+    scope = "authenticator",
     title = "Authenticator settings",
   }: {
     onclose: () => void;
     ontoast: (message: string) => void;
     /** Open the restore dialog, optionally preselecting a version. */
     onrestore: (preselectId?: string) => void;
-    /** The vault is shared, so the Credential Manager opens this too. */
+    /**
+     * The section that opened the dialog. The vault (password, Windows
+     * Hello, auto-lock) is shared; everything else shows for its own section.
+     */
+    scope?: BackupKind;
     title?: string;
   } = $props();
+
+  const authenticator = $derived(scope === "authenticator");
 
   let error = $state("");
   let busy = $state(false);
@@ -138,7 +146,7 @@
     busy = true;
     try {
       await authStore.wipe();
-      ontoast("All authenticator data deleted");
+      ontoast("All vault data deleted");
       onclose();
     } finally {
       busy = false;
@@ -220,7 +228,7 @@
   {#if cloudBackup.supported}
     <section>
       <h3>Cloud backup</h3>
-      <CloudBackupPanel {onrestore} />
+      <CloudBackupPanel {scope} {onrestore} />
     </section>
   {/if}
 
@@ -239,7 +247,7 @@
         </button>
       {:else}
         <p class="muted">
-          Unlock this section with your fingerprint, face or Windows Hello PIN
+          Unlock with your fingerprint, face or Windows Hello PIN
           instead of typing the password. Enabling requires your current
           password and a Hello verification; the password remains the master
           fallback.
@@ -285,37 +293,41 @@
         onchange={(e) =>
           authStore.updateSettings({ clipboardClear: e.currentTarget.checked })}
       />
-      Clear clipboard 30 seconds after copying a code
+      Clear clipboard 30 seconds after copying {authenticator ? "a code" : "a password"}
     </label>
-    <label class="inline">
-      <input
-        type="checkbox"
-        checked={authStore.settings.groupCodes}
-        onchange={(e) =>
-          authStore.updateSettings({ groupCodes: e.currentTarget.checked })}
-      />
-      Group code digits ("123 456" instead of "123456")
-    </label>
-    <label class="inline">
-      <input
-        type="checkbox"
-        checked={authStore.settings.credentialsRevealAuth}
-        onchange={(e) =>
-          authStore.updateSettings({ credentialsRevealAuth: e.currentTarget.checked })}
-      />
-      Credential Manager: confirm it's you (Windows Hello or master password)
-      before showing or copying a password
-    </label>
+    {#if authenticator}
+      <label class="inline">
+        <input
+          type="checkbox"
+          checked={authStore.settings.groupCodes}
+          onchange={(e) =>
+            authStore.updateSettings({ groupCodes: e.currentTarget.checked })}
+        />
+        Group code digits ("123 456" instead of "123456")
+      </label>
+    {:else}
+      <label class="inline">
+        <input
+          type="checkbox"
+          checked={authStore.settings.credentialsRevealAuth}
+          onchange={(e) =>
+            authStore.updateSettings({ credentialsRevealAuth: e.currentTarget.checked })}
+        />
+        Confirm it's you (Windows Hello or master password) before showing or
+        copying a password
+      </label>
+    {/if}
   </section>
 
   <section class="danger-zone">
     <h3>Danger zone</h3>
     <p class="muted">
-      Permanently deletes every authenticator account, every saved credential
-      (including its trash and activity log), the encryption settings and all
-      preferences from this device, and disconnects cloud backup. This cannot
-      be undone — export a backup first. Backups already in Google Drive are
-      kept.
+      Permanently deletes the whole vault from this device —
+      {authenticator
+        ? "every account here and in the Credential Manager, which shares it"
+        : "every saved login (with its trash and activity log) and the Authenticator's accounts, which share it"}
+      — plus the encryption settings and preferences, and disconnects cloud
+      backup. This cannot be undone. Backups already in Google Drive are kept.
     </p>
     <div class="wipe-row">
       <input

@@ -24,7 +24,7 @@
       return {
         online: true,
         label: "Online · Syncing…",
-        title: "Talking to Google Drive for the encrypted vault backup (Authenticator + Credential Manager). Other tools stay offline.",
+        title: "Talking to Google Drive for the encrypted backup. Other tools stay offline.",
       };
     }
     const vaultTab = tab === "authenticator" || tab === "credentials";

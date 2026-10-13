@@ -33,6 +33,13 @@ inputs:
     description: Release-notes body; defaults to the CHANGELOG.md section
     required: false
     default: ""
+  signer:
+    description: >
+      Workflow URL that signs SHA256SUMS.txt with Sigstore (no ref), e.g.
+      https://github.com/owner/repo/.github/workflows/release.yml. When set and
+      SHA256SUMS.txt.sigstore.json is present, notes include the verify command.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -57,10 +64,12 @@ runs:
         ARTIFACTS_REPO: ${{ inputs.artifacts-repo }}
         ASSETS: ${{ inputs.assets-dir }}
         SUMMARY: ${{ inputs.summary }}
+        SIGNER: ${{ inputs.signer }}
       run: |
         set -euo pipefail
         extra=()
         if [ -n "$SUMMARY" ]; then extra=(--summary "$SUMMARY"); fi
+        if [ -n "$SIGNER" ]; then extra+=(--signer "$SIGNER"); fi
         node "$GITHUB_WORKSPACE/scripts/artifacts-release.mjs" notes \
           --app "$APP" --name "$APP_NAME" --version "$VERSION" \
           --artifacts-repo "$ARTIFACTS_REPO" --assets-dir "$ASSETS" \
@@ -123,10 +132,12 @@ runs:
         ARTIFACTS_REPO: ${{ inputs.artifacts-repo }}
         ASSETS: ${{ inputs.assets-dir }}
         DATE: ${{ inputs.date }}
+        SIGNER: ${{ inputs.signer }}
       run: |
         set -euo pipefail
         extra=()
         if [ -n "$DATE" ]; then extra=(--date "$DATE"); fi
+        if [ -n "$SIGNER" ]; then extra+=(--signer "$SIGNER"); fi
         node "$GITHUB_WORKSPACE/scripts/artifacts-release.mjs" index \
           --app "$APP" --name "$APP_NAME" --version "$VERSION" \
           --artifacts-repo "$ARTIFACTS_REPO" --assets-dir "$ASSETS" \
@@ -167,12 +178,14 @@ runs:
         ARTIFACTS_REPO: ${{ inputs.artifacts-repo }}
         ASSETS: ${{ inputs.assets-dir }}
         DATE: ${{ inputs.date }}
+        SIGNER: ${{ inputs.signer }}
       run: |
         set -euo pipefail
         assets="$(realpath "$ASSETS")" # resolve before leaving the workspace
         cd "$RUNNER_TEMP/artifacts-repo"
         extra=()
         if [ -n "$DATE" ]; then extra=(--date "$DATE"); fi
+        if [ -n "$SIGNER" ]; then extra+=(--signer "$SIGNER"); fi
         for attempt in 1 2 3 4 5; do
           git add -A
           if git diff --cached --quiet; then

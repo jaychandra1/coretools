@@ -1,23 +1,30 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
   import { authStore, type RestoreResult } from "./store.svelte";
-  import { cloudBackup } from "./cloud.svelte";
+  import { cloudBackup, restoreSummary } from "./cloud.svelte";
+  import { credentialStore } from "../credentials/credentials.svelte";
   import { accountKey } from "../../core/authenticator/backup";
   import {
     CloudBackupError,
+    restoreParts,
     type CloudBackupFile,
     type CloudBackupPayload,
   } from "../../core/authenticator/cloud-backup";
   import {
     describeCloudError,
+    ofKind,
+    type BackupKind,
     type RemoteBackup,
   } from "../../core/authenticator/cloud-sync";
 
   let {
+    scope,
     onclose,
     ontoast,
     preselectId = null,
   }: {
+    /** The section restoring: only its backups are listed and restored. */
+    scope: BackupKind;
     onclose: () => void;
     ontoast: (message: string) => void;
     /** Version to select initially (e.g. the one behind a conflict). */
@@ -25,6 +32,10 @@
   } = $props();
 
   type Step = "connect" | "pick" | "unlock" | "review" | "done";
+
+  const accounts = $derived(scope === "authenticator");
+  /** "account" / "saved credential", for counts. */
+  const noun = $derived(accounts ? "account" : "saved credential");
 
   let step = $state<Step>(cloudBackup.connected ? "pick" : "connect");
   let error = $state("");
@@ -45,10 +56,19 @@
   const fresh = $derived(!authStore.encrypted);
   const selected = $derived(versions.find((v) => v.id === selectedId) ?? null);
   const newestId = $derived(versions[0]?.id ?? "");
+  /** What this section would restore from the decrypted file. */
+  const parts = $derived(payload ? restoreParts([payload], scope) : null);
+  const count = $derived(
+    accounts ? (parts?.entries?.length ?? 0) : (parts?.credentials?.length ?? 0),
+  );
+  /** Records of this section already on the device (for the Replace warning). */
+  const localCount = $derived(
+    accounts ? authStore.entries.length : credentialStore.items.length,
+  );
 
   /** How the backup's accounts relate to what's on this device. */
   const comparison = $derived.by(() => {
-    if (!payload) return { fresh: 0, duplicates: 0 };
+    if (!parts?.entries) return { fresh: 0, duplicates: 0 };
     const existing = new Set(
       authStore.entries.map((entry) =>
         accountKey({
@@ -58,8 +78,8 @@
         }),
       ),
     );
-    const duplicates = payload.entries.filter((e) => existing.has(accountKey(e))).length;
-    return { fresh: payload.entries.length - duplicates, duplicates };
+    const duplicates = parts.entries.filter((e) => existing.has(accountKey(e))).length;
+    return { fresh: parts.entries.length - duplicates, duplicates };
   });
 
   function errorText(e: unknown): string {
@@ -84,7 +104,7 @@
     busy = true;
     error = "";
     try {
-      versions = await cloudBackup.listBackups();
+      versions = ofKind(await cloudBackup.listBackups(), scope);
       selectedId =
         versions.find((v) => v.id === preselectId)?.id ?? versions[0]?.id ?? null;
     } catch (e) {
@@ -162,11 +182,12 @@
 
   async function restore() {
     if (!payload || !selected || busy) return;
+    const effective = fresh ? "merge" : mode;
     if (
-      mode === "replace" &&
-      authStore.entries.length > 0 &&
+      effective === "replace" &&
+      localCount > 0 &&
       !window.confirm(
-        "Replace ALL accounts on this device with this backup? Accounts that aren't in the backup will be deleted from this device.",
+        `Replace ALL ${noun}s on this device with this backup? Any that aren't in the backup will be deleted from this device.`,
       )
     ) {
       return;
@@ -176,21 +197,16 @@
     const wasFresh = fresh;
     try {
       restored = await cloudBackup.applyRestore(
-        selected,
-        payload,
-        fresh ? "merge" : mode,
-        newestId,
+        [{ version: selected, payload, newestId }],
+        effective,
         usedPassword,
+        scope,
       );
       password = "";
       usedPassword = undefined;
       createdVault = wasFresh;
       step = "done";
-      ontoast(
-        restored.credentialsAdded
-          ? `Restored ${plural(restored.added, "account")} and ${plural(restored.credentialsAdded, "credential")}`
-          : `Restored ${plural(restored.added, "account")}`,
-      );
+      ontoast(restoreSummary(restored).replace(/\.$/, ""));
     } catch (e) {
       error = errorText(e);
     } finally {
@@ -227,13 +243,17 @@
     </div>
   {:else if step === "pick"}
     <p class="muted">
-      Backups in <strong>{cloudBackup.account}</strong>'s Google Drive, newest
-      first. Pick one to restore — older versions let you roll back.
+      {accounts ? "Authenticator" : "Credential Manager"} backups in
+      <strong>{cloudBackup.account}</strong>'s Google Drive, newest first. Pick
+      one to restore — older versions let you roll back.
     </p>
     {#if busy && versions.length === 0}
       <p class="muted center">Looking for backups…</p>
     {:else if versions.length === 0 && !error}
-      <p class="empty">No backups found for this Google account.</p>
+      <p class="empty">
+        No {accounts ? "Authenticator" : "Credential Manager"} backups found for
+        this Google account.
+      </p>
     {:else}
       <div class="versions" role="radiogroup" aria-label="Backup versions">
         {#each versions as version, i (version.id)}
@@ -286,58 +306,69 @@
         </button>
       </div>
     </form>
-  {:else if step === "review" && payload && selected}
+  {:else if step === "review" && parts && selected}
     <div class="summary">
-      <strong>
-        {plural(payload.entries.length, "account")}{#if payload.credentials.length}
-          · {plural(payload.credentials.length, "saved credential")}{/if}
-      </strong>
+      <strong>{plural(count, noun)}</strong>
       <span class="muted">
         backed up {formatTime(selected.createdTime)} on
         {selected.deviceLabel || "another device"} · integrity verified
       </span>
     </div>
-    {#if payload.entries.length > 0}
+    {#if parts.entries && parts.entries.length > 0}
       <ul class="preview">
-        {#each payload.entries.slice(0, 6) as entry, i (i)}
+        {#each parts.entries.slice(0, 6) as entry, i (i)}
           <li>
             <span class="issuer">{entry.issuer || entry.account}</span>
             {#if entry.issuer && entry.account}<span class="muted">{entry.account}</span>{/if}
           </li>
         {/each}
-        {#if payload.entries.length > 6}
-          <li class="muted">…and {payload.entries.length - 6} more</li>
+        {#if parts.entries.length > 6}
+          <li class="muted">…and {parts.entries.length - 6} more</li>
+        {/if}
+      </ul>
+    {:else if parts.credentials && parts.credentials.length > 0}
+      <ul class="preview">
+        {#each parts.credentials.slice(0, 6) as credential, i (i)}
+          <li>
+            <span class="issuer">{credential.platform}</span>
+            {#if credential.username}<span class="muted">{credential.username}</span>{/if}
+          </li>
+        {/each}
+        {#if parts.credentials.length > 6}
+          <li class="muted">…and {parts.credentials.length - 6} more</li>
         {/if}
       </ul>
     {/if}
 
     {#if fresh}
       <p class="muted small">
-        {#if authStore.entries.length > 0}
+        {#if accounts && authStore.entries.length > 0}
           The {plural(comparison.fresh, "new account")} will be added to the
           ones already here.
         {/if}
-        Your encryption password will be set to this backup's password and
-        your display settings restored.
+        Your encryption password will be set to this backup's password{#if parts.settings}
+          and your display settings restored{/if}.
       </p>
     {:else}
-      <p class="muted small">
-        {plural(comparison.fresh, "account")} new to this device,
-        {comparison.duplicates} already here (never duplicated).
-      </p>
+      {#if accounts}
+        <p class="muted small">
+          {plural(comparison.fresh, "account")} new to this device,
+          {comparison.duplicates} already here (never duplicated).
+        </p>
+      {/if}
       <div class="modes" role="radiogroup" aria-label="Restore mode">
         <label class="mode">
           <input type="radio" name="mode" value="merge" bind:group={mode} />
           <span>
-            <strong>Merge</strong> — add the {plural(comparison.fresh, "new account")},
-            keep everything already here.
+            <strong>Merge</strong> — add the {noun}s that aren't here yet, keep
+            everything already here.
           </span>
         </label>
         <label class="mode">
           <input type="radio" name="mode" value="replace" bind:group={mode} />
           <span>
-            <strong>Replace</strong> — make this device match the backup exactly
-            (rollback). Accounts not in the backup are removed.
+            <strong>Replace</strong> — make this device's {noun}s match the
+            backup exactly (rollback). Any not in the backup are removed.
           </span>
         </label>
       </div>
@@ -354,20 +385,11 @@
       </button>
     </div>
   {:else if step === "done" && restored}
-    <p>
-      <strong>
-        Restored {plural(restored.added, "account")}{#if restored.credentialsAdded}
-          and {plural(restored.credentialsAdded, "credential")}{/if}.
-      </strong>
-      {#if restored.skipped + restored.credentialsSkipped}
-        {restored.skipped + restored.credentialsSkipped} already on this device
-        {restored.skipped + restored.credentialsSkipped === 1 ? "was" : "were"} skipped.
-      {/if}
-    </p>
+    <p><strong>{restoreSummary(restored)}</strong></p>
     {#if createdVault}
       <p class="muted small">
-        Your accounts are encrypted with the backup's password — use it to
-        unlock from now on. Automatic backups continue from this device.
+        Your data is encrypted with the backup's password — use it to unlock
+        from now on. Automatic backups continue from this device.
       </p>
     {/if}
     <div class="actions">

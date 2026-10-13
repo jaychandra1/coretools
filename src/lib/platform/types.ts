@@ -71,12 +71,6 @@ export interface CloudBridge {
   }): Promise<RemoteBackup>;
   download(id: string): Promise<string>;
   remove(id: string): Promise<void>;
-  /**
-   * Open Google Drive's settings page (Manage apps → CoreTools shows and
-   * can delete the hidden backup data) in the system browser. The URL is
-   * fixed in the backend; the webview can't choose what opens.
-   */
-  openDriveSettings(): Promise<void>;
 }
 
 /**

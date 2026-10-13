@@ -14,6 +14,7 @@
 
 mod cloud;
 mod hello;
+mod webview_permissions;
 
 use std::collections::HashSet;
 use std::fs;
@@ -203,6 +204,14 @@ fn open_external_url(url: String) -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .setup(|app| {
+            // Answer the QR scanner's camera request ourselves instead of
+            // WebView2's "http://tauri.localhost wants to…" prompt.
+            if let Some(window) = app.get_webview_window("main") {
+                webview_permissions::install(&window);
+            }
+            Ok(())
+        })
         .manage(AuthorizedPaths::default())
         .manage(cloud::CloudState::default())
         .invoke_handler(tauri::generate_handler![
@@ -225,8 +234,7 @@ pub fn run() {
             cloud::cloud_list,
             cloud::cloud_upload,
             cloud::cloud_download,
-            cloud::cloud_delete,
-            cloud::cloud_open_drive_settings
+            cloud::cloud_delete
         ])
         .run(tauri::generate_context!())
         .expect("error while running CoreTools");

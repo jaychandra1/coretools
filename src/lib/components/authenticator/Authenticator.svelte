@@ -207,21 +207,22 @@
       !authStore.locked &&
       authStore.entries.length > 0 &&
       // A working cloud backup already covers what the reminder is about.
-      !(cloudBackup.connected && cloudBackup.config?.lastBackupAt) &&
+      !(cloudBackup.connected && cloudBackup.lastBackupAtOf("authenticator")) &&
       authStore.now - authStore.settings.backupReminderDismissedAt > THIRTY_DAYS,
   );
+  /** This section's backup status (the Credential Manager's isn't shown here). */
+  const cloudStatus = $derived(cloudBackup.statusOf("authenticator"));
+  const cloudConflict = $derived(cloudBackup.conflictOf("authenticator"));
   /** Cloud states that need the user — everything else lives in Settings. */
   const cloudAttention = $derived(
     authStore.ready && !authStore.locked && cloudBackup.ready
-      ? cloudBackup.status === "conflict" ||
-          cloudBackup.status === "reconnect" ||
-          cloudBackup.status === "error"
-        ? cloudBackup.status
+      ? cloudStatus === "conflict" || cloudStatus === "reconnect" || cloudStatus === "error"
+        ? cloudStatus
         : null
       : null,
   );
   const cloudIndicator = $derived.by(() => {
-    switch (cloudBackup.status) {
+    switch (cloudStatus) {
       case "up-to-date":
         return { tone: "ok", label: "Cloud backup: up to date" };
       case "working":
@@ -317,11 +318,11 @@
     {#if cloudAttention === "conflict"}
       <div class="banner info" role="status">
         <span>
-          <strong>{cloudBackup.conflict?.deviceLabel || "Another device"}</strong>
+          <strong>{cloudConflict?.deviceLabel || "Another device"}</strong>
           made a newer cloud backup. Automatic backups from here are paused
           until you merge it or keep this device's data.
         </span>
-        <button onclick={() => openRestore(cloudBackup.conflict?.id)}>Review &amp; merge</button>
+        <button onclick={() => openRestore(cloudConflict?.id)}>Review &amp; merge</button>
         <button onclick={() => (dialog = "settings")}>Options</button>
       </div>
     {:else if cloudAttention === "reconnect"}
@@ -332,7 +333,7 @@
     {:else if cloudAttention === "error"}
       <div class="banner warn" role="status">
         <span>Cloud backup failed: {cloudBackup.lastError}</span>
-        <button onclick={() => cloudBackup.backupNow()}>Try again</button>
+        <button onclick={() => cloudBackup.backupNow({ series: ["authenticator"] })}>Try again</button>
       </div>
     {/if}
 
@@ -425,6 +426,7 @@
     />
   {:else if dialog === "restore"}
     <RestoreDialog
+      scope="authenticator"
       preselectId={restorePreselect}
       onclose={() => (dialog = null)}
       ontoast={showToast}

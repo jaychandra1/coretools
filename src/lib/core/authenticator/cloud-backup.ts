@@ -1,10 +1,15 @@
 /**
  * End-to-end encrypted cloud backup envelope ("the cloud file").
  *
- * The whole vault — secrets AND metadata (issuer, account, order, pins) plus
- * display settings — is serialized and encrypted as ONE AES-256-GCM blob
- * before it is handed to the transport. The cloud provider only ever stores
- * this opaque file; it cannot read account names, let alone secrets.
+ * Each module backs up as its own series of files (see cloud-sync.ts):
+ *  - "authenticator": 2FA accounts — secrets AND metadata (issuer, account,
+ *    order, pins) — plus display settings;
+ *  - "credmanager": Credential Manager logins.
+ * The payload is serialized and encrypted as ONE AES-256-GCM blob before it
+ * is handed to the transport, and says inside the ciphertext what it holds.
+ * The cloud provider only ever stores opaque files; it cannot read account
+ * names, let alone secrets. Files written before the split ("combined")
+ * hold accounts, settings and — when present — credentials together.
  *
  * Key: the vault key itself (PBKDF2-SHA256 of the encryption password with
  * the vault's salt). That is what makes backups automatic — the key is in
@@ -23,6 +28,7 @@
 
 import type { AuthSettings } from "./db";
 import type { ExportableEntry } from "./backup";
+import type { BackupKind } from "./cloud-sync";
 import type { BackupCredential } from "../credentials/types";
 import { isValidBase32, normalizeBase32 } from "./base32";
 import type { OtpAlgorithm, OtpType } from "./types";
@@ -71,20 +77,67 @@ export interface CloudBackupFile {
   payload: EncryptedBlob;
 }
 
+/**
+ * What a backup file holds: one series, or "combined" for files written
+ * before the series were split (they carry no `contents` field).
+ */
+export type BackupContents = BackupKind | "combined";
+
 export interface CloudBackupPayload {
   version: typeof PAYLOAD_VERSION;
+  contents: BackupContents;
   entryCount: number;
   /** SHA-256 hex of JSON.stringify(entries). */
   digest: string;
+  /** 2FA accounts; always empty in a "credmanager" file. */
   entries: ExportableEntry[];
-  settings: CloudBackupSettings;
+  /** Display settings; null in a "credmanager" file. */
+  settings: CloudBackupSettings | null;
   /**
    * Credential Manager records (plaintext — the whole payload is encrypted).
-   * Absent in backups made before the Credential Manager existed.
+   * Empty in an "authenticator" file and in "combined" files made before the
+   * Credential Manager existed.
    */
   credentials: BackupCredential[];
-  /** SHA-256 hex of JSON.stringify(credentials). */
+  /**
+   * SHA-256 hex of JSON.stringify(credentials), or "" when the file has no
+   * opinion about credentials (it must then never replace them).
+   */
   credentialsDigest: string;
+}
+
+/**
+ * What restoring a set of decrypted files changes. null = leave that part of
+ * this device exactly as it is (even in "replace" mode).
+ */
+export interface RestoreParts {
+  entries: ExportableEntry[] | null;
+  settings: CloudBackupSettings | null;
+  credentials: BackupCredential[] | null;
+}
+
+/**
+ * Combine decrypted files (at most one per series) into what to restore.
+ * A Credential Manager file wins over credentials inside a legacy combined
+ * file; a combined file without credentials leaves credentials alone.
+ * With `only`, everything outside that module is left alone — restoring
+ * from the Authenticator never touches credentials, and the reverse.
+ */
+export function restoreParts(payloads: CloudBackupPayload[], only?: BackupKind): RestoreParts {
+  const parts: RestoreParts = { entries: null, settings: null, credentials: null };
+  if (only !== "credmanager") {
+    const accounts = payloads.find((p) => p.contents !== "credmanager");
+    if (accounts) {
+      parts.entries = accounts.entries;
+      parts.settings = accounts.settings;
+    }
+  }
+  if (only !== "authenticator") {
+    const own = payloads.find((p) => p.contents === "credmanager");
+    const legacy = payloads.find((p) => p.contents === "combined" && p.credentialsDigest !== "");
+    parts.credentials = (own ?? legacy)?.credentials ?? null;
+  }
+  return parts;
 }
 
 export type CloudBackupErrorCode = "corrupt" | "wrong_password" | "unsupported";
@@ -123,62 +176,83 @@ function headerAad(file: Omit<CloudBackupFile, "payload">): Uint8Array {
   );
 }
 
-export interface SealInput {
+interface SealKey {
   /** The unlocked vault key. */
   key: CryptoKey;
   salt: string;
   iterations: number;
   verifier: EncryptedBlob;
   device: CloudBackupDevice;
-  entries: ExportableEntry[];
-  settings: CloudBackupSettings;
-  credentials?: BackupCredential[];
   createdAt?: Date;
 }
 
-/** Encrypt the vault into a cloud backup file (JSON text). */
+export type SealInput = SealKey &
+  (
+    | { contents: "authenticator"; entries: ExportableEntry[]; settings: CloudBackupSettings }
+    | { contents: "credmanager"; credentials: BackupCredential[] }
+  );
+
+/** Encrypt one series into a cloud backup file (JSON text). */
 export async function sealCloudBackup(input: SealInput): Promise<string> {
-  const entries = [...input.entries]
-    .sort((a, b) => a.index - b.index)
-    .map((entry, i) => ({
-      type: entry.type,
-      issuer: entry.issuer,
-      account: entry.account,
-      secret: entry.secret,
-      algorithm: entry.algorithm,
-      digits: entry.digits,
-      period: entry.period,
-      counter: entry.counter,
-      index: i,
-      pinned: entry.pinned,
-    }));
-  const credentials = (input.credentials ?? []).map((c) => ({
-    platform: c.platform,
-    url: c.url,
-    username: c.username,
-    password: c.password,
-    notes: c.notes,
-    category: c.category,
-    owner: c.owner,
-    tags: [...c.tags],
-    createdAt: c.createdAt,
-    updatedAt: c.updatedAt,
-    passwordUpdatedAt: c.passwordUpdatedAt,
-    deletedAt: c.deletedAt,
-  }));
-  const payload: CloudBackupPayload = {
+  const entries =
+    input.contents === "authenticator"
+      ? [...input.entries]
+          .sort((a, b) => a.index - b.index)
+          .map((entry, i) => ({
+            type: entry.type,
+            issuer: entry.issuer,
+            account: entry.account,
+            secret: entry.secret,
+            algorithm: entry.algorithm,
+            digits: entry.digits,
+            period: entry.period,
+            counter: entry.counter,
+            index: i,
+            pinned: entry.pinned,
+          }))
+      : [];
+  const head = {
     version: PAYLOAD_VERSION,
+    contents: input.contents,
     entryCount: entries.length,
     digest: await sha256Hex(JSON.stringify(entries)),
     entries,
-    settings: {
-      autoLockMinutes: input.settings.autoLockMinutes,
-      clipboardClear: input.settings.clipboardClear,
-      groupCodes: input.settings.groupCodes,
-    },
-    credentials,
-    credentialsDigest: await sha256Hex(JSON.stringify(credentials)),
   };
+
+  // An authenticator file carries no credentials fields at all, so older
+  // versions of the app read it as "no opinion about credentials" and never
+  // clear them when restoring it.
+  let payload: Record<string, unknown>;
+  if (input.contents === "authenticator") {
+    payload = {
+      ...head,
+      settings: {
+        autoLockMinutes: input.settings.autoLockMinutes,
+        clipboardClear: input.settings.clipboardClear,
+        groupCodes: input.settings.groupCodes,
+      },
+    };
+  } else {
+    const credentials = input.credentials.map((c) => ({
+      platform: c.platform,
+      url: c.url,
+      username: c.username,
+      password: c.password,
+      notes: c.notes,
+      category: c.category,
+      owner: c.owner,
+      tags: [...c.tags],
+      createdAt: c.createdAt,
+      updatedAt: c.updatedAt,
+      passwordUpdatedAt: c.passwordUpdatedAt,
+      deletedAt: c.deletedAt,
+    }));
+    payload = {
+      ...head,
+      credentials,
+      credentialsDigest: await sha256Hex(JSON.stringify(credentials)),
+    };
+  }
 
   const header: Omit<CloudBackupFile, "payload"> = {
     format: CLOUD_BACKUP_FORMAT,
@@ -353,6 +427,14 @@ export async function openCloudBackup(
   if (raw?.version !== PAYLOAD_VERSION || !Array.isArray(raw.entries)) {
     throw corrupt("unexpected payload layout");
   }
+  let contents: BackupContents;
+  if (raw.contents === undefined) contents = "combined";
+  else if (raw.contents === "authenticator" || raw.contents === "credmanager") {
+    contents = raw.contents;
+  } else throw corrupt("unknown contents");
+  if (contents === "credmanager" && raw.entries.length > 0) {
+    throw corrupt("accounts inside a Credential Manager backup");
+  }
   if (raw.entryCount !== raw.entries.length) throw corrupt("entry count mismatch");
   if (raw.digest !== (await sha256Hex(JSON.stringify(raw.entries)))) {
     throw corrupt("checksum mismatch");
@@ -366,15 +448,24 @@ export async function openCloudBackup(
   }
 
   const s = (raw.settings ?? {}) as Record<string, unknown>;
-  const settings: CloudBackupSettings = {
-    autoLockMinutes: isCount(s.autoLockMinutes) ? Math.min(s.autoLockMinutes, 240) : 5,
-    clipboardClear: s.clipboardClear === true,
-    groupCodes: s.groupCodes !== false,
-  };
+  const settings: CloudBackupSettings | null =
+    contents === "credmanager"
+      ? null
+      : {
+          autoLockMinutes: isCount(s.autoLockMinutes) ? Math.min(s.autoLockMinutes, 240) : 5,
+          clipboardClear: s.clipboardClear === true,
+          groupCodes: s.groupCodes !== false,
+        };
 
-  // Credentials: absent in backups made before the Credential Manager.
+  // Credentials: required in a Credential Manager file, absent in an
+  // authenticator one, optional in legacy combined files (absent in those
+  // made before the Credential Manager existed).
   const credentials: BackupCredential[] = [];
-  if (raw.credentials !== undefined) {
+  if (contents === "credmanager" && raw.credentials === undefined) {
+    throw corrupt("missing credentials");
+  }
+  const hasCredentials = contents !== "authenticator" && raw.credentials !== undefined;
+  if (hasCredentials) {
     if (!Array.isArray(raw.credentials)) throw corrupt("unexpected credentials layout");
     if (raw.credentialsDigest !== (await sha256Hex(JSON.stringify(raw.credentials)))) {
       throw corrupt("credentials checksum mismatch");
@@ -388,12 +479,13 @@ export async function openCloudBackup(
 
   return {
     version: PAYLOAD_VERSION,
+    contents,
     entryCount: entries.length,
     digest: raw.digest as string,
     entries,
     settings,
     credentials,
-    credentialsDigest: (raw.credentialsDigest as string) ?? "",
+    credentialsDigest: hasCredentials ? (raw.credentialsDigest as string) : "",
   };
 }
 

@@ -1,0 +1,11 @@
+# Every change needs an owner's review once branch protection requires
+# "Review from Code Owners" (audit F-04). Release-path files are listed
+# explicitly so the intent survives if more owners are added later.
+
+*                                   @jaychandra1
+
+/.github/                           @jaychandra1
+/scripts/artifacts-release.mjs      @jaychandra1
+/src-tauri/                         @jaychandra1
+/src/lib/core/authenticator/        @jaychandra1
+/src/lib/core/credentials/          @jaychandra1

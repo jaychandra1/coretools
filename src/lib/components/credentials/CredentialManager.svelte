@@ -268,7 +268,7 @@
 
   const cloudChip = $derived.by(() => {
     if (!cloudBackup.connected) return null;
-    const s = cloudBackup.status;
+    const s = cloudBackup.statusOf("credmanager");
     if (s === "up-to-date") return { tone: "ok", text: "Backed up to Google Drive" };
     if (s === "working" || s === "pending") return { tone: "busy", text: "Backing up…" };
     return { tone: "warn", text: "Backup needs attention" };
@@ -364,7 +364,7 @@
           </span>
         {/if}
         {@render iconButton("activity", "Activity log", () => (dialog = "audit"))}
-        {@render iconButton("gear", "Vault & security settings", () => (dialog = "settings"))}
+        {@render iconButton("gear", "Settings", () => (dialog = "settings"))}
         {@render iconButton("lock", "Lock now", () => authStore.lock())}
       </div>
     </header>
@@ -520,13 +520,15 @@
     <AuditLogDialog onclose={() => (dialog = null)} />
   {:else if dialog === "settings"}
     <SettingsDialog
-      title="Vault & security settings"
+      scope="credmanager"
+      title="Credential Manager settings"
       onclose={() => (dialog = null)}
       ontoast={(m) => showToast(m)}
       onrestore={(id) => { restorePreselect = id ?? null; dialog = "restore"; }}
     />
   {:else if dialog === "restore"}
     <RestoreDialog
+      scope="credmanager"
       preselectId={restorePreselect}
       onclose={() => (dialog = null)}
       ontoast={(m) => showToast(m)}

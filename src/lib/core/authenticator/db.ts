@@ -16,6 +16,7 @@
 
 import type { OtpEntry } from "./types";
 import type { EncryptedBlob } from "./vault-crypto";
+import type { BackupKind } from "./cloud-sync";
 import {
   AUDIT_LIMIT,
   type AuditEvent,
@@ -74,6 +75,16 @@ export interface AuthSettings {
   credentialsRevealAuth: boolean;
 }
 
+/** Per-series backup state (one each for the Authenticator and Credential Manager). */
+export interface CloudSeriesState {
+  /** Local changes not yet in a backup of this series. */
+  dirty: boolean;
+  lastBackupAt: number | null;
+  lastBackupId: string | null;
+  /** The remote version of this series this device's data is based on (conflict detection). */
+  lastSyncedRemoteId: string | null;
+}
+
 /** Cloud backup bookkeeping (no credentials — those live in the OS keychain). */
 export interface CloudConfig {
   /** Random per-install id, tagged on every backup this device uploads. */
@@ -82,13 +93,23 @@ export interface CloudConfig {
   email: string | null;
   /** Back up automatically after every change. */
   autoBackup: boolean;
-  /** Local changes not yet in any backup. */
-  dirty: boolean;
-  lastBackupAt: number | null;
-  lastBackupId: string | null;
-  /** The remote version this device's data is based on (conflict detection). */
-  lastSyncedRemoteId: string | null;
+  series: Record<BackupKind, CloudSeriesState>;
   lastRestoreAt: number | null;
+}
+
+export const EMPTY_SERIES: Readonly<CloudSeriesState> = {
+  dirty: false,
+  lastBackupAt: null,
+  lastBackupId: null,
+  lastSyncedRemoteId: null,
+};
+
+/** Stored before the series split: one series holding everything. */
+interface LegacyCloudConfig {
+  dirty?: boolean;
+  lastBackupAt?: number | null;
+  lastBackupId?: string | null;
+  lastSyncedRemoteId?: string | null;
 }
 
 export const DEFAULT_SETTINGS: AuthSettings = {
@@ -216,16 +237,31 @@ export function saveSettings(settings: AuthSettings): Promise<void> {
 }
 
 export async function loadCloudConfig(): Promise<CloudConfig> {
-  const stored = await getMeta<Partial<CloudConfig>>("cloud");
+  const stored = await getMeta<Partial<CloudConfig> & LegacyCloudConfig>("cloud");
   return {
     deviceId: stored?.deviceId || crypto.randomUUID(),
     email: stored?.email ?? null,
     autoBackup: stored?.autoBackup ?? true,
-    dirty: stored?.dirty ?? false,
-    lastBackupAt: stored?.lastBackupAt ?? null,
-    lastBackupId: stored?.lastBackupId ?? null,
-    lastSyncedRemoteId: stored?.lastSyncedRemoteId ?? null,
+    series: stored?.series ?? migrateSeries(stored),
     lastRestoreAt: stored?.lastRestoreAt ?? null,
+  };
+}
+
+/**
+ * Before the split, every backup was one "coretools-authenticator-" file that
+ * also held credentials. Those files stay the authenticator series' history;
+ * the Credential Manager starts its own series with the next backup (an
+ * empty one is skipped, see the controller).
+ */
+function migrateSeries(stored: (Partial<CloudConfig> & LegacyCloudConfig) | undefined) {
+  return {
+    authenticator: {
+      dirty: stored?.dirty ?? false,
+      lastBackupAt: stored?.lastBackupAt ?? null,
+      lastBackupId: stored?.lastBackupId ?? null,
+      lastSyncedRemoteId: stored?.lastSyncedRemoteId ?? null,
+    },
+    credmanager: { ...EMPTY_SERIES, dirty: !!stored?.email },
   };
 }
 

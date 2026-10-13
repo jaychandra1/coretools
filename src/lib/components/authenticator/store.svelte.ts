@@ -52,25 +52,32 @@ import {
   type CloudBackupDevice,
   type CloudBackupFile,
   type CloudBackupPayload,
-  type CloudBackupSettings,
+  type RestoreParts,
 } from "../../core/authenticator/cloud-backup";
+import type { BackupKind } from "../../core/authenticator/cloud-sync";
 import type { EncryptedBlob } from "../../core/authenticator/vault-crypto";
 import type { BackupCredential, StoredCredential } from "../../core/credentials/types";
 import { getPlatform } from "../../platform";
 
 /**
  * Lifecycle notifications for observers such as the cloud backup:
- *  - "change": entries were added/edited/removed/reordered (persisted);
+ *  - "change": 2FA entries were added/edited/removed/reordered (persisted);
+ *  - "credentials": Credential Manager records changed (persisted);
  *  - "unlock": the vault key is available again;
- *  - "password": the vault key changed (new password → new salt);
+ *  - "password": the vault key changed (new password → new salt) — this
+ *    affects everything encrypted with it, entries and credentials alike;
  *  - "lock": the vault key was dropped;
  *  - "wipe": everything local was deleted.
  */
-export type AuthEvent = "change" | "unlock" | "password" | "lock" | "wipe";
+export type AuthEvent = "change" | "credentials" | "unlock" | "password" | "lock" | "wipe";
 
 export interface RestoreResult {
+  /** The restore included 2FA accounts (the counts below apply). */
+  restoredAccounts: boolean;
   added: number;
   skipped: number;
+  /** The restore included Credential Manager records. */
+  restoredCredentials: boolean;
   credentialsAdded: number;
   credentialsSkipped: number;
 }
@@ -146,9 +153,9 @@ export class AuthStore {
     return decryptString(this.#key, blob);
   }
 
-  /** Let other vault data (credentials) trigger observers such as cloud backup. */
-  notifyChange(): void {
-    this.#emit("change");
+  /** Credential Manager records changed: back up its series. */
+  notifyCredentialsChange(): void {
+    this.#emit("credentials");
   }
   #listeners = new Set<(event: AuthEvent) => void>();
 
@@ -612,45 +619,65 @@ export class AuthStore {
   // scheduling live in cloud.svelte.ts.
 
   /**
-   * Encrypt the whole vault into a cloud backup file. The result is opened
-   * again with the same key and checked before it is returned, so a file
-   * that couldn't be restored never leaves the device.
+   * Encrypt one backup series — the 2FA accounts ("authenticator") or the
+   * Credential Manager ("credmanager") — into a cloud backup file. The result
+   * is opened again with the same key and checked before it is returned, so
+   * a file that couldn't be restored never leaves the device.
    */
-  async sealCloudBackup(device: CloudBackupDevice): Promise<string> {
+  async sealCloudBackup(device: CloudBackupDevice, series: BackupKind): Promise<string> {
     const vault = this.vault;
     const key = this.#key;
     if (this.locked || !key) throw new Error("Unlock first");
     if (!vault?.encrypted || !vault.salt || !vault.verifier) {
       throw new Error("Set an encryption password first");
     }
-    const entries = this.exportables();
-    await this.#credentials?.ready();
-    const credentials =
-      (await this.#credentials?.exportPlain((blob) => decryptString(key, blob))) ?? [];
-    const settings: CloudBackupSettings = {
-      autoLockMinutes: this.settings.autoLockMinutes,
-      clipboardClear: this.settings.clipboardClear,
-      groupCodes: this.settings.groupCodes,
-    };
-    const text = await sealCloudBackup({
+    const sealKey = {
       key,
       salt: vault.salt,
       iterations: vault.iterations ?? PBKDF2_ITERATIONS,
       verifier: vault.verifier,
       device,
-      entries,
-      settings,
-      credentials,
-    });
+    };
+
+    let text: string;
+    let expected: { entries: number; credentials: number };
+    if (series === "authenticator") {
+      const entries = this.exportables();
+      text = await sealCloudBackup({
+        ...sealKey,
+        contents: "authenticator",
+        entries,
+        settings: {
+          autoLockMinutes: this.settings.autoLockMinutes,
+          clipboardClear: this.settings.clipboardClear,
+          groupCodes: this.settings.groupCodes,
+        },
+      });
+      expected = { entries: entries.length, credentials: 0 };
+    } else {
+      await this.#credentials?.ready();
+      const credentials =
+        (await this.#credentials?.exportPlain((blob) => decryptString(key, blob))) ?? [];
+      text = await sealCloudBackup({ ...sealKey, contents: "credmanager", credentials });
+      expected = { entries: 0, credentials: credentials.length };
+    }
 
     const check = await openCloudBackup(parseCloudBackup(text), key);
     if (
-      check.entryCount !== entries.length ||
-      check.credentials.length !== credentials.length
+      check.contents !== series ||
+      check.entryCount !== expected.entries ||
+      check.credentials.length !== expected.credentials
     ) {
       throw new Error("Backup self-check failed");
     }
     return text;
+  }
+
+  /** How many records a backup series would hold right now. */
+  async seriesCount(series: BackupKind): Promise<number> {
+    if (series === "authenticator") return this.entries.length;
+    await this.#credentials?.ready();
+    return this.#credentials?.count() ?? 0;
   }
 
   /**
@@ -686,10 +713,12 @@ export class AuthStore {
   }
 
   /**
-   * Restore accounts from a decrypted cloud backup.
-   *  - "merge":   add only accounts that aren't here yet (same secret +
-   *               issuer + account), after the existing ones;
-   *  - "replace": the vault becomes exactly the backup (rollback).
+   * Restore accounts and/or credentials from decrypted cloud backups (see
+   * `restoreParts`). Each part that is present is restored with `mode`:
+   *  - "merge":   add only records that aren't here yet (for accounts: same
+   *               secret + issuer + account), after the existing ones;
+   *  - "replace": that part becomes exactly the backup (rollback).
+   * A part that is null is left exactly as it is, in either mode.
    *
    * Pins and order come back as they were. When no encryption password is
    * set yet (fresh install), `password` — the one the backup was made with —
@@ -699,7 +728,7 @@ export class AuthStore {
    * an interrupted restore changes nothing.
    */
   async restoreFromBackup(
-    payload: CloudBackupPayload,
+    parts: RestoreParts,
     mode: "merge" | "replace",
     password?: string,
   ): Promise<RestoreResult> {
@@ -709,9 +738,11 @@ export class AuthStore {
     }
     await this.#credentials?.ready();
 
+    // Accounts this restore doesn't replace stay, with their secrets.
+    const keepEntries = parts.entries === null || mode === "merge";
     const secrets = new Map<string, string>();
     const kept: StoredEntry[] = [];
-    if (mode === "merge") {
+    if (keepEntries) {
       for (const entry of this.entries) {
         const secret = this.#secrets.get(entry.id);
         if (!secret) throw new Error(`Missing secret for ${entry.issuer}`);
@@ -732,7 +763,7 @@ export class AuthStore {
     let index = kept.reduce((max, e) => Math.max(max, e.index), -1) + 1;
     let skipped = 0;
     const created: StoredEntry[] = [];
-    for (const item of [...payload.entries].sort((a, b) => a.index - b.index)) {
+    for (const item of [...(parts.entries ?? [])].sort((a, b) => a.index - b.index)) {
       const key = accountKey(item);
       if (seen.has(key)) {
         skipped++;
@@ -758,16 +789,14 @@ export class AuthStore {
       created.push(entry);
     }
 
-    // Credential Manager records ride along in the same transaction. A
-    // backup from before the Credential Manager (no credentials digest)
-    // leaves existing credentials alone even in "replace" mode — it has no
-    // opinion about them, so rolling back must not erase them.
-    const backupHasCredentials = payload.credentialsDigest !== "";
+    // Credential Manager records ride along in the same transaction. Without
+    // credentials to restore (an Authenticator-only backup, or one from
+    // before the Credential Manager) existing credentials are left alone
+    // even in "replace" mode — rolling back accounts must not erase them.
+    const items = parts.credentials;
     const restoreCredentials = async (encrypt: Encrypt) =>
-      this.#credentials &&
-      backupHasCredentials &&
-      (payload.credentials.length > 0 || mode === "replace")
-        ? this.#credentials.restore(payload.credentials, mode, encrypt)
+      this.#credentials && items !== null && (items.length > 0 || mode === "replace")
+        ? this.#credentials.restore(items, mode, encrypt)
         : null;
 
     let credentialResult: Awaited<ReturnType<typeof restoreCredentials>>;
@@ -804,10 +833,13 @@ export class AuthStore {
     if (credentialResult) this.#credentials?.adopt(credentialResult.records);
 
     this.touch();
-    this.#emit("change");
+    if (parts.entries !== null) this.#emit("change");
+    if (credentialResult) this.#emit("credentials");
     return {
+      restoredAccounts: parts.entries !== null,
       added: created.length,
       skipped,
+      restoredCredentials: parts.credentials !== null,
       credentialsAdded: credentialResult?.added ?? 0,
       credentialsSkipped: credentialResult?.skipped ?? 0,
     };

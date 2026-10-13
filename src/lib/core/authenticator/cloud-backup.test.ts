@@ -5,6 +5,7 @@ import {
   deriveBackupKey,
   openCloudBackup,
   parseCloudBackup,
+  restoreParts,
   sealCloudBackup,
   type CloudBackupFile,
 } from "./cloud-backup";
@@ -15,6 +16,7 @@ import {
   deriveVaultKey,
   encryptString,
   randomBytes,
+  sha256Hex,
   VERIFIER_PLAINTEXT,
   type EncryptedBlob,
 } from "./vault-crypto";
@@ -70,6 +72,7 @@ function seal(entries = ENTRIES) {
     iterations: ITERATIONS,
     verifier,
     device: DEVICE,
+    contents: "authenticator",
     entries,
     settings: { ...SETTINGS },
     createdAt: new Date("2026-10-11T10:30:00.000Z"),
@@ -196,6 +199,18 @@ describe("cloud backup envelope", () => {
     expect(payload.entryCount).toBe(0);
     expect(payload.credentials).toEqual([]);
   });
+
+  it("marks an authenticator file as having no opinion about credentials", async () => {
+    const file = parseCloudBackup(await seal());
+    const payload = await openCloudBackup(file, key);
+    expect(payload.contents).toBe("authenticator");
+    expect(payload.credentialsDigest).toBe("");
+    // No credentials fields at all: v1.1.0 reads it as a pre-Credential
+    // Manager backup and never clears credentials when restoring it.
+    const json = JSON.parse(await decryptPayload(file));
+    expect(json).not.toHaveProperty("credentials");
+    expect(json).not.toHaveProperty("credentialsDigest");
+  });
 });
 
 describe("cloud backup: Credential Manager records", () => {
@@ -237,16 +252,28 @@ describe("cloud backup: Credential Manager records", () => {
       iterations: ITERATIONS,
       verifier,
       device: DEVICE,
-      entries: ENTRIES,
-      settings: { ...SETTINGS },
+      contents: "credmanager",
       credentials,
     });
   }
 
   it("round-trips credentials, including trashed ones", async () => {
     const payload = await openCloudBackup(parseCloudBackup(await sealWith(CREDENTIALS)), key);
+    expect(payload.contents).toBe("credmanager");
     expect(payload.credentials).toEqual(CREDENTIALS);
-    expect(payload.entries).toHaveLength(2);
+    expect(payload.credentialsDigest).not.toBe("");
+    // A Credential Manager file holds no accounts and no display settings.
+    expect(payload.entries).toEqual([]);
+    expect(payload.settings).toBeNull();
+  });
+
+  it("keeps an empty Credential Manager backup meaningful", async () => {
+    // "No credentials" is a real state to roll back to, unlike a legacy
+    // file that simply predates the Credential Manager.
+    const payload = await openCloudBackup(parseCloudBackup(await sealWith([])), key);
+    expect(payload.credentials).toEqual([]);
+    expect(payload.credentialsDigest).not.toBe("");
+    expect(restoreParts([payload]).credentials).toEqual([]);
   });
 
   it("never leaves passwords, notes or usernames in the clear", async () => {
@@ -256,16 +283,77 @@ describe("cloud backup: Credential Manager records", () => {
     }
   });
 
-  it("restores backups made before credentials existed", async () => {
-    // Rebuild a payload without the credentials fields, sealed the old way.
+  it("rejects accounts smuggled into a Credential Manager file", async () => {
+    const file = parseCloudBackup(await sealWith(CREDENTIALS));
+    const json = JSON.parse(await decryptPayload(file));
+    json.entries = [ENTRIES[0]];
+    json.entryCount = 1;
+    json.digest = await sha256Hex(JSON.stringify(json.entries));
+    await expectCode(openCloudBackup(await resealPayload(file, json), key), "corrupt");
+  });
+
+  it("restores combined backups made before credentials existed", async () => {
+    // v1.0.x layout: accounts + settings, no contents tag, no credentials.
     const file = parseCloudBackup(await seal());
     const json = JSON.parse(await decryptPayload(file));
-    delete json.credentials;
-    delete json.credentialsDigest;
-    const legacy = await resealPayload(file, json);
-    const payload = await openCloudBackup(legacy, key);
+    delete json.contents;
+    const payload = await openCloudBackup(await resealPayload(file, json), key);
+    expect(payload.contents).toBe("combined");
     expect(payload.credentials).toEqual([]);
+    expect(payload.credentialsDigest).toBe("");
     expect(payload.entries).toHaveLength(2);
+    expect(restoreParts([payload])).toMatchObject({ credentials: null, settings: SETTINGS });
+  });
+
+  it("restores combined backups that carry credentials (v1.1.0)", async () => {
+    const file = parseCloudBackup(await seal());
+    const json = JSON.parse(await decryptPayload(file));
+    delete json.contents;
+    json.credentials = CREDENTIALS;
+    json.credentialsDigest = await sha256Hex(JSON.stringify(CREDENTIALS));
+    const payload = await openCloudBackup(await resealPayload(file, json), key);
+    expect(payload.contents).toBe("combined");
+    expect(payload.entries).toHaveLength(2);
+    expect(payload.credentials).toEqual(CREDENTIALS);
+    const parts = restoreParts([payload]);
+    expect(parts.entries).toHaveLength(2);
+    expect(parts.credentials).toEqual(CREDENTIALS);
+  });
+
+  it("combines one file per series into what to restore", async () => {
+    const auth = await openCloudBackup(parseCloudBackup(await seal()), key);
+    const cred = await openCloudBackup(parseCloudBackup(await sealWith(CREDENTIALS)), key);
+
+    expect(restoreParts([auth])).toMatchObject({ credentials: null, settings: SETTINGS });
+    expect(restoreParts([cred])).toMatchObject({ entries: null, settings: null });
+    const both = restoreParts([cred, auth]);
+    expect(both.entries).toHaveLength(2);
+    expect(both.credentials).toEqual(CREDENTIALS);
+
+    // A Credential Manager file wins over credentials in a legacy file.
+    const legacy = { ...auth, contents: "combined" as const, credentials: [], credentialsDigest: "x" };
+    expect(restoreParts([legacy, cred]).credentials).toEqual(CREDENTIALS);
+  });
+
+  it("keeps a restore inside one module when asked", async () => {
+    const auth = await openCloudBackup(parseCloudBackup(await seal()), key);
+    const cred = await openCloudBackup(parseCloudBackup(await sealWith(CREDENTIALS)), key);
+    const legacy = {
+      ...auth,
+      contents: "combined" as const,
+      credentials: CREDENTIALS,
+      credentialsDigest: "x",
+    };
+
+    // From the Authenticator: a legacy file's credentials are left alone.
+    expect(restoreParts([legacy], "authenticator")).toMatchObject({ credentials: null });
+    expect(restoreParts([legacy], "authenticator").entries).toHaveLength(2);
+    // From the Credential Manager: accounts and settings are left alone.
+    expect(restoreParts([auth, cred], "credmanager")).toMatchObject({
+      entries: null,
+      settings: null,
+      credentials: CREDENTIALS,
+    });
   });
 
   it("detects a credentials checksum mismatch", async () => {

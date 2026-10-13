@@ -220,7 +220,7 @@ export class CredentialStore {
 
   #changed(): void {
     authStore.touch();
-    authStore.notifyChange(); // drives the encrypted cloud backup
+    authStore.notifyCredentialsChange(); // drives its encrypted cloud backup series
   }
 
   async add(input: CredentialInput): Promise<StoredCredential> {
@@ -310,7 +310,7 @@ export class CredentialStore {
     await deleteCredentials(expired.map((c) => c.id));
     this.items = this.items.filter((c) => !expired.includes(c));
     await this.#log(expired.map((c) => [c, "purged"] as const));
-    authStore.notifyChange();
+    authStore.notifyCredentialsChange();
   }
 
   // ---- secrets (on demand, gated, audited) ----------------------------------------
