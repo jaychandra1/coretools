@@ -192,7 +192,8 @@ fn client_secret() -> Option<&'static str> {
     CLIENT_SECRET.filter(|secret| !secret.trim().is_empty())
 }
 
-fn http() -> Result<&'static reqwest::Client, String> {
+/// The one HTTPS client (rustls, https-only); also used by the update check.
+pub(crate) fn http() -> Result<&'static reqwest::Client, String> {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     if let Some(client) = CLIENT.get() {
         return Ok(client);
@@ -215,8 +216,30 @@ fn random_token(bytes: usize) -> Result<String, String> {
 }
 
 /// Timeouts, DNS failures, refused connections, TLS errors: all "can't reach".
-fn net_error(_: reqwest::Error) -> String {
+fn net_error(error: reqwest::Error) -> String {
+    crate::diagnostics::record("cloud", &error_class(&error));
     "cloud_network".into()
+}
+
+/// A transport failure's class for the diagnostics log — never its URL.
+pub(crate) fn error_class(error: &reqwest::Error) -> String {
+    let kind = if error.is_timeout() {
+        "timeout"
+    } else if error.is_connect() {
+        "connect"
+    } else if error.is_decode() {
+        "decode"
+    } else if error.is_body() {
+        "body"
+    } else if error.is_request() {
+        "request"
+    } else {
+        "other"
+    };
+    match error.status() {
+        Some(status) => format!("network {kind} (http {})", status.as_u16()),
+        None => format!("network {kind}"),
+    }
 }
 
 /// The `reason` codes in a Google API error body:
@@ -242,6 +265,10 @@ fn error_reasons(body: &str) -> Vec<String> {
 /// would stop backups and push every user to reconnect.
 fn status_error(status: StatusCode, body: &str) -> String {
     let reasons = error_reasons(body);
+    crate::diagnostics::record(
+        "cloud",
+        &format!("http {} {}", status.as_u16(), reasons.join(",")),
+    );
     let has = |wanted: &[&str]| reasons.iter().any(|r| wanted.contains(&r.as_str()));
     match status.as_u16() {
         401 => "cloud_auth_revoked".into(),
@@ -847,7 +874,7 @@ mod tests {
 
     #[test]
     fn pkce_challenge_matches_rfc7636_appendix_b() {
-        let verifier = "dBjftJeZ4CVP-mJ92K9q2r9yX7NUlQ2Mbqvq9dZ6Qdk";
+        let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         assert_eq!(challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
     }

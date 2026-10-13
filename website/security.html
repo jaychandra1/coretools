@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Security &amp; Vulnerability Disclosure — CoreTools</title>
+    <meta
+      name="description"
+      content="How to report a security vulnerability in CoreTools, what happens after you do, and how to verify the installers you download."
+    />
+    <meta name="author" content="JDG Initiates" />
+    <meta name="theme-color" content="#0b0d12" />
+    <meta name="color-scheme" content="dark" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%238b5cf6'/><rect x='7' y='7' width='8' height='18' rx='1.5' fill='white'/><rect x='17' y='7' width='8' height='18' rx='1.5' fill='white' opacity='0.55'/></svg>"
+    />
+    <link
+      rel="preload"
+      href="assets/fonts/inter-var-latin.woff2"
+      as="font"
+      type="font/woff2"
+      crossorigin
+    />
+    <link rel="stylesheet" href="styles/main.css" />
+    <style>
+      .policy {
+        max-width: 760px;
+        margin: 0 auto;
+        padding: 56px 0 80px;
+      }
+      .policy h1 {
+        font-size: clamp(30px, 5vw, 42px);
+        margin: 8px 0 6px;
+      }
+      .policy .updated {
+        margin: 0 0 32px;
+      }
+      .policy h2 {
+        font-size: 21px;
+        margin: 40px 0 10px;
+      }
+      .policy h3 {
+        font-size: 16px;
+        margin: 24px 0 6px;
+      }
+      .policy p,
+      .policy li {
+        color: var(--text);
+        line-height: 1.7;
+        font-size: 15.5px;
+      }
+      .policy ul,
+      .policy ol {
+        padding-left: 22px;
+      }
+      .policy li + li {
+        margin-top: 6px;
+      }
+      .policy .summary {
+        border: 1px solid var(--border-strong);
+        background: var(--accent-soft);
+        border-radius: var(--radius-sm);
+        padding: 16px 20px;
+      }
+      .policy .summary li {
+        font-size: 15px;
+      }
+      .policy pre {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        padding: 14px 16px;
+        overflow-x: auto;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .policy pre code {
+        background: none;
+        color: var(--text);
+        padding: 0;
+        border-radius: 0;
+        font-size: inherit;
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+
+    <header class="site-header">
+      <div class="container header-inner">
+        <a class="brand" href="/" aria-label="CoreTools home">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" width="26" height="26">
+              <rect width="32" height="32" rx="7" fill="currentColor" />
+              <rect x="7" y="7" width="8" height="18" rx="1.5" fill="#0b0d12" />
+              <rect x="17" y="7" width="8" height="18" rx="1.5" fill="#0b0d12" opacity="0.55" />
+            </svg>
+          </span>
+          <span class="brand-name">CoreTools</span>
+        </a>
+        <nav class="site-nav" aria-label="Primary">
+          <a href="/#features">Features</a>
+          <a href="/#privacy">Privacy</a>
+          <a href="/#download">Download</a>
+          <a class="btn btn-sm btn-primary" href="/#download">Get CoreTools</a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <article class="container policy">
+        <p class="eyebrow">Security</p>
+        <h1>Vulnerability Disclosure Policy</h1>
+        <p class="muted updated">Effective 13 October 2026 · CoreTools by JDG Initiates</p>
+
+        <div class="summary">
+          <ul>
+            <li>
+              Report security problems privately:
+              <a href="https://github.com/jaychandra1/artifacts/security/advisories/new" rel="noopener">report a vulnerability on GitHub</a>.
+              Please don't open a public issue.
+            </li>
+            <li>We acknowledge reports within 3 business days and triage them within 10 business days.</li>
+            <li>Good-faith research that follows this policy is welcome, and we won't take legal action over it.</li>
+            <li>There is no bug bounty. We're glad to credit you in the advisory.</li>
+          </ul>
+        </div>
+
+        <h2>1. Scope</h2>
+        <h3>In scope</h3>
+        <ul>
+          <li>The CoreTools <strong>desktop app</strong> for Windows, macOS and Linux, current release.</li>
+          <li>The <strong>in-browser app</strong> at <code>/app</code> and <strong>this website</strong> (<code>coretools-chi.vercel.app</code>).</li>
+          <li>
+            The optional <strong>Google Drive backup</strong>: the sign-in flow, how
+            the app stores your Google sign-in, and the encryption of backups.
+          </li>
+          <li>
+            <strong>Our releases</strong>: the installers, checksum files and
+            signatures published in
+            <a href="https://github.com/jaychandra1/artifacts" rel="noopener">jaychandra1/artifacts</a>,
+            and how they are built and signed.
+          </li>
+        </ul>
+        <p>
+          We most want to hear about anything that lets a file, web page or
+          other program read or write data the user didn't choose; decrypt the
+          Authenticator vault, saved logins or a cloud backup without the
+          password; get past the vault lock or Windows Hello; send secrets off
+          the device; run script on this site or in <code>/app</code>; or
+          publish a tampered release that still passes verification.
+        </p>
+
+        <h3>Out of scope</h3>
+        <ul>
+          <li>
+            Vulnerabilities in Google, GitHub, Vercel, Sigstore or your operating
+            system themselves. Report those to the vendor. We do want to know if
+            CoreTools <em>uses</em> them unsafely.
+          </li>
+          <li>Attacks that need an already-compromised device or administrator access, unless they defeat a protection CoreTools claims to provide (vault lock, Windows Hello, OS keychain).</li>
+          <li>
+            Known, documented trade-offs: installers not yet code-signed
+            (SmartScreen or Gatekeeper warnings); the legacy encryption used only
+            to import and export Authenticator-extension backups; account names
+            and issuers stored unencrypted; the Google OAuth client secret inside
+            the app (Google treats desktop-app client secrets as not confidential).
+          </li>
+          <li>Denial of service, load testing, spam, social engineering and physical attacks.</li>
+          <li>Scanner output without a demonstrated impact, and self-XSS that needs a user to paste code into developer tools.</li>
+        </ul>
+
+        <h2>2. How to report</h2>
+        <ul>
+          <li>
+            <strong>Preferred:</strong> GitHub private vulnerability reporting at
+            <a href="https://github.com/jaychandra1/artifacts/security/advisories/new" rel="noopener">github.com/jaychandra1/artifacts/security/advisories/new</a>.
+            Only the maintainers can see your report, and we can work on the fix
+            with you there.
+          </li>
+          <li>
+            <strong>No GitHub account?</strong> Email
+            <a href="mailto:coretools.works@gmail.com">coretools.works@gmail.com</a>
+            with a subject starting “Security:”. We'll reply with a private way to
+            continue.
+          </li>
+          <li>
+            Please don't post details in a public issue, discussion or pull
+            request, or anywhere else, until a fixed version is out.
+          </li>
+          <li>
+            Machine-readable contact details are at
+            <a href="/.well-known/security.txt"><code>/.well-known/security.txt</code></a>.
+          </li>
+        </ul>
+
+        <h2>3. What to include</h2>
+        <ul>
+          <li>The CoreTools version (shown in the app's header) and your operating system, or the URL involved.</li>
+          <li>Which part is affected: desktop app, <code>/app</code>, website, Drive backup, or release files.</li>
+          <li>Steps to reproduce or a minimal proof of concept.</li>
+          <li>The impact: what an attacker gains, and what they need first.</li>
+          <li>A suggested fix, if you have one.</li>
+          <li>Whether, and under what name, you'd like to be credited.</li>
+        </ul>
+        <p>Use test data and test accounts. Never send real secrets, yours or anyone else's.</p>
+
+        <h2>4. What happens next</h2>
+        <ul>
+          <li><strong>Within 3 business days:</strong> we acknowledge your report.</li>
+          <li>
+            <strong>Within 10 business days:</strong> we triage it. We confirm
+            whether we can reproduce it, how severe we think it is, and when we
+            expect a fix.
+          </li>
+          <li>We keep you updated while we work on it and agree a disclosure date with you.</li>
+          <li>
+            The fix ships as a new release. We then publish a GitHub Security
+            Advisory on
+            <a href="https://github.com/jaychandra1/artifacts/security/advisories" rel="noopener">jaychandra1/artifacts</a>,
+            requesting a CVE where appropriate, and credit you if you wish.
+          </li>
+          <li>
+            Please keep the issue confidential until that advisory is published,
+            or for 90 days from your report if that comes first, unless we agree
+            otherwise.
+          </li>
+        </ul>
+        <p class="muted">
+          CoreTools is a small project. These are the targets we hold ourselves
+          to, not a contract.
+        </p>
+
+        <h2>5. Safe harbor</h2>
+        <p>If you make a good-faith effort to follow this policy, we will:</p>
+        <ul>
+          <li>
+            treat your research as authorized and not pursue or support legal
+            action against you for it, including for reverse-engineering CoreTools
+            to find the vulnerability;
+          </li>
+          <li>not report you to law enforcement for it;</li>
+          <li>work with you to understand and fix the problem.</li>
+        </ul>
+        <p>In return, please:</p>
+        <ul>
+          <li>test only your own installations, your own accounts and your own data;</li>
+          <li>
+            never access, change or delete anyone else's data, including other
+            people's Google Drive backups. If you come across any, stop and tell us;
+          </li>
+          <li>don't degrade this website or our release infrastructure (no denial of service, no high-volume automated scanning);</li>
+          <li>don't try to alter published releases or the jaychandra1/artifacts repository;</li>
+          <li>give us reasonable time to ship a fix before you disclose.</li>
+        </ul>
+        <p>
+          Google, GitHub and Vercel run their own services, and this policy can't
+          authorize testing them. Follow their programs. If you're unsure whether
+          something is allowed, ask us first.
+        </p>
+
+        <h2>6. No bug bounty</h2>
+        <p>
+          CoreTools is free and we don't pay rewards for reports. We'll gladly
+          credit you in the security advisory and the release notes.
+        </p>
+
+        <h2>7. Verify your download</h2>
+        <p>
+          Every release in
+          <a href="https://github.com/jaychandra1/artifacts/releases" rel="noopener">jaychandra1/artifacts</a>
+          includes <code>SHA256SUMS.txt</code>, listing the SHA-256 of every
+          installer. Releases published since signing was introduced also
+          include <code>SHA256SUMS.txt.sigstore.json</code>: a
+          <a href="https://www.sigstore.dev/" rel="noopener">Sigstore</a>
+          signature tying those checksums to CoreTools' own release workflow. A
+          file replaced by anyone else fails the check.
+        </p>
+        <p>
+          With
+          <a href="https://docs.sigstore.dev/cosign/system_config/installation/" rel="noopener">cosign</a>
+          installed, download the installer, <code>SHA256SUMS.txt</code> and
+          <code>SHA256SUMS.txt.sigstore.json</code> from the same release into
+          one folder, then run:
+        </p>
+        <pre><code>cosign verify-blob SHA256SUMS.txt --bundle SHA256SUMS.txt.sigstore.json \
+  --certificate-identity-regexp '^https://github\.com/jaychandra1/coretools/\.github/workflows/release\.yml@refs/(tags/v.+|heads/master)$' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+sha256sum --check --ignore-missing SHA256SUMS.txt</code></pre>
+        <p>
+          You should see <code>Verified OK</code>, then <code>OK</code> next to
+          your installer. If either check fails, don't install it, and tell us.
+        </p>
+        <p>
+          Without cosign you can still compare checksums: on Windows
+          <code>certutil -hashfile CoreTools-Windows-Setup.exe SHA256</code>, on
+          macOS <code>shasum -a 256 CoreTools-macOS.dmg</code>, on Linux
+          <code>sha256sum CoreTools-Linux.AppImage</code>, against the line in
+          <code>SHA256SUMS.txt</code>. That proves the download matches the
+          release page. Only the signature proves the release page itself is
+          ours.
+        </p>
+        <p>
+          Published security advisories are listed at
+          <a href="https://github.com/jaychandra1/artifacts/security/advisories" rel="noopener">jaychandra1/artifacts → Security</a>.
+          To hear about new releases, watch that repository (Watch → Custom →
+          Releases).
+        </p>
+
+        <h2>8. Changes to this policy</h2>
+        <p>
+          Updates are posted on this page with a new effective date. See also
+          our <a href="privacy.html">Privacy Policy</a>.
+        </p>
+      </article>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container footer-inner">
+        <div class="footer-brand">
+          <span class="brand-mark small" aria-hidden="true">
+            <svg viewBox="0 0 32 32" width="20" height="20">
+              <rect width="32" height="32" rx="7" fill="currentColor" />
+              <rect x="7" y="7" width="8" height="18" rx="1.5" fill="#0b0d12" />
+              <rect x="17" y="7" width="8" height="18" rx="1.5" fill="#0b0d12" opacity="0.55" />
+            </svg>
+          </span>
+          <span>CoreTools</span>
+        </div>
+        <p class="footer-copy">© 2026 <strong>JDG Initiates</strong> · MIT License</p>
+        <p class="footer-contact">
+          <a href="/">Home</a> · <a href="privacy.html">Privacy Policy</a> ·
+          <a href="mailto:coretools.works@gmail.com">coretools.works@gmail.com</a>
+        </p>
+      </div>
+    </footer>
+  </body>
+</html>

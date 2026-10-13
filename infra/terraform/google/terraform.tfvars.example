@@ -1,0 +1,16 @@
+# Copy to terraform.tfvars (git-ignored) and fill in.
+
+# Production project: the one whose OAuth client id is in the
+# CORETOOLS_GOOGLE_CLIENT_ID secret (console → project picker → ID column).
+project_id = "your-coretools-project-id"
+
+# Who gets Drive API alerts.
+alert_email = "you@example.com"
+
+# Optional: pin the quota alert to the exact project-level per-minute limit
+# once you've looked its name up (README.md → "Google").
+# quota_limit_name_regex = "defaultPerMinutePerProject"
+
+# Optional (F-25): a separate project for local/preview builds.
+# create_dev_project = true
+# dev_project_id     = "coretools-dev-1234"

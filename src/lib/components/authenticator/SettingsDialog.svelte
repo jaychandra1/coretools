@@ -3,12 +3,17 @@
   import { authStore } from "./store.svelte";
   import { cloudBackup } from "./cloud.svelte";
   import CloudBackupPanel from "./CloudBackupPanel.svelte";
+  import PasswordStrength from "./PasswordStrength.svelte";
+  import { assessPassword, MIN_PASSWORD_LENGTH } from "../../core/authenticator/password-strength";
   import type { BackupKind } from "../../core/authenticator/cloud-sync";
+  import { CloudBackupError, parseCloudBackup, type CloudBackupFile } from "../../core/authenticator/cloud-backup";
+  import { getPlatform } from "../../platform";
 
   let {
     onclose,
     ontoast,
     onrestore,
+    onimportfile,
     scope = "authenticator",
     title = "Authenticator settings",
   }: {
@@ -16,6 +21,8 @@
     ontoast: (message: string) => void;
     /** Open the restore dialog, optionally preselecting a version. */
     onrestore: (preselectId?: string) => void;
+    /** Restore from an exported encrypted backup file (F-24). */
+    onimportfile: (source: { file: CloudBackupFile; name: string }) => void;
     /**
      * The section that opened the dialog. The vault (password, Windows
      * Hello, auto-lock) is shared; everything else shows for its own section.
@@ -37,7 +44,7 @@
 
   const settingNew = $derived(!authStore.encrypted);
   const pwFormOk = $derived(
-    newPw.length >= 8 &&
+    assessPassword(newPw).ok &&
       newPw === confirmPw &&
       (settingNew || currentPw.length > 0),
   );
@@ -130,6 +137,47 @@
     }
   }
 
+  // ---- encrypted backup file (F-24) --------------------------------------------
+  // The same end-to-end encrypted format as the Drive backups, saved where the
+  // user chooses: a recovery path that needs neither Google nor this app's
+  // Google Cloud project.
+
+  let fileNote = $state("");
+
+  async function exportBackupFile() {
+    fileNote = "";
+    busy = true;
+    try {
+      const text = await authStore.sealCloudBackup(
+        { id: cloudBackup.config?.deviceId ?? "file-export", label: cloudBackup.deviceLabel },
+        scope,
+      );
+      const stamp = new Date().toISOString().slice(0, 10);
+      const name = `coretools-${scope}-backup-${stamp}.json`;
+      if (await getPlatform().saveTextFile(name, text)) {
+        fileNote = "Saved. It's encrypted with your master password — keep it somewhere safe, away from this computer.";
+      }
+    } catch (e) {
+      fileNote = e instanceof Error ? e.message : "Export failed";
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function importBackupFile() {
+    fileNote = "";
+    try {
+      const loaded = await getPlatform().openTextFile();
+      if (!loaded) return;
+      onimportfile({ file: parseCloudBackup(loaded.content), name: loaded.name });
+    } catch (e) {
+      fileNote =
+        e instanceof CloudBackupError
+          ? e.message
+          : "That file isn't a CoreTools encrypted backup.";
+    }
+  }
+
   // ---- cloud backup (UI lives in CloudBackupPanel) ----------------------------
 
   function close() {
@@ -160,7 +208,7 @@
     {#if settingNew}
       <p class="muted">
         Secrets are currently stored <strong>unencrypted</strong>. Set a
-        password (min. 8 characters) to encrypt them at rest with
+        password (at least {MIN_PASSWORD_LENGTH} characters — a passphrase of a few words works well) to encrypt them at rest with
         AES-256-GCM. This password is independent of any other login.
       </p>
     {:else}
@@ -182,7 +230,7 @@
       <input
         type="password"
         bind:value={newPw}
-        placeholder={settingNew ? "New password (min. 8 chars)" : "New password"}
+        placeholder={settingNew ? `New password (min. ${MIN_PASSWORD_LENGTH} chars)` : "New password"}
         autocomplete="new-password"
         aria-label="New password"
       />
@@ -193,10 +241,9 @@
         autocomplete="new-password"
         aria-label="Confirm new password"
       />
+      <PasswordStrength password={newPw} />
       {#if newPw && confirmPw && newPw !== confirmPw}
         <span class="field-error">Passwords do not match.</span>
-      {:else if newPw && newPw.length < 8}
-        <span class="field-error">Use at least 8 characters.</span>
       {/if}
       <button class="primary" type="submit" disabled={!pwFormOk || busy}>
         {settingNew ? "Set password & encrypt" : "Change password"}
@@ -229,6 +276,28 @@
     <section>
       <h3>Cloud backup</h3>
       <CloudBackupPanel {scope} {onrestore} />
+    </section>
+  {/if}
+
+  {#if authenticator || authStore.encrypted}
+    <section>
+      <h3>Backup file</h3>
+      <p class="muted">
+        Save an encrypted copy of your {authenticator ? "accounts" : "saved logins"}
+        to a file, or restore one. It works without Google Drive and opens
+        with your master password on any device.
+      </p>
+      <div class="file-actions">
+        <button
+          onclick={exportBackupFile}
+          disabled={busy || authStore.locked || !authStore.encrypted}
+          title={authStore.encrypted ? "" : "Set an encryption password first — it encrypts the file"}
+        >
+          Export encrypted file…
+        </button>
+        <button onclick={importBackupFile} disabled={busy}>Restore from file…</button>
+      </div>
+      {#if fileNote}<p class="muted hint" role="status">{fileNote}</p>{/if}
     </section>
   {/if}
 
@@ -352,6 +421,11 @@
 </Modal>
 
 <style>
+  .file-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
   section {
     padding: 4px 0 16px;
   }

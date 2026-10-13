@@ -292,7 +292,23 @@
     {/if}
     <span class="spacer"></span>
     <span class="muted">{sizeLabel}</span>
-    <span class="muted">local only · autosaved for recovery</span>
+    {#if !studioStore.recovery}
+      <button class="recovery muted" onclick={() => studioStore.setRecovery(true)} title="Keep a local recovery copy (deleted after 24 hours)">
+        local only · recovery off
+      </button>
+    {:else if studioStore.recoveryPaused}
+      <button
+        class="recovery warn"
+        onclick={() => studioStore.setRecovery(false)}
+        title="This document looks like it contains {studioStore.recoveryPaused}, so no copy is written to disk. Click to turn recovery off entirely."
+      >
+        local only · not saved: contains {studioStore.recoveryPaused}
+      </button>
+    {:else}
+      <button class="recovery muted" onclick={() => studioStore.setRecovery(false)} title="A local recovery copy is kept for 24 hours. Click to turn it off.">
+        local only · recovery copy (24 h)
+      </button>
+    {/if}
   </div>
 
   {#if toast}
@@ -349,6 +365,20 @@
     background: var(--accent);
     color: #fff;
     font-weight: 600;
+  }
+  .recovery {
+    padding: 0;
+    border: none;
+    background: none;
+    font: inherit;
+    cursor: pointer;
+  }
+  .recovery:hover {
+    background: none;
+    text-decoration: underline;
+  }
+  .recovery.warn {
+    color: #b7791f;
   }
   .spacer {
     flex: 1;

@@ -12,3 +12,7 @@ website/downloads/*.exe
 website/downloads/*.dmg
 website/downloads/*.AppImage
 website/downloads/SHA256SUMS.txt
+
+# Playwright output
+test-results/
+playwright-report/

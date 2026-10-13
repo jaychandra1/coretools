@@ -116,6 +116,10 @@
       {#if authStore.canUnlockWithHello}
         Confirm it's you with Windows Hello, or enter your encryption
         password.
+      {:else if authStore.helloEnabled && authStore.helloNeedsPassword}
+        Enter your encryption password. CoreTools asks for it at least every
+        14 days, so you won't forget it — you'll need it to restore a backup.
+        Windows Hello works again right after.
       {:else}
         Your secrets are encrypted at rest. Enter your encryption password to
         unlock this section.

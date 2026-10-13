@@ -4,7 +4,8 @@ description: >
   <app>-v<version> (kept forever) plus <app>-latest (stable links, moved only
   by the newest version) — and update the generated <app>/releases/ index.
   Expects the caller to have checked out this repo (for scripts/) and placed
-  the installers + SHA256SUMS.txt in `assets-dir`.
+  the installers + SHA256SUMS.txt in `assets-dir` (plus any other files
+  SHA256SUMS.txt lists, e.g. the SBOM, and the optional Sigstore bundle).
 
 inputs:
   app:
@@ -40,6 +41,13 @@ inputs:
       SHA256SUMS.txt.sigstore.json is present, notes include the verify command.
     required: false
     default: ""
+  code-signed:
+    description: >
+      Comma-separated platforms whose installers were code-signed, e.g.
+      "Windows,macOS". The notes then say which installers are signed instead
+      of warning that all of them are unsigned.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -65,11 +73,13 @@ runs:
         ASSETS: ${{ inputs.assets-dir }}
         SUMMARY: ${{ inputs.summary }}
         SIGNER: ${{ inputs.signer }}
+        CODE_SIGNED: ${{ inputs.code-signed }}
       run: |
         set -euo pipefail
         extra=()
         if [ -n "$SUMMARY" ]; then extra=(--summary "$SUMMARY"); fi
         if [ -n "$SIGNER" ]; then extra+=(--signer "$SIGNER"); fi
+        if [ -n "$CODE_SIGNED" ]; then extra+=(--code-signed "$CODE_SIGNED"); fi
         node "$GITHUB_WORKSPACE/scripts/artifacts-release.mjs" notes \
           --app "$APP" --name "$APP_NAME" --version "$VERSION" \
           --artifacts-repo "$ARTIFACTS_REPO" --assets-dir "$ASSETS" \

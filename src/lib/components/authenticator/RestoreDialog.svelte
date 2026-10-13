@@ -22,6 +22,7 @@
     onclose,
     ontoast,
     preselectId = null,
+    fromFile = null,
   }: {
     /** The section restoring: only its backups are listed and restored. */
     scope: BackupKind;
@@ -29,6 +30,11 @@
     ontoast: (message: string) => void;
     /** Version to select initially (e.g. the one behind a conflict). */
     preselectId?: string | null;
+    /**
+     * Restore from an exported backup file instead of Google Drive (F-24).
+     * Skips sign-in and version picking; cloud bookkeeping is untouched.
+     */
+    fromFile?: { file: CloudBackupFile; name: string } | null;
   } = $props();
 
   type Step = "connect" | "pick" | "unlock" | "review" | "done";
@@ -37,13 +43,15 @@
   /** "account" / "saved credential", for counts. */
   const noun = $derived(accounts ? "account" : "saved credential");
 
-  let step = $state<Step>(cloudBackup.connected ? "pick" : "connect");
+  // svelte-ignore state_referenced_locally
+  let step = $state<Step>(fromFile ? "unlock" : cloudBackup.connected ? "pick" : "connect");
   let error = $state("");
   let busy = $state(false);
 
   let versions = $state<RemoteBackup[]>([]);
   let selectedId = $state<string | null>(null);
-  let file = $state<CloudBackupFile | null>(null);
+  // svelte-ignore state_referenced_locally
+  let file = $state<CloudBackupFile | null>(fromFile?.file ?? null);
   let payload = $state<CloudBackupPayload | null>(null);
   let password = $state("");
   /** The password that decrypted the backup (needed to create a fresh vault). */
@@ -54,7 +62,19 @@
   let createdVault = $state(false);
 
   const fresh = $derived(!authStore.encrypted);
-  const selected = $derived(versions.find((v) => v.id === selectedId) ?? null);
+  const selected = $derived(
+    fromFile
+      ? {
+          id: "file",
+          name: fromFile.name,
+          createdTime: fromFile.file.createdAt,
+          size: 0,
+          md5Checksum: "",
+          deviceId: fromFile.file.device.id,
+          deviceLabel: fromFile.file.device.label,
+        }
+      : (versions.find((v) => v.id === selectedId) ?? null),
+  );
   const newestId = $derived(versions[0]?.id ?? "");
   /** What this section would restore from the decrypted file. */
   const parts = $derived(payload ? restoreParts([payload], scope) : null);
@@ -170,7 +190,24 @@
     busy = true;
     error = "";
     try {
-      payload = await cloudBackup.decryptBackup(file, password);
+      const opened = await cloudBackup.decryptBackup(file, password);
+      // A file can be for the other section: say so instead of restoring nothing.
+      const holds =
+        opened.contents === "credmanager"
+          ? "credmanager"
+          : opened.contents === "authenticator"
+            ? "authenticator"
+            : opened.credentialsDigest !== "" && scope === "credmanager"
+              ? "credmanager"
+              : "authenticator";
+      if (holds !== scope) {
+        throw new Error(
+          holds === "credmanager"
+            ? "This is a Credential Manager backup — import it from the Credential Manager's settings."
+            : "This is an Authenticator backup — import it from the Authenticator's settings.",
+        );
+      }
+      payload = opened;
       usedPassword = password;
       step = "review";
     } catch (e) {
@@ -196,12 +233,20 @@
     error = "";
     const wasFresh = fresh;
     try {
-      restored = await cloudBackup.applyRestore(
-        [{ version: selected, payload, newestId }],
-        effective,
-        usedPassword,
-        scope,
-      );
+      if (fromFile) {
+        // A file restore is local: device check, restore, no cloud bookkeeping.
+        await authStore.verifyUserPresence();
+        const fileParts = restoreParts([payload], scope);
+        restored = await authStore.restoreFromBackup(fileParts, effective, usedPassword);
+        if (wasFresh && fileParts.settings) await authStore.updateSettings({ ...fileParts.settings });
+      } else {
+        restored = await cloudBackup.applyRestore(
+          [{ version: selected, payload, newestId }],
+          effective,
+          usedPassword,
+          scope,
+        );
+      }
       password = "";
       usedPassword = undefined;
       createdVault = wasFresh;
@@ -220,7 +265,7 @@
   }
 </script>
 
-<Modal title="Restore from Google Drive" onclose={close}>
+<Modal title={fromFile ? "Restore from a backup file" : "Restore from Google Drive"} onclose={close}>
   {#if step === "connect"}
     <p class="muted">
       Sign in with the Google account your backups were saved to. Your web
@@ -300,7 +345,11 @@
         autofocus
       />
       <div class="actions">
-        <button type="button" onclick={() => (step = "pick")}>Back</button>
+        {#if fromFile}
+          <button type="button" onclick={close}>Cancel</button>
+        {:else}
+          <button type="button" onclick={() => (step = "pick")}>Back</button>
+        {/if}
         <button class="primary" type="submit" disabled={!password || busy}>
           {busy ? "Decrypting…" : "Decrypt backup"}
         </button>
@@ -375,7 +424,7 @@
     {/if}
 
     <div class="actions">
-      <button onclick={() => (step = "pick")} disabled={busy}>Back</button>
+      <button onclick={() => (step = fromFile ? "unlock" : "pick")} disabled={busy}>Back</button>
       <button class="primary" onclick={restore} disabled={busy}>
         {#if busy}
           {authStore.helloSupported ? "Waiting for Windows Hello…" : "Restoring…"}

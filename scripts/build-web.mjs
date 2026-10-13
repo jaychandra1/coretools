@@ -28,7 +28,19 @@ mkdirSync(dist, { recursive: true });
 // Releases); the filter keeps any locally-built ones out of dist so local and
 // Vercel builds stay identical.
 const isInstaller = (p) => /\.(exe|dmg|AppImage)$/i.test(p) || /SHA256SUMS\.txt$/.test(p);
-for (const entry of ["index.html", "privacy.html", "styles", "scripts", "assets", "downloads"]) {
+// `.well-known/` carries security.txt (RFC 9116); cpSync copies the dot
+// folder like any other.
+const entries = [
+  "index.html",
+  "privacy.html",
+  "security.html",
+  ".well-known",
+  "styles",
+  "scripts",
+  "assets",
+  "downloads",
+];
+for (const entry of entries) {
   const from = join(website, entry);
   if (existsSync(from)) {
     cpSync(from, join(dist, entry), { recursive: true, filter: (src) => !isInstaller(src) });

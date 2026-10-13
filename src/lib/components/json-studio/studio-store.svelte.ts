@@ -16,6 +16,17 @@ import {
   saveSession,
   type StudioSession,
 } from "../../core/json-studio/db";
+import { findSecret } from "../../core/json-studio/secrets";
+
+const RECOVERY_PREF = "coretools.jsonStudio.recovery";
+
+function recoveryPref(): boolean {
+  try {
+    return localStorage.getItem(RECOVERY_PREF) !== "off";
+  } catch {
+    return true;
+  }
+}
 
 export type StudioTool =
   | "editor"
@@ -63,6 +74,10 @@ class StudioStore {
   syntax = $state<SyntaxStatus>({ state: "pending" });
   /** A recoverable previous session, offered once at startup. */
   restoreOffer = $state<StudioSession | null>(null);
+  /** Keep a local recovery copy of the working texts (F-15: can be turned off). */
+  recovery = $state(recoveryPref());
+  /** Why the recovery copy is currently not being kept, if it isn't. */
+  recoveryPaused = $state<string | null>(null);
 
   #syntaxTimer: ReturnType<typeof setTimeout> | undefined;
   #syntaxSeq = 0;
@@ -121,9 +136,33 @@ class StudioStore {
     }, 250);
   }
 
+  setRecovery(on: boolean): void {
+    this.recovery = on;
+    try {
+      localStorage.setItem(RECOVERY_PREF, on ? "on" : "off");
+    } catch {
+      // Not remembered across restarts; still applies now.
+    }
+    if (on) this.scheduleAutosave();
+    else {
+      clearTimeout(this.#saveTimer);
+      this.recoveryPaused = null;
+      void clearSession();
+    }
+  }
+
   private scheduleAutosave(): void {
     clearTimeout(this.#saveTimer);
+    if (!this.recovery) return;
     this.#saveTimer = setTimeout(() => {
+      // Never write what looks like a credential to disk (F-15); drop any
+      // older copy too, since it may hold an earlier version of the same.
+      const secret = findSecret(this.docText, this.schemaText, this.rightText);
+      this.recoveryPaused = secret;
+      if (secret) {
+        void clearSession();
+        return;
+      }
       void saveSession({
         docText: this.docText,
         schemaText: this.schemaText,

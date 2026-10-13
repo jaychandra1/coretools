@@ -4,62 +4,115 @@ All notable changes to CoreTools are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions follow
 [Semantic Versioning](https://semver.org/).
 
-Releases are cut with `npm version X.Y.Z -m "release: v%s"`, then
-`git push origin HEAD --follow-tags`. That bumps `package.json` and copies
-the version everywhere else. CI refuses a tag that doesn't match
-`package.json`.
+Releases: write notes under `## [Unreleased]` as you go. Then run
+**Actions → Prepare release** with the new version; it moves the notes under
+the version heading, bumps every version string and opens a pull request.
+Merging it lets CI tag the release, which builds, signs and publishes it.
+Where `master` accepts direct pushes, `npm version X.Y.Z -m "release: v%s"`
+followed by `git push origin HEAD --follow-tags` still works.
 
 ## [Unreleased]
+
+## [1.2.0] — 2026-10-13
+
+### Upgrade notes
+
+- **Your vault upgrades the first time you type your master password.** It
+  takes about a second, once. Windows Hello keeps working.
+- **No going back to 1.1 after that.** Earlier versions can't open an
+  upgraded vault (they report a wrong password) and can't read backups made
+  by this version (they say it was made by a newer version). If you might
+  need an older version, export an encrypted backup file first.
+- New master passwords need at least 12 characters and must not be easily
+  guessed. An existing shorter one keeps working; you'll be asked to change it.
+
+### Security
+
+- **Stronger protection for the master password (Argon2id).** It now
+  unlocks a random data key through Argon2id (64 MiB of memory per guess)
+  instead of PBKDF2. A stolen backup costs an attacker far more per
+  password guess, and password changes re-key everything.
+- **Account and login names are encrypted on disk.** Issuers, account names,
+  platforms, URLs, usernames, categories, owners and tags are sealed with
+  the vault key. They're decrypted into memory only while unlocked.
+- **Copied passwords and codes stay out of clipboard history.** The desktop
+  app marks them so Windows clipboard history (Win+V), the Windows cloud
+  clipboard and clipboard managers on macOS and Linux skip them.
+- **Tamper-evident activity log.** Credential Manager events are encrypted
+  and hash-chained. The log shows whether its integrity is verified, and can
+  be exported for an auditor.
+- **Windows Hello asks for the master password every 14 days**, so it isn't
+  forgotten — you need it to restore a backup on a new device.
+- **The vault refuses to change its key if any part of it isn't loaded**,
+  instead of risking saved logins that could no longer be decrypted.
+- **JSON-Studio keeps its recovery copy for 24 hours only.** It doesn't write
+  one at all when the document looks like it holds a credential (cloud keys,
+  tokens, private keys, password fields), and recovery can be switched off.
+- **Releases are signed and gated.** `SHA256SUMS.txt` is signed with Sigstore
+  (keyless; `SHA256SUMS.txt.sigstore.json`), and each release ships a
+  CycloneDX SBOM covered by that signature. A release builds only commits
+  already on `master`, its CHANGELOG notes must exist, and installers are
+  code-signed as soon as signing credentials are configured. The website
+  deploys from a `production` branch that CI moves only after its checks pass.
+
+### Added
+
+- **Encrypted backup files.** Each section's settings can export its data to
+  a file and restore one. Files use the same end-to-end encryption as the
+  Drive backups and work without Google — on any device, with your password.
+- **Update notifications (opt-in, desktop).** Once a day, if you allow it,
+  CoreTools reads the public release index and tells you when a newer version
+  is out. Nothing is downloaded or installed automatically.
+- **About & diagnostics** (click the version in the header). Copy a support
+  report with versions, states and recent error causes — never names,
+  secrets or account details. Errors are now recorded locally with their
+  cause instead of a generic "network" message.
+- **Deletions carry across devices.** Deleting an account or permanently
+  deleting a login is remembered (as a one-way hash) and travels in the
+  backup, so merging an older backup no longer brings it back, and a merge
+  applies deletions made on your other devices.
 
 ### Changed
 
 - **Each module now backs up separately to Google Drive.** Authenticator
   accounts are saved as `coretools-authenticator-<time>-<device>.json` and
   Credential Manager logins as `coretools-credmanager-<time>-<device>.json`.
-  Each series keeps its own 10 versions, its own conflict check and its own
-  "pending" state. Adding a login no longer re-uploads your 2FA accounts, and
-  a conflict in one module never pauses backups of the other. Existing
-  backups keep working: older single-file backups appear under the
-  Authenticator and restore its accounts.
+  Each series has its own versions, conflict check and "pending" state.
+  Adding a login no longer re-uploads your 2FA accounts, and a conflict in one
+  module never pauses backups of the other. Older single-file backups appear
+  under the Authenticator and restore its accounts.
+- **A year of backup history.** Instead of only the newest 10 versions, each
+  series keeps the newest 10, then one per hour for a day, one per day for a
+  month and one per month for a year. The last version before a big shrink
+  (a mass deletion) is always kept.
+- **Gentler on Google's quota.** Automatic backups are combined into at most
+  one every 5 minutes, and retries after an outage are spread out randomly
+  instead of every copy retrying at the same moment.
 - **Each section shows only its own things.** The Authenticator's settings
   show its backup status, versions, "Back up now", restore and delete; the
-  Credential Manager's settings show its own. Options that belong to the
-  other section (code grouping, password-reveal confirmation) are no longer
-  shown there. The Google connection itself is shared.
+  Credential Manager's settings show its own. The Google connection is shared.
 - **The cloud backup panel no longer shows the Drive folder path or file
-  name.** The "Open Google Drive settings" button is gone too, along with
-  the native command behind it.
-- **Releases are signed and gated.** `SHA256SUMS.txt` is signed with Sigstore
-  (keyless; `SHA256SUMS.txt.sigstore.json`) and the release notes print the
-  verify command. A release builds only commits already on `master` and
-  waits for approval in the `release` environment. The website deploys from
-  a `production` branch that CI moves only after the web checks pass.
-- CI verifies `src-tauri/Cargo.lock` once committed (`cargo metadata --locked`),
-  runs the Rust unit tests, and refuses temporary test code. A one-click
-  **Generate Cargo.lock** workflow proposes the lockfile for review.
+  name**, and the "Open Google Drive settings" button is gone.
+- **Faster start.** JSON-Studio's editor, the YAML validator and the grammar
+  tool load the first time you open them; the startup bundle is a tenth of
+  its former size.
+- CI runs browser end-to-end tests, tests of the vault and backup state
+  machines against a real IndexedDB, the Rust unit tests and a Windows build
+  check. Patch updates from Dependabot merge automatically once CI passes.
 
 ### Fixed
 
+- **Data saved by a newer version** now shows a clear message instead of a
+  generic failure, and is never modified.
 - **The website shows the version you actually download.** The download
   cards read the newest published release (`coretools/releases/latest.json`)
-  instead of a version baked in at build time. Before, the site could
-  advertise a release that hadn't finished publishing.
+  instead of a version baked in at build time.
 - **Google Drive "403" errors are told apart.** Full storage, rate limiting
   (retried automatically), a Workspace administrator's policy, and revoked
-  permission each get their own message. An unrecognised 403 no longer
-  claims your access was revoked.
-
+  permission each get their own message.
 - **No more "http://tauri.localhost wants to use your cameras" prompt** in
-  the Windows app. That address is Tauri's internal name for the app's own
-  pages, so the prompt looked like a foreign site asking. The app now answers
-  WebView2's camera request itself when you start the QR scanner. It covers
-  the camera only, and only the app's own pages can be in the webview;
-  Windows' camera privacy switch and in-use light still apply.
-
-### Changed
-
-- CI compiles the Windows-only Rust code (Windows Hello, WebView2) on every
-  push, instead of discovering mistakes there only in a release build.
+  the Windows app. The app answers WebView2's camera request itself when you
+  start the QR scanner, for the camera only.
 
 ## [1.1.0] — 2026-10-13
 

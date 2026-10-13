@@ -1,12 +1,21 @@
 # Keep the three dependency ecosystems patched. Grouped weekly PRs keep the
 # noise low; the CI workflow (type-check, tests, prod audit, clippy) gates
-# every update before it can merge.
+# every update before it can merge. Patch updates (and GitHub Actions minor
+# updates) merge themselves once CI passes — see
+# .github/workflows/dependabot-auto-merge.yml (audit F-21).
+#
+# cooldown: version updates are proposed only once a release is a few days
+# old, so a hijacked or broken publish is usually caught and yanked before it
+# reaches an (auto-merged) PR. Security updates are never delayed.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 3
     groups:
       npm-minor-patch:
         update-types: ["minor", "patch"]
@@ -20,6 +29,9 @@ updates:
     directory: /src-tauri
     schedule:
       interval: weekly
+    open-pull-requests-limit: 10
+    cooldown:
+      default-days: 3
     groups:
       cargo-minor-patch:
         update-types: ["minor", "patch"]
@@ -28,3 +40,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+    groups:
+      actions-minor-patch:
+        update-types: ["minor", "patch"]

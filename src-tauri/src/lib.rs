@@ -6,14 +6,18 @@
 //! only a remembered path — exactly once. A compromised webview can therefore
 //! never read or write a path the user did not just pick in a native dialog.
 //!
-//! No logging of file contents and no persistence of its own. The only
-//! network code is the opt-in Authenticator cloud backup (`cloud.rs`), which
-//! talks exclusively to Google's OAuth/Drive endpoints, keeps its credential
-//! in the OS keychain, and only ever uploads content the frontend has
-//! already encrypted end-to-end.
+//! No logging of file contents. Its only persistence is a small local
+//! diagnostics log of error causes (`diagnostics.rs`). Network code: the
+//! opt-in cloud backup (`cloud.rs`) talks exclusively to Google's
+//! OAuth/Drive endpoints, keeps its credential in the OS keychain, and only
+//! ever uploads content the frontend has already encrypted end-to-end; the
+//! opt-in update check (`updates.rs`) reads one fixed public URL.
 
 mod cloud;
+mod diagnostics;
 mod hello;
+mod secure_clipboard;
+mod updates;
 mod webview_permissions;
 
 use std::collections::HashSet;
@@ -205,6 +209,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            diagnostics::init(app);
             // Answer the QR scanner's camera request ourselves instead of
             // WebView2's "http://tauri.localhost wants to…" prompt.
             if let Some(window) = app.get_webview_window("main") {
@@ -214,6 +219,7 @@ pub fn run() {
         })
         .manage(AuthorizedPaths::default())
         .manage(cloud::CloudState::default())
+        .manage(secure_clipboard::SecureClipboard::default())
         .invoke_handler(tauri::generate_handler![
             pick_open_path,
             pick_save_path,
@@ -234,7 +240,12 @@ pub fn run() {
             cloud::cloud_list,
             cloud::cloud_upload,
             cloud::cloud_download,
-            cloud::cloud_delete
+            cloud::cloud_delete,
+            secure_clipboard::clipboard_copy_secret,
+            secure_clipboard::clipboard_clear_if,
+            updates::check_for_update,
+            diagnostics::diagnostics_record,
+            diagnostics::diagnostics_report
         ])
         .run(tauri::generate_context!())
         .expect("error while running CoreTools");

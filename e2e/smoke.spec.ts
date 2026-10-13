@@ -1,0 +1,111 @@
+import { expect, test, type Page } from "@playwright/test";
+
+// A throwaway test password; each test runs in a fresh browser profile.
+const PASSWORD = "tram violet kettle ninety";
+
+async function openTab(page: Page, name: string) {
+  await page.getByRole("button", { name, exact: true }).click();
+}
+
+async function createVault(page: Page) {
+  await openTab(page, "Authenticator");
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByPlaceholder(/New password/).fill(PASSWORD);
+  await page.getByPlaceholder("Confirm new password").fill(PASSWORD);
+  await page.getByRole("button", { name: "Set password & encrypt" }).click();
+  await expect(page.getByText("Secrets are encrypted at rest.")).toBeVisible({ timeout: 20_000 });
+  await page.getByRole("button", { name: "Close dialog" }).click();
+}
+
+test.beforeEach(async ({ page }) => {
+  await page.goto("./");
+});
+
+test("every tool opens, including the lazily loaded ones", async ({ page }) => {
+  for (const [tab, marker] of [
+    ["YML-Validator", /Kubernetes manifest/],
+    ["Grammar-Polisher", /./],
+    ["JSON-Studio", /local only/],
+    ["Diff-Checker", /Original/],
+  ] as const) {
+    await openTab(page, tab);
+    await expect(page.locator("main")).toContainText(marker, { timeout: 30_000 });
+  }
+});
+
+test("the master password policy blocks weak passwords", async ({ page }) => {
+  await openTab(page, "Authenticator");
+  await page.getByRole("button", { name: "Settings" }).click();
+  await page.getByPlaceholder(/New password/).fill("password1234");
+  await page.getByPlaceholder("Confirm new password").fill("password1234");
+  await expect(page.getByText(/one of the first words attackers try/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Set password & encrypt" })).toBeDisabled();
+});
+
+test("vault: encrypt, add an account, lock, unlock", async ({ page }) => {
+  await createVault(page);
+
+  await page.getByRole("button", { name: "+ Add" }).click();
+  await page.getByRole("button", { name: "Manual entry" }).click();
+  await page.getByPlaceholder("GitHub").fill("E2E Issuer");
+  await page.getByPlaceholder("user@example.com").fill("e2e@example.com");
+  await page.getByPlaceholder("JBSW Y3DP EHPK 3PXP").fill("JBSWY3DPEHPK3PXP");
+  await page.getByRole("button", { name: "Add account" }).last().click();
+  await expect(page.getByText("E2E Issuer")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Copy code \d{6}/ })).toBeVisible();
+
+  // Names are sealed on disk (F-14): nothing identifying in IndexedDB.
+  const stored = await page.evaluate(
+    () =>
+      new Promise<string>((resolve) => {
+        const open = indexedDB.open("coretools-authenticator");
+        open.onsuccess = () => {
+          const read = open.result.transaction("entries").objectStore("entries").getAll();
+          read.onsuccess = () => resolve(JSON.stringify(read.result));
+        };
+      }),
+  );
+  expect(stored).not.toContain("E2E Issuer");
+  expect(stored).not.toContain("e2e@example.com");
+
+  await page.getByRole("button", { name: /Lock/ }).first().click();
+  await expect(page.getByText("Authenticator locked")).toBeVisible();
+  await expect(page.getByText("E2E Issuer")).toHaveCount(0);
+
+  await page.getByPlaceholder("Encryption password").fill("wrong password value");
+  await page.getByRole("button", { name: "Unlock" }).click();
+  await expect(page.getByText("Wrong password")).toBeVisible({ timeout: 20_000 });
+
+  await page.getByPlaceholder("Encryption password").fill(PASSWORD);
+  await page.getByRole("button", { name: "Unlock" }).click();
+  await expect(page.getByText("E2E Issuer")).toBeVisible({ timeout: 20_000 });
+});
+
+test("credential manager: add, search, sealed at rest, audited", async ({ page }) => {
+  await createVault(page);
+  await openTab(page, "Credential-Manager");
+  await page.getByRole("button", { name: "+ Add credential" }).click();
+  await page.getByPlaceholder("AWS Production").fill("E2E Console");
+  await page.getByPlaceholder("devops-admin").fill("e2e-user");
+  await page.getByRole("button", { name: "Generate" }).click();
+  await page.getByRole("button", { name: "Add credential" }).last().click();
+  await expect(page.getByText("E2E Console")).toBeVisible();
+
+  await page.getByPlaceholder(/Search platform/).fill("nothing-matches-this");
+  await expect(page.getByText("E2E Console")).toHaveCount(0);
+  await page.getByPlaceholder(/Search platform/).fill("e2e");
+  await expect(page.getByText("E2E Console")).toBeVisible();
+
+  await page.getByRole("button", { name: "Activity log" }).click();
+  await expect(page.getByText(/Integrity verified/)).toBeVisible();
+});
+
+test("JSON-Studio doesn't keep a recovery copy of credentials", async ({ page }) => {
+  await openTab(page, "JSON-Studio");
+  await expect(page.locator("main")).toContainText(/local only/, { timeout: 30_000 });
+  await page.locator(".monaco-editor .view-lines").first().click();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.press("Delete");
+  await page.keyboard.type('{"aws":"AKIAIOSFODNN7EXAMPLE"}');
+  await expect(page.getByText(/not saved: contains an AWS access key/)).toBeVisible({ timeout: 10_000 });
+});

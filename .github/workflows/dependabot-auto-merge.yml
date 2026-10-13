@@ -1,0 +1,64 @@
+name: Dependabot auto-merge
+
+# Audit F-21: low-risk dependency updates merge themselves once every
+# required check (and review) passes, so patches don't pile up.
+#
+# Eligible — every dependency in the pull request must qualify:
+#   - any ecosystem (npm, cargo, GitHub Actions): semver-patch updates;
+#   - GitHub Actions: semver-minor updates too.
+# Anything else (majors, npm/cargo minors, unknown update types) waits for a
+# human merge. This only *enables* auto-merge (squash): branch protection
+# still decides when — CI must pass, and with "Require review from Code
+# Owners" an owner must still approve. Dependabot's cooldown
+# (.github/dependabot.yml) keeps brand-new releases out for a few days first.
+#
+# Note: the merge is performed through GITHUB_TOKEN, so the resulting push to
+# master starts no workflows — CI on master (and promote-web) run with the
+# next push, or run CI on master by hand (Actions → CI → Run workflow).
+#
+# Needs: Settings → General → "Allow auto-merge".
+
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  auto-merge:
+    name: Enable auto-merge for patch updates
+    runs-on: ubuntu-latest
+    # Only Dependabot's own pull requests, and only on Dependabot's own pushes
+    # (fetch-metadata also verifies that every commit is Dependabot's).
+    if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]'
+    permissions:
+      contents: write # required to merge
+      pull-requests: write # enable auto-merge on the pull request
+    steps:
+      - name: Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Is every update eligible?
+        id: policy
+        env:
+          UPDATES: ${{ steps.metadata.outputs.updated-dependencies-json }}
+        run: |
+          set -euo pipefail
+          echo "$UPDATES" | jq -r '.[] | "\(.packageEcosystem) \(.dependencyName) \(.prevVersion) -> \(.newVersion) (\(.updateType))"'
+          eligible=$(echo "$UPDATES" | jq '
+            length > 0 and all(.[];
+              .updateType == "version-update:semver-patch"
+              or (.packageEcosystem == "github_actions" and .updateType == "version-update:semver-minor"))')
+          echo "eligible=${eligible}" >> "$GITHUB_OUTPUT"
+          if [ "$eligible" = "true" ]; then
+            echo "Eligible: auto-merge (squash) once checks and reviews pass." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Not eligible for auto-merge (major, non-Actions minor, or unknown update) — merge by hand." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Enable auto-merge (squash)
+        if: steps.policy.outputs.eligible == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"

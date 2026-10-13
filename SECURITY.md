@@ -4,10 +4,11 @@ CoreTools is designed to be a **trustworthy, offline-first** local tool. This
 document describes the concrete measures that back that claim, so the design can
 be audited rather than taken on faith.
 
-## 1. Offline by default — one opt-in network feature, no telemetry
+## 1. Offline by default — two opt-in network features, no telemetry
 
-- **No telemetry, ever.** There is no analytics SDK, no update pinger, no crash
-  reporter, and no external font or asset loading. QR codes are decoded
+- **No telemetry, ever.** There is no analytics SDK, no crash reporter, no
+  automatic update pinger (the update check below stays off until you turn
+  it on), and no external font or asset loading. QR codes are decoded
   (`jsqr`) and generated (`qrcode`) entirely in-page from canvas pixels and
   `data:` URLs, service icons are locally-computed monogram avatars (no
   favicon fetching), and camera frames never leave the device. On Windows
@@ -16,30 +17,43 @@ be audited rather than taken on faith.
   attributed to `http://tauri.localhost`. No other permission kind is
   granted, no third-party origin can be loaded into the webview (CSP), and
   Windows' camera privacy setting still applies.
-- **Exactly one feature uses the network, and only if you turn it on:** the
-  Authenticator's **Google Drive backup** (desktop build only). Until you
-  click *Connect Google Account*, the app makes no network request at all.
-  When connected, it talks only to Google's OAuth and Drive endpoints, and
-  only ever uploads a backup that was **end-to-end encrypted on this device**
-  first. Every other tool — Diff-Checker, YML-Validator, Grammar-Polisher,
-  JSON-Studio — has no network path whatsoever. Details in
-  [§8](#google-drive-backup-optional-desktop-only).
+- **Two features use the network, and only if you turn them on** (desktop
+  build only):
+  - **Google Drive backup** for the Authenticator and the Credential
+    Manager. Until you click *Connect Google Account*, it makes no request.
+    When connected, it talks only to Google's OAuth and Drive endpoints and
+    only ever uploads backups that were **end-to-end encrypted on this
+    device** first. Details in [§8](#google-drive-backup-optional-desktop-only).
+  - **Update notifications.** Off until you say yes (asked once). When on, the
+    app reads one fixed public file — `coretools/releases/latest.json` in
+    the public release repository — at most once a day. The request carries
+    nothing about you or your data; the app only shows "update available"
+    with a link to the release page and never downloads or installs anything.
+
+  Every other tool — Diff-Checker, YML-Validator, Grammar-Polisher,
+  JSON-Studio — has no network path whatsoever.
 - **That network code lives in Rust, not the webview.** All HTTP is made by
-  `src-tauri/src/cloud.rs` to fixed Google endpoints. The webview itself
-  still cannot reach any remote origin (see the CSP below), so the page that
-  holds decrypted secrets has no way to send anything off the device; it can
-  only ask the backend for a fixed set of backup operations.
+  `src-tauri/src/cloud.rs` (fixed Google endpoints) and
+  `src-tauri/src/updates.rs` (one fixed URL, size-capped, and the release
+  link it returns must point into the public release repository). The
+  webview itself still cannot reach any remote origin (see the CSP below), so
+  the page that holds decrypted secrets has no way to send anything off the
+  device; it can only ask the backend for a fixed set of operations.
 - **Content Security Policy.** The packaged app runs under a strict CSP defined
   in `src-tauri/tauri.conf.json`:
   ```
-  default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;
-  font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost;
-  object-src 'none'; base-uri 'self'; frame-src 'none'
+  default-src 'self'; script-src 'self' 'wasm-unsafe-eval';
+  style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:;
+  connect-src 'self' ipc: http://ipc.localhost; object-src 'none';
+  base-uri 'self'; frame-src 'none'
   ```
   `connect-src` permits only the local Tauri IPC channel — **no remote origin is
   reachable from the webview**, so even an accidental `fetch` would be blocked
   by the runtime. `object-src 'none'` and `frame-src 'none'` disable
-  plugins/embeds. Cloud backup did not relax this policy.
+  plugins/embeds. `'wasm-unsafe-eval'` lets the page compile WebAssembly —
+  the Argon2id key derivation (§8) — and nothing else: JavaScript `eval`,
+  `new Function` and inline scripts stay blocked. The web build at `/app`
+  serves the same policy. Cloud backup and the update check did not relax it.
 - **No outbound capability is granted to the webview.** Tauri's capability
   model (`src-tauri/capabilities/default.json`) grants only `core:default`.
   There is no HTTP plugin, no shell plugin, and no filesystem-scope plugin.
@@ -62,18 +76,31 @@ be audited rather than taken on faith.
     2FA accounts across restarts; storage and encryption are specified in
     [§8](#8-authenticator-local-persistence--encryption-model);
   - **JSON Studio** (`coretools-json-studio`) — crash/reload session recovery
-    for the working document only: the editor texts and active tab, autosaved
-    locally, restorable or discardable from a banner, capped at 5M characters.
-    No encryption is applied (it is working-document text the user is actively
-    editing, not credential material); "wipe" is discarding the session.
+    for the working document only: the editor texts and active tab, restorable
+    or discardable from a banner, capped at 5M characters. The copy is
+    **deleted after 24 hours**, is **never written when the document looks like
+    it holds a credential** (cloud keys, tokens, private keys, JWTs, password
+    or token fields — any older copy is deleted too), and recovery can be
+    switched off from the status bar. It isn't encrypted: it is working text
+    the user is actively editing.
+- **Two small preferences live in `localStorage`**: whether update
+  notifications are on (and when the last check ran), and whether JSON-Studio
+  recovery is on. Neither is personal data.
+- **A local diagnostics log** (desktop) records error *causes* — an error
+  class, an HTTP status, Google's error reason — with a timestamp, in two
+  rotating files of at most 256 KiB in the app's log directory
+  (`src-tauri/src/diagnostics.rs`). It never records content, secrets,
+  tokens, URLs or account names, and nothing leaves the device unless the
+  user copies the report from *About & diagnostics*.
 - The Rust backend does not log file contents.
 
 ## 3. Minimal, guarded native surface
 
-The Rust backend (`src-tauri/src/lib.rs`, `src-tauri/src/hello.rs`,
-`src-tauri/src/cloud.rs`) exposes exactly twenty-one commands: five for
-files, one to open a saved login page, five for Windows Hello, ten for cloud
-backup. **The dialog-origin rule is enforced in Rust, not by
+The Rust backend (`src-tauri/src/lib.rs` and its modules `hello.rs`,
+`cloud.rs`, `secure_clipboard.rs`, `updates.rs`, `diagnostics.rs`)
+exposes exactly twenty-five commands: five for files, one to open a saved
+login page, five for Windows Hello, nine for cloud backup, two for the secure
+clipboard, one update check and two for the diagnostics log. **The dialog-origin rule is enforced in Rust, not by
 frontend convention:** the file dialogs are opened by Rust
 (`pick_open_path` / `pick_save_path`), every path they issue is canonicalized
 and stored in managed state, and each read/write command accepts only a
@@ -104,12 +131,20 @@ webview holds no dialog capability of its own
 | `cloud_upload(name, content, deviceId, deviceLabel)` | Upload one encrypted backup version | Name must match `coretools-authenticator-*.json` or `coretools-credmanager-*.json` (charset-restricted); content ≤ 5 MiB; labels sanitized and byte-capped; always written to the connected account's app-data folder |
 | `cloud_download(id)` | Fetch one version | Id charset-restricted; response ≤ 5 MiB; UTF-8 only |
 | `cloud_delete(id)` | Delete one version | Id charset-restricted; already-gone counts as success |
+| `clipboard_copy_secret(text)` | Copy a password or 2FA code | Marked so clipboard history, the Windows cloud clipboard and clipboard managers skip it (Windows `ExcludeClipboardContentFromMonitorProcessing`, macOS `org.nspasteboard.ConcealedType`, Linux `x-kde-passwordManagerHint`); ≤ 4,096 characters; never stored or logged |
+| `clipboard_clear_if(expected)` | Auto-clear after 30 s | Clears only if the clipboard still holds exactly that text, so a later copy is never destroyed |
+| `check_for_update()` | Opt-in update check | One fixed public URL; response ≤ 64 KiB; version must be `x.y.z`; the release link must be in the public release repository |
+| `diagnostics_record(source, cause)` | Record a UI-side failure cause | Control characters stripped, length-capped; callers pass error tokens only |
+| `diagnostics_report()` | Recent log lines for *Copy diagnostics* | Read-only; newest 200 lines |
 
 Business logic stays out of the backend, keeping the trusted native surface small.
 The one exception is the OAuth/HTTP plumbing in `cloud.rs`. No
 paths are ever constructed from untrusted/manifest content — they come only from
 dialog results. The Hello commands (§8) handle only opaque challenge/signature
-byte arrays — vault keys, secrets and passwords never cross the IPC boundary.
+byte arrays — vault keys never cross the IPC boundary. The one place a secret
+does is deliberate: a password or code the user copies is handed to
+`clipboard_copy_secret`, which only places it on the clipboard (the web
+clipboard API can't set the history exclusions).
 The cloud commands accept only already-encrypted backup text and file
 metadata. They never accept a token **from** the webview, so a compromised
 page cannot point uploads at another Google account.
@@ -195,15 +230,19 @@ reading a small number of well-isolated files.
   `monaco-editor` is pinned to `~0.53` because newer releases bundle a
   `dompurify` with open advisories. Production dependencies are audited
   (`npm audit --omit=dev`) and currently report **0 vulnerabilities**.
-- All OTP cryptography uses the platform **Web Crypto API** (`crypto.subtle`)
-  — HMAC, PBKDF2, AES-GCM and SHA-256 are never reimplemented in JS. The one
+- All OTP and vault cryptography uses the platform **Web Crypto API**
+  (`crypto.subtle`) — HMAC, PBKDF2, AES-GCM and SHA-256 are never
+  reimplemented in JS. Argon2id, which Web Crypto doesn't offer, comes from
+  `hash-wasm` (MIT): the reference algorithm compiled to WebAssembly,
+  checked in tests for determinism and parameter handling. The one
   hand-written primitive is MD5, required solely for compatibility with the
   Authenticator browser extension's legacy backup format (see §8).
-- The Rust backend adds, for cloud backup only: `reqwest` (HTTPS via
-  **rustls** with bundled Mozilla roots — no system OpenSSL), `keyring` (OS
-  keychain: Windows Credential Manager, macOS Keychain, Secret Service on
-  Linux), and `sha2` / `base64` / `getrandom` for PKCE. Backup encryption
-  itself is done in the frontend with Web Crypto, like the vault.
+- The Rust backend adds: `reqwest` (HTTPS via **rustls** with bundled
+  Mozilla roots — no system OpenSSL), `keyring` (OS keychain: Windows
+  Credential Manager, macOS Keychain, Secret Service on Linux), and
+  `sha2` / `base64` / `getrandom` for PKCE — all for cloud backup — plus
+  `arboard` (text only, no image support) for the secure clipboard. Backup
+  encryption itself is done in the frontend with Web Crypto, like the vault.
 - Build-time tooling (Vite/esbuild) never ships in the packaged application, so
   dev-server advisories do not affect the distributed binary.
 
@@ -217,9 +256,20 @@ reading a small number of well-isolated files.
   someone holding only the artifacts-repo token can replace files but can't
   produce a signature that verifies. Every signature is also recorded in
   Sigstore's public transparency log.
+- **Software bill of materials.** Each release ships `CoreTools-sbom.cdx.json`
+  (CycloneDX: npm and Rust dependencies), listed in `SHA256SUMS.txt` and so
+  covered by the same signature.
+- **Code signing, ready when certificates are.** The release workflow signs
+  Windows installers (Azure Artifact Signing) and signs and notarizes macOS
+  builds (Developer ID) as soon as their credentials are configured, verifies
+  the signature before upload, and refuses a half-configured platform rather
+  than silently shipping it unsigned. Until then installers are unsigned and
+  the release notes say so.
 - **Only reviewed code ships.** A release builds only a commit that is
-  already on `master`, and publishing waits for an approval in the
-  `release` environment. The website deploys from a `production` branch
+  already on `master`, its CHANGELOG notes must exist, and publishing runs
+  in the `release` environment, which can require an approval (on a
+  private repository GitHub offers required reviewers only with Enterprise;
+  see DEPLOYMENT.md). The website deploys from a `production` branch
   that CI moves only after the web checks pass on `master`. CI also refuses
   temporary test code (such as a fake cloud backend) in `src/`.
 - **Reproducible Rust builds.** Once `src-tauri/Cargo.lock` is committed, CI
@@ -239,29 +289,46 @@ database. This section specifies exactly what that means.
   storage in the web preview). It is never transmitted as-is. The only copy
   that ever leaves the device is the optional, end-to-end encrypted Google
   Drive backup described below.
-- **Entry metadata** (issuer, account name, code type, digits, period,
-  counter, ordering, pinned flag) is stored **in the clear** — the same model
-  the Authenticator browser extension uses.
-- **Secrets** are stored in one of two states:
-  - **Encrypted (recommended).** When the user sets an encryption password
-    (independent of any other credential), each secret is encrypted with
-    **AES-256-GCM** under a key derived via **PBKDF2-SHA256 with 310,000
-    iterations** and a random 16-byte per-user salt; every encryption uses a
-    fresh random 12-byte IV.
-  - **Unencrypted (explicit opt-out).** If no password is set, secrets are
-    stored in plaintext and the UI shows a **persistent warning banner** until
-    a password is set — mirroring the extension's behaviour.
+- With an encryption password set, **everything identifying is encrypted**:
+  each secret in its own **AES-256-GCM** blob, and the issuer and account
+  name sealed together in a `meta` blob (the plaintext fields are stored
+  empty). Only non-identifying fields stay in the clear: code type, digits,
+  period, counter, display order, pinned flag, and a SHA-256 of the secret
+  used to detect duplicates. Every encryption uses a fresh random 12-byte IV.
+- **Unencrypted (explicit opt-out).** If no password is set, secrets and
+  names are stored in plaintext and the UI shows a **persistent warning
+  banner** until a password is set — mirroring the extension's behaviour.
 
-### Key handling & locking
+### Key hierarchy, password policy and locking
 
-- The derived AES key is created **non-extractable**, so its raw bytes are
-  never exposed to JavaScript, and it exists **only in memory**.
+- A random 32-byte **data key** encrypts everything (secrets, names,
+  credentials, the audit log, backups). The password never encrypts data
+  directly: **Argon2id** (64 MiB memory, 3 passes, 1 lane, 16-byte random
+  salt) turns it into a key-encryption key that AES-GCM-wraps the data key.
+  A wrong password fails at that unwrap's authentication tag; a stored
+  verifier (a known sentinel under the data key) double-checks it — no
+  password hash is stored or compared in JS.
+- **Upgrade from 1.1 and earlier**, where the data key *was* the PBKDF2
+  output (310,000 iterations): on the next password unlock, that same key is
+  wrapped under a fresh Argon2id key and the PBKDF2 parameters are deleted.
+  Nothing is re-encrypted and Windows Hello keeps working; names written in
+  the clear by older versions are sealed in the same unlock. Earlier versions
+  can't open an upgraded vault (documented as "no downgrade past 1.2").
+- **Password policy.** A new master password needs at least 12 characters and
+  must pass a strength estimate that discounts common words, repeats,
+  sequences and keyboard walks. A weaker password from before keeps working;
+  the app asks the user to change it.
+- The working key is **non-extractable** and exists **only in memory**; raw
+  key bytes, where they briefly exist (wrapping for Hello, the upgrade), are
+  zeroed after use.
 - The section is **locked on every load** and after a configurable idle
-  timeout (default 5 minutes). Locking drops the key reference and clears the
-  decrypted-secret cache.
-- Password verification decrypts a stored sentinel value; AES-GCM's
-  authenticated decryption provides the constant-time check (no password hash
-  is stored or compared in JS).
+  timeout (default 5 minutes). Locking drops the key, clears the decrypted
+  secrets, and blanks the decrypted names and credential metadata in memory.
+- **Collections are registered at startup, explicitly** (`src/lib/vault-bootstrap.ts`),
+  and an operation that re-keys the vault (password change, restore into a
+  new vault) refuses to run if stored credentials exist that no registered
+  collection could re-encrypt — it fails safe instead of leaving data
+  undecryptable.
 
 ### What never happens
 
@@ -282,10 +349,10 @@ database. This section specifies exactly what that means.
 The desktop build can optionally unlock the vault with Windows Hello
 (fingerprint / face / PIN) instead of the password:
 
-- Enabling requires the **current password** plus a Hello verification. A
-  transient extractable copy of the vault key is derived, its 32 raw bytes are
-  **AES-256-GCM-wrapped** and stored in IndexedDB, and the plaintext copy is
-  zeroed. The wrapping key is `SHA-256` of a Windows Hello **signature**
+- Enabling requires the **current password** plus a Hello verification. The
+  password unwraps the data key's 32 raw bytes, which are
+  **AES-256-GCM-wrapped** under the Hello-derived key, stored in IndexedDB,
+  and zeroed. The wrapping key is `SHA-256` of a Windows Hello **signature**
   (RSA-PKCS#1, deterministic) over a fixed random 32-byte challenge.
 - The signing key is created via `KeyCredentialManager` — **TPM-backed where
   available** — and the OS requires a successful biometric/PIN verification
@@ -313,6 +380,18 @@ The desktop build can optionally unlock the vault with Windows Hello
   data, or a Windows-side Hello reset (e.g. biometric re-enrollment) all
   invalidate and remove the Hello configuration; re-enabling always requires
   the password again.
+- **The password is required at least every 14 days.** After that, Hello
+  pauses until the password is typed once — so it isn't forgotten (it's what
+  restores a backup on a new device), and a stolen Hello session can't be
+  used indefinitely.
+- **Same-user processes (stated plainly).** The app is an unpackaged Win32
+  binary, so its Hello key is identified by name, not by package identity;
+  another program running as the same Windows user could ask Windows to show
+  a genuine Hello prompt for it. Approving that prompt is required, and
+  same-user malware can already read the app's memory while it's unlocked,
+  so this doesn't add a new way in — but true per-app isolation needs MSIX
+  packaging, which is the planned path. The 14-day password requirement
+  bounds how long a wrapped key alone is useful.
 - In the browser build the feature is absent (`hello_available` is
   Windows-desktop only); nothing is degraded.
 
@@ -325,7 +404,7 @@ which requires an encryption password to be set first. Code:
 (scheduling) and `src-tauri/src/cloud.rs` (transport).
 
 **What gets uploaded.** Each module backs up as its own series of JSON
-files, one file per version:
+files, one file per version (format v2 since 1.2):
 - `coretools-authenticator-<time>-<device>.json` holds the 2FA accounts —
   secrets *and* issuer, account names, order, pins and counters — plus
   display settings;
@@ -333,11 +412,12 @@ files, one file per version:
   logins.
 
 Each file is serialized and encrypted as a single **AES-256-GCM** blob under
-the **vault key** (PBKDF2-SHA256 of the encryption password, 310,000
-iterations). The only cleartext fields are what restore needs before it can
-decrypt: the format name, creation time, a random per-install device id and
-the computer name, the KDF salt and iteration count, and the vault's password
-verifier (itself AES-GCM ciphertext).
+the vault's **data key**. The only cleartext fields are what restore needs
+before it can decrypt: the format name, creation time, a random per-install
+device id and the computer name, the Argon2id parameters and salt, the
+**password-wrapped data key**, and the verifier (itself AES-GCM ciphertext).
+Vaults not yet upgraded still write the 1.1 layout (PBKDF2 parameters, no
+wrapped key); both layouts restore.
 
 **Integrity, in layers.**
 - The cleartext header is bound into the GCM tag as additional authenticated
@@ -351,8 +431,11 @@ verifier (itself AES-GCM ciphertext).
 - Before upload, each sealed file is decrypted again locally and checked. After
   upload, Drive's MD5 of the stored bytes is compared with what was sent. A
   mismatch deletes the upload and retries; older versions are never touched.
-- KDF parameters from a downloaded header are bounded (100k–5M iterations),
-  so a tampered file can't stall a restore.
+- KDF parameters from a downloaded header are bounded (Argon2id 19 MiB–1 GiB
+  memory, 1–10 passes, 1–8 lanes; PBKDF2 100k–5M iterations), so a tampered
+  file can't stall a restore, exhaust memory, or downgrade to a cheap setting.
+- Every header field — including the KDF parameters and the wrapped key — is
+  bound into the payload's GCM tag, so none can be swapped.
 
 **Credentials and scope.**
 - Sign-in is OAuth 2.0 with PKCE in the user's own browser, with a loopback
@@ -364,11 +447,22 @@ verifier (itself AES-GCM ciphertext).
   webview. Access tokens are held in Rust memory only.
 
 **Versions, devices and conflicts.**
-- Every backup is a new immutable version. The newest **10** of each series
-  are kept for rollback, and a change in one module uploads only that
-  module's series. Retention runs only after a new version has uploaded and
+- Every backup is a new immutable version, and a change in one module uploads
+  only that module's series. **Retention is time-tiered:** the newest 10,
+  then one per hour for a day, one per day for a month and one per month for a
+  year (at most 100). The last version before a large shrink — a mass
+  deletion — is always kept, so a bad edit can't age every good copy out
+  within minutes. Retention runs only after a new version has uploaded and
   verified, so an interruption at any point leaves every earlier version
   intact.
+- Automatic backups are **coalesced** to at most one pass every 5 minutes, and
+  retries use full random jitter (5 s up to 15 min), so a Google incident
+  doesn't make every installed copy retry in lockstep against the shared
+  quota.
+- **Deletions are recorded** (as SHA-256 hashes of the record's identity,
+  encrypted at rest and inside the backup) and honoured by merges: a merge
+  never brings back something this device deleted, and removes what another
+  device deleted after this device last added or changed it.
 - Each device remembers, per series, which remote version its data is based
   on. If another device made a newer backup of a series, automatic backups of
   that series pause instead of burying it.
@@ -384,6 +478,9 @@ verifier (itself AES-GCM ciphertext).
   access.
 
 **Restore.**
+- From Google Drive, or from an **exported encrypted file** (each section's
+  settings → Backup file), which uses the same format and works without
+  Google — the recovery path if the Google project or account were ever lost.
 - Requires the password the backup was made with. On a device with Windows
   Hello, it also requires a Hello verification (`hello_verify_user`).
 - Everything is decrypted and validated in memory first, then written in
@@ -397,10 +494,11 @@ verifier (itself AES-GCM ciphertext).
   Authenticator, which restores only their accounts.
 
 **Trade-offs, stated plainly.**
-- Anyone who obtains the backup file (e.g. a compromised Google account) can
-  attempt an offline password guess against PBKDF2 at 310,000 iterations,
-  exactly as with an exported encrypted backup. Use a strong encryption
-  password.
+- Anyone who obtains a backup file (e.g. a compromised Google account) can
+  attempt offline password guesses; each costs a full Argon2id run with 64 MiB
+  of memory, which defeats cheap GPU parallelism. Backups made before the
+  upgrade remain PBKDF2-protected until retention removes them (and they
+  hold only data from then). A strong password is still the real defence.
 - Google can see metadata, not content: that backups exist and for which
   module (the file names), their times and sizes (which loosely track the
   number of accounts and logins), the computer name, and the Google account
@@ -418,23 +516,31 @@ password, plus optional Windows Hello, unlocks both, and auto-lock covers
 both.
 
 - **Encrypted at rest, no exceptions.** Every password and note is AES-256-GCM
-  encrypted under the vault key. The Credential Manager has no unencrypted
-  mode: it asks for a master password before the first save, and the
-  password can't be removed while credentials exist. Metadata (platform,
-  URL, username, category, owner, tags) is stored in the clear for search,
-  like authenticator issuers.
+  encrypted under the data key, and the searchable metadata (platform, URL,
+  username, category, owner, tags) is sealed together in a `meta` blob.
+  Search runs over the copy decrypted into memory after unlock, which locking
+  clears. The Credential Manager has no unencrypted mode: it asks for a
+  master password before the first save, and the password can't be removed
+  while credentials exist.
 - **Decrypted on demand only.** Plaintext is produced only for the one
   credential being shown, copied or edited, and is never held in a store.
   Shown passwords auto-hide after 20 seconds and are cleared immediately on
-  lock. Copying honours the clipboard auto-clear setting.
+  lock. Copying goes through the secure clipboard (kept out of clipboard
+  history and sync) and honours the auto-clear setting.
 - **Confirm before revealing.** Showing or copying a password requires
   Windows Hello (`hello_verify_user`) or, where Hello isn't available, the
   master password. A success is trusted for 60 seconds and ends on lock. This
   is on by default and can be turned off in settings.
-- **Audit log.** Create, edit, password change, move to trash, restore,
-  permanent delete, password view and password copy are recorded locally
-  (newest 2,000 events) with time and platform name. The log never contains a
-  secret.
+- **Tamper-evident audit log.** Create, edit, password change, move to trash,
+  restore, permanent delete, password view and password copy are recorded
+  locally (newest 2,000 events). Each record's content is AES-GCM-sealed with
+  its position bound in, links to the SHA-256 of the previous record, and a
+  sealed head names the newest — so editing, reordering, splicing or
+  dropping the newest records is detected and shown ("altered outside
+  CoreTools"). The log can be exported with its verification result and
+  chain head. It never contains a secret. Limits, stated plainly: deleting
+  the whole log, or rolling the log and its head back together to an older
+  copy, can't be prevented on a device the attacker fully controls.
 - **Password changes and restores are atomic.** Changing the master password
   re-encrypts every credential, and a cloud restore writes credentials, in
   the same IndexedDB transaction as the vault config and authenticator
@@ -442,9 +548,9 @@ both.
 - **Access control.** This is a single-user, local application with no
   accounts or server, so there are no roles to enforce. The controls above
   (vault lock, per-reveal re-authentication, audit log) are its
-  access-control model. Passwords never cross the IPC boundary into the
-  Rust backend; "Open login page" passes only the URL, which both sides
-  restrict to http(s).
+  access-control model. A password reaches the Rust backend only when the
+  user copies it, to be placed on the clipboard; "Open login page" passes
+  only the URL, which both sides restrict to http(s).
 - **Trash.** Deleting is a soft delete: items can be restored for 30 days,
   then are purged permanently.
 - **Cloud backup.** Credentials, including trashed ones, back up as their own
@@ -470,13 +576,22 @@ Because the app is offline and local, the primary risk surface is the parsing/
 merging logic, the Authenticator's storage model (§8), and the native IPC
 boundary (§3).
 
-- **Security issues**: please use GitHub's **private vulnerability reporting**
-  on this repository (Security tab → "Report a vulnerability") rather than a
-  public issue, so a fix can ship before details are public. Expect an initial
-  response within 7 days.
+- **Security issues**: report them privately through GitHub's private
+  vulnerability reporting on the public release repository,
+  https://github.com/jaychandra1/artifacts/security/advisories/new (this source
+  repository is private, so its Security tab isn't reachable). Reporters
+  without a GitHub account can email coretools.works@gmail.com. The full
+  policy is at https://coretools-chi.vercel.app/security.html and advertised
+  in `/.well-known/security.txt` (RFC 9116): scope, what to include, safe
+  harbor for good-faith research, no bug bounty. Reports are acknowledged
+  within 3 business days and triaged within 10. Fixes ship as new releases,
+  followed by a GitHub Security Advisory on `jaychandra1/artifacts` that
+  credits the reporter if they wish. Severity levels and how users are told
+  are in `docs/runbooks/README.md`.
 - **Non-security bugs**: open a regular issue, and include the app version
   shown in the header — every release is tagged, so the version pins the exact
   code.
-- Fixes are released as new tagged versions (see CHANGELOG.md). There is no
-  auto-update channel by design, so security-relevant releases are flagged
-  prominently on the download page.
+- Fixes are released as new tagged versions (see CHANGELOG.md). Installed
+  copies with update notifications on see them within a day — a release
+  marked as a security fix is flagged as such — and security-relevant
+  releases are also flagged on the download page. Nothing installs itself.

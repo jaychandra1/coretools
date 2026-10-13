@@ -18,7 +18,8 @@ It bundles six focused utilities:
    open-source [Authenticator browser extension](https://authenticator.cc):
    TOTP / HOTP / Steam Guard / Blizzard codes, QR scanning, and
    import/export of the extension's backup files (including encrypted ones).
-   Secrets can be encrypted at rest with a password (PBKDF2 + AES-256-GCM),
+   Secrets and account names are encrypted at rest with a password
+   (Argon2id + AES-256-GCM),
    and the desktop build can optionally unlock with **Windows Hello**
    (fingerprint / face / PIN, TPM-backed) and back up to **Google Drive**,
    end-to-end encrypted, for restore after a reinstall or on a new device.
@@ -26,9 +27,10 @@ It bundles six focused utilities:
 5. **Credential-Manager** — keep platform logins (URL, username, password,
    notes, category, owner, tags) in the same encrypted vault as the
    Authenticator. It has a table/card view, an eye toggle and one-click copy
-   (gated by Windows Hello or the master password), open-login-page,
-   search & filters, Trash with restore, a local activity log, and inclusion
-   in the encrypted Google Drive backup.
+   (gated by Windows Hello or the master password; copies are kept out of
+   clipboard history), open-login-page, search & filters, Trash with
+   restore, a tamper-evident activity log, encrypted backup files, and its
+   own series in the encrypted Google Drive backup.
 6. **JSON-Studio** — a full JSON workbench: Monaco editor with live
    validation, tree editing, JSON Schema validation & generation, JSONPath /
    JMESPath explorers, side-by-side + semantic diff, JSON repair, OpenAPI
@@ -41,10 +43,12 @@ The app ships with a premium dark/light theme (toggle in the header; the
 choice is kept in memory only — never persisted) and self-hosted Inter
 typography, so it makes zero network requests even for fonts.
 
-Everything runs locally, and there is **no telemetry.** The only network
-feature is the Authenticator's **opt-in Google Drive backup** (desktop only).
-It does nothing until you connect an account, and it only ever uploads data
-that was encrypted on your device first. The header badge reads **Offline**
+Everything runs locally, and there is **no telemetry.** Two network features
+exist, both opt-in and desktop only: the **Google Drive backup** for the
+Authenticator and Credential Manager, which does nothing until you connect an
+account and only ever uploads data encrypted on your device first; and
+**update notifications**, which read one public release file once a day if you
+allow it. The header badge reads **Offline**
 in every tool, and **Online** only while that backup is connected or running.
 The three text tools keep everything in memory and write nothing to disk unless
 you explicitly save it. Two tools are deliberate exceptions with their own
@@ -81,7 +85,8 @@ coretools/
 │       │   │   ├── otp.ts              # TOTP/HOTP/Steam/Blizzard (WebCrypto HMAC)
 │       │   │   ├── otpauth.ts          # otpauth:// URI parse & build
 │       │   │   ├── migration.ts        # Google Authenticator export decoding
-│       │   │   ├── vault-crypto.ts     # PBKDF2 + AES-256-GCM vault
+│       │   │   ├── vault-crypto.ts     # AES-256-GCM vault primitives
+│       │   │   ├── kdf.ts / vault-keys.ts  # Argon2id + data-key wrapping
 │       │   │   ├── legacy-crypto.ts    # extension-backup (CryptoJS) compat
 │       │   │   ├── backup.ts           # import/export formats + dedupe
 │       │   │   ├── db.ts               # IndexedDB persistence
@@ -312,7 +317,8 @@ follow professional conventions; the style choice applies to the body):
 5. **Back up to Google Drive** (desktop) — in Settings, set an encryption
    password, then **Connect Google Account**. Every change is then backed up
    automatically, end-to-end encrypted with that password, into a hidden
-   app-only folder in your Drive. The last 10 versions are kept. Settings shows
+   app-only folder in your Drive. A year of versions is kept (the newest 10,
+   then hourly, daily and monthly). Settings shows
    the account, status and last backup, with **Backup now**, **Restore
    backup**, **Disconnect** and **Delete cloud backups**. After a reinstall or
    on a new device, choose **Restore from Google Drive**, sign in, and enter

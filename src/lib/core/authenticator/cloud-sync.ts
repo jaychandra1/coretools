@@ -8,7 +8,7 @@
  * series of immutable version files, named by kind:
  *   coretools-authenticator-<time>-<device>.json   2FA accounts + settings
  *   coretools-credmanager-<time>-<device>.json     Credential Manager logins
- * and the newest `MAX_VERSIONS` of EACH series are kept for rollback. A
+ * and EACH series keeps a time-tiered history for rollback (see planPrune). A
  * device remembers, per series, which remote version its data is based on.
  * If the newest remote version came from ANOTHER device and isn't the one
  * we're based on, uploading would silently bury that device's changes under
@@ -34,8 +34,28 @@ export const BACKUP_KIND_LABELS: Readonly<Record<BackupKind, string>> = {
   credmanager: "Credential Manager",
 };
 
-/** Versions kept per series. */
-export const MAX_VERSIONS = 10;
+/**
+ * Retention per series (audit F-08). Count-only retention let a bad edit
+ * replicate into every kept version within minutes; a time-tiered history
+ * keeps a way back for a year:
+ *  - the newest `keepNewest` versions, always;
+ *  - one per hour for the last day, one per day for the last month, one per
+ *    month for the last year;
+ *  - the last version before a large shrink (a mass deletion) is protected;
+ *  - never more than `maxVersions` in total (oldest go first).
+ */
+export const RETENTION = {
+  keepNewest: 10,
+  hourlyForMs: 24 * 60 * 60 * 1000,
+  dailyForMs: 31 * 24 * 60 * 60 * 1000,
+  monthlyForMs: 366 * 24 * 60 * 60 * 1000,
+  /** A version this much smaller than the one before it counts as a shrink. */
+  shrinkRatio: 0.5,
+  maxVersions: 100,
+} as const;
+
+/** Minimum gap between automatic backup passes of one series (F-10). */
+export const AUTO_BACKUP_INTERVAL_MS = 5 * 60 * 1000;
 
 /** Which series a backup file belongs to, by its name; null = not ours. */
 export function backupKindOf(name: string): BackupKind | null {
@@ -87,11 +107,56 @@ export function sortNewestFirst(list: RemoteBackup[]): RemoteBackup[] {
   );
 }
 
-/** Ids of every version beyond the newest `keep`. */
-export function planPrune(list: RemoteBackup[], keep = MAX_VERSIONS): string[] {
-  return sortNewestFirst(list)
-    .slice(keep)
-    .map((file) => file.id);
+/** Ids of versions the tiered retention policy no longer keeps (see RETENTION). */
+export function planPrune(list: RemoteBackup[], now = Date.now()): string[] {
+  const sorted = sortNewestFirst(list);
+  const keep = new Set<string>();
+  const protectedIds = new Set<string>();
+  const buckets = new Set<string>();
+
+  sorted.forEach((file, i) => {
+    if (i < RETENTION.keepNewest) {
+      keep.add(file.id);
+      return;
+    }
+    const created = Date.parse(file.createdTime);
+    const age = now - created;
+    const date = new Date(created);
+    let bucket: string | null = null;
+    if (age <= RETENTION.hourlyForMs) bucket = `h${Math.floor(created / 3_600_000)}`;
+    else if (age <= RETENTION.dailyForMs) bucket = `d${date.toISOString().slice(0, 10)}`;
+    else if (age <= RETENTION.monthlyForMs) bucket = `m${date.toISOString().slice(0, 7)}`;
+    // Newest first, so the first version seen in a bucket is its newest.
+    if (bucket && !buckets.has(bucket)) {
+      buckets.add(bucket);
+      keep.add(file.id);
+    }
+  });
+
+  // A mass deletion shrinks the backup: keep the last version from before it.
+  for (let i = 0; i + 1 < sorted.length; i++) {
+    const newer = sorted[i];
+    const older = sorted[i + 1];
+    if (older.size > 0 && newer.size < older.size * RETENTION.shrinkRatio) {
+      protectedIds.add(older.id);
+      keep.add(older.id);
+    }
+  }
+
+  // Hard cap: drop the oldest unprotected versions first, then the oldest.
+  const kept = sorted.filter((file) => keep.has(file.id));
+  let excess = kept.length - RETENTION.maxVersions;
+  for (let i = kept.length - 1; i >= 0 && excess > 0; i--) {
+    if (!protectedIds.has(kept[i].id) && i >= RETENTION.keepNewest) {
+      keep.delete(kept[i].id);
+      excess--;
+    }
+  }
+  for (let i = kept.length - 1; i >= 0 && excess > 0; i--) {
+    if (keep.delete(kept[i].id)) excess--;
+  }
+
+  return sorted.filter((file) => !keep.has(file.id)).map((file) => file.id);
 }
 
 /**
@@ -111,10 +176,17 @@ export function detectConflict(
   return newest;
 }
 
-/** Back-off between automatic retries: 15 s, 30 s, 1 m, 2 m, 5 m, 10 m, 15 m… */
-export function retryDelayMs(attempt: number): number {
+/**
+ * Back-off between automatic retries, with FULL jitter (audit F-10): a
+ * random delay up to 15 s, 30 s, 1 m, 2 m, 5 m, 10 m, then 15 m. Without the
+ * randomness, every installed copy that failed during a Google incident
+ * would retry at the same instants and re-trip the shared quota as it
+ * recovers. Never less than 5 s.
+ */
+export function retryDelayMs(attempt: number, random: () => number = Math.random): number {
   const steps = [15, 30, 60, 120, 300, 600, 900];
-  return steps[Math.min(Math.max(attempt, 0), steps.length - 1)] * 1000;
+  const cap = steps[Math.min(Math.max(attempt, 0), steps.length - 1)] * 1000;
+  return Math.max(5_000, Math.floor(random() * cap));
 }
 
 export function md5Hex(text: string): string {
@@ -349,9 +421,11 @@ export async function performBackup(request: BackupRequest): Promise<BackupOutco
     throw new CloudSyncError("cloud_integrity", "Uploaded backup failed checksum verification");
   }
 
-  // Retention never considers the version we just wrote for deletion.
+  // Retention never deletes the version we just wrote.
   const others = remote.filter((file) => file.id !== uploaded.id);
-  const pruned = planPrune(others, MAX_VERSIONS - 1);
+  const pruned = planPrune([uploaded, ...others], (request.now ?? new Date()).getTime()).filter(
+    (id) => id !== uploaded.id,
+  );
   const removed = new Set<string>();
   for (const id of pruned) {
     // Best effort: a failed prune only leaves an extra old version behind.

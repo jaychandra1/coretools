@@ -8,8 +8,11 @@
   import CredentialDialog from "./CredentialDialog.svelte";
   import AuditLogDialog from "./AuditLogDialog.svelte";
   import PasswordPrompt from "./PasswordPrompt.svelte";
+  import PasswordStrength from "../authenticator/PasswordStrength.svelte";
+  import { assessPassword } from "../../core/authenticator/password-strength";
+  import type { CloudBackupFile } from "../../core/authenticator/cloud-backup";
   import { credentialStore, type CredentialInput } from "./credentials.svelte";
-  import { copyText, clearClipboardLater } from "./clipboard";
+  import { copySecret, copyText, clearSecretLater } from "../../secure-clipboard";
   import {
     CREATED_RANGES,
     EMPTY_FILTER,
@@ -133,8 +136,8 @@
   async function copyPassword(c: StoredCredential) {
     try {
       const plain = await credentialStore.passwordForCopy(c.id, askPassword);
-      await copyText(plain);
-      if (authStore.settings.clipboardClear) clearClipboardLater(plain);
+      await copySecret(plain); // kept out of clipboard history / cloud sync (F-07)
+      if (authStore.settings.clipboardClear) clearSecretLater(plain);
       showToast(
         authStore.settings.clipboardClear ? "Password copied — clears in 30 s" : "Password copied",
       );
@@ -174,6 +177,8 @@
   let dialog = $state<Dialog>(null);
   let editing = $state<StoredCredential | null>(null);
   let restorePreselect = $state<string | null>(null);
+  /** An exported backup file to restore from instead of Drive (F-24). */
+  let restoreFile = $state<{ file: CloudBackupFile; name: string } | null>(null);
 
   function openEdit(c: StoredCredential) {
     editing = c;
@@ -250,7 +255,7 @@
 
   async function createVault(event: SubmitEvent) {
     event.preventDefault();
-    if (newPw.length < 8 || newPw !== confirmPw || onboardBusy) return;
+    if (!assessPassword(newPw).ok || newPw !== confirmPw || onboardBusy) return;
     onboardBusy = true;
     onboardError = "";
     try {
@@ -318,7 +323,9 @@
 {/snippet}
 
 <div class="cm">
-  {#if !authStore.ready || !credentialStore.ready}
+  {#if authStore.loadError}
+    <p class="load-error" role="alert">{authStore.loadError}</p>
+  {:else if !authStore.ready || !credentialStore.ready}
     <p class="muted center">Loading…</p>
   {:else if !authStore.encrypted}
     <!-- ------------------------- onboarding: master password ------------------------- -->
@@ -332,14 +339,13 @@
         unlocks both{authStore.entries.length > 0 ? " — and setting it also encrypts your Authenticator accounts" : ""}.
       </p>
       <form onsubmit={createVault}>
-        <input type="password" bind:value={newPw} placeholder="Master password (min. 8 characters)" autocomplete="new-password" aria-label="Master password" />
+        <input type="password" bind:value={newPw} placeholder="Master password (min. 12 characters)" autocomplete="new-password" aria-label="Master password" />
         <input type="password" bind:value={confirmPw} placeholder="Confirm master password" autocomplete="new-password" aria-label="Confirm master password" />
+        <PasswordStrength password={newPw} />
         {#if newPw && confirmPw && newPw !== confirmPw}
           <span class="field-error">Passwords don't match.</span>
-        {:else if newPw && newPw.length < 8}
-          <span class="field-error">Use at least 8 characters.</span>
         {/if}
-        <button class="primary" type="submit" disabled={newPw.length < 8 || newPw !== confirmPw || onboardBusy}>
+        <button class="primary" type="submit" disabled={!assessPassword(newPw).ok || newPw !== confirmPw || onboardBusy}>
           {onboardBusy ? "Encrypting…" : "Create encrypted vault"}
         </button>
         {#if onboardError}<span class="field-error" role="alert">{onboardError}</span>{/if}
@@ -368,6 +374,15 @@
         {@render iconButton("lock", "Lock now", () => authStore.lock())}
       </div>
     </header>
+
+    {#if authStore.weakPassword}
+      <p class="weak-password" role="status">
+        Your master password is weaker than CoreTools now requires (12+
+        characters, not easily guessed). It protects every saved login and
+        your backups —
+        <button class="link" onclick={() => (dialog = "settings")}>change it in Settings</button>.
+      </p>
+    {/if}
 
     <!-- ------------------------------------ toolbar ------------------------------------ -->
     <div class="toolbar">
@@ -524,12 +539,14 @@
       title="Credential Manager settings"
       onclose={() => (dialog = null)}
       ontoast={(m) => showToast(m)}
-      onrestore={(id) => { restorePreselect = id ?? null; dialog = "restore"; }}
+      onrestore={(id) => { restorePreselect = id ?? null; restoreFile = null; dialog = "restore"; }}
+      onimportfile={(source) => { restoreFile = source; dialog = "restore"; }}
     />
   {:else if dialog === "restore"}
     <RestoreDialog
       scope="credmanager"
       preselectId={restorePreselect}
+      fromFile={restoreFile}
       onclose={() => (dialog = null)}
       ontoast={(m) => showToast(m)}
     />
@@ -564,6 +581,33 @@
   .cm {
     max-width: 1120px;
     margin: 0 auto;
+  }
+  .load-error {
+    margin: 40px auto;
+    max-width: 460px;
+    padding: 14px 16px;
+    border-radius: 10px;
+    background: var(--removed-bg);
+    color: var(--removed-fg);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .weak-password {
+    margin: 0 0 10px;
+    padding: 9px 12px;
+    border-radius: 9px;
+    font-size: 12.5px;
+    background: color-mix(in srgb, #f6ad55 12%, transparent);
+    border: 1px solid color-mix(in srgb, #f6ad55 35%, transparent);
+  }
+  .weak-password .link {
+    border: none;
+    background: none;
+    padding: 0;
+    color: var(--accent);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
   }
   .center {
     text-align: center;

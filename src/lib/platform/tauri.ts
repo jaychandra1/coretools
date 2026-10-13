@@ -4,6 +4,10 @@ import type {
   HelloUnlock,
   CloudBridge,
   CloudAccount,
+  DiagnosticsBridge,
+  SecureClipboardBridge,
+  UpdateBridge,
+  UpdateInfo,
 } from "./types";
 import type { RemoteBackup } from "../core/authenticator/cloud-sync";
 
@@ -117,10 +121,42 @@ const tauriCloud: CloudBridge = {
  * Tauri APIs are imported dynamically so this module never fails to load in a
  * plain browser (where the imports would otherwise be unavailable).
  */
+const tauriClipboard: SecureClipboardBridge = {
+  async copySecret(text: string): Promise<void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("clipboard_copy_secret", { text });
+  },
+  async clearIfUnchanged(text: string): Promise<boolean> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<boolean>("clipboard_clear_if", { expected: text });
+  },
+};
+
+const tauriUpdates: UpdateBridge = {
+  async check(): Promise<UpdateInfo> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<UpdateInfo>("check_for_update");
+  },
+};
+
+const tauriDiagnostics: DiagnosticsBridge = {
+  async record(source: string, cause: string): Promise<void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("diagnostics_record", { source, cause });
+  },
+  async report(): Promise<string> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<string>("diagnostics_report");
+  },
+};
+
 export const tauriPlatform: Platform = {
   kind: "tauri",
   hello: tauriHello,
   cloud: tauriCloud,
+  clipboard: tauriClipboard,
+  updates: tauriUpdates,
+  diagnostics: tauriDiagnostics,
 
   async openExternal(url: string): Promise<void> {
     const { invoke } = await import("@tauri-apps/api/core");

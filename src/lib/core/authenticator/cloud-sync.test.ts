@@ -7,11 +7,11 @@ import {
   CloudSyncError,
   describeCloudError,
   detectConflict,
-  MAX_VERSIONS,
   md5Hex,
   ofKind,
   performBackup,
   planPrune,
+  RETENTION,
   retryDelayMs,
   sortNewestFirst,
   type BackupKind,
@@ -94,10 +94,55 @@ describe("naming & ordering", () => {
     expect(sorted.map((f) => f.id)).toEqual(["c", "b", "a"]);
   });
 
-  it("prunes everything beyond the newest N", () => {
-    const list = Array.from({ length: 13 }, (_, i) => remote(`v${i}`, i));
-    expect(planPrune(list, 10)).toEqual(["v2", "v1", "v0"]);
-    expect(planPrune(list.slice(0, 3), 10)).toEqual([]);
+  it("keeps the newest 10, then one per hour, day and month (F-08)", () => {
+    const now = Date.UTC(2026, 9, 11, 12, 0);
+    const at = (msAgo: number, id: string, size = 100): RemoteBackup => ({
+      ...remote(id, 0),
+      createdTime: new Date(now - msAgo).toISOString(),
+      size,
+    });
+    const MIN = 60_000;
+    const HOUR = 60 * MIN;
+    const DAY = 24 * HOUR;
+    const list = [
+      ...Array.from({ length: 10 }, (_, i) => at(i * MIN, `new${i}`)), // newest 10
+      at(20 * MIN, "same-hour-a"), // 11th: first of its hour bucket → kept
+      at(25 * MIN, "same-hour-b"), // same hour → pruned
+      at(3 * HOUR, "hour-3"), // own hour → kept
+      at(2 * DAY, "day-2a"),
+      at(2 * DAY + HOUR, "day-2b"), // same day → pruned
+      at(40 * DAY, "month-a"),
+      at(45 * DAY, "month-b"), // possibly same month bucket
+      at(400 * DAY, "too-old"), // past a year → pruned
+    ];
+    const pruned = planPrune(list, now);
+    expect(pruned).toContain("same-hour-b");
+    expect(pruned).toContain("day-2b");
+    expect(pruned).toContain("too-old");
+    for (const kept of ["new0", "new9", "same-hour-a", "hour-3", "day-2a", "month-a"]) {
+      expect(pruned).not.toContain(kept);
+    }
+  });
+
+  it("protects the last version before a mass deletion", () => {
+    const now = Date.UTC(2026, 9, 11, 12, 0);
+    const list = Array.from({ length: 14 }, (_, i) => ({
+      ...remote(`v${i}`, 0),
+      createdTime: new Date(now - i * 60_000).toISOString(),
+      // v0…v11 are tiny (everything deleted); v12, v13 are the full vault.
+      size: i <= 11 ? 40 : 5000,
+    }));
+    const pruned = planPrune(list, now);
+    expect(pruned).not.toContain("v12"); // the last full version survives
+  });
+
+  it("caps the total", () => {
+    const now = Date.UTC(2026, 9, 11, 12, 0);
+    const list = Array.from({ length: 400 }, (_, i) => ({
+      ...remote(`v${i}`, 0),
+      createdTime: new Date(now - i * 3_600_000).toISOString(),
+    }));
+    expect(list.length - planPrune(list, now).length).toBeLessThanOrEqual(RETENTION.maxVersions);
   });
 });
 
@@ -135,11 +180,17 @@ describe("detectConflict", () => {
 });
 
 describe("retryDelayMs", () => {
-  it("backs off and caps at 15 minutes", () => {
-    expect(retryDelayMs(0)).toBe(15_000);
-    expect(retryDelayMs(1)).toBe(30_000);
-    expect(retryDelayMs(6)).toBe(900_000);
-    expect(retryDelayMs(99)).toBe(900_000);
+  it("backs off with full jitter, capped at 15 minutes, never under 5 s (F-10)", () => {
+    expect(retryDelayMs(0, () => 0.999)).toBe(14_985);
+    expect(retryDelayMs(1, () => 0.5)).toBe(15_000);
+    expect(retryDelayMs(6, () => 0.999)).toBe(899_100);
+    expect(retryDelayMs(99, () => 0.999)).toBe(899_100);
+    expect(retryDelayMs(3, () => 0)).toBe(5_000);
+  });
+
+  it("spreads a fleet's retries instead of synchronizing them", () => {
+    const delays = new Set(Array.from({ length: 50 }, () => retryDelayMs(4)));
+    expect(delays.size).toBeGreaterThan(40);
   });
 });
 
@@ -204,13 +255,19 @@ describe("performBackup", () => {
     expect(cred).toMatchObject({ kind: "conflict", remote: { id: "cred" } });
 
     // Pruning one series never deletes the other's versions.
-    for (let i = 0; i < MAX_VERSIONS + 2; i++) {
+    for (let i = 0; i < 12; i++) {
       transport.files.push({ ...remote(`a${i}`, 10 + i, "dev-me"), content: "{}" });
     }
     const latest = sortNewestFirst(ofKind(await transport.list(), "authenticator"))[0];
-    await performBackup({ ...base, transport, lastSyncedRemoteId: latest.id });
+    const outcome = await performBackup({
+      ...base,
+      transport,
+      lastSyncedRemoteId: latest.id,
+      now: new Date(Date.UTC(2026, 9, 11, 14, 0)),
+    });
+    if (outcome.kind !== "uploaded") throw new Error("expected upload");
+    expect(outcome.pruned).toEqual(["a2", "a1", "a0"]); // a3 kept for its hour
     const left = await transport.list();
-    expect(ofKind(left, "authenticator")).toHaveLength(MAX_VERSIONS);
     expect(ofKind(left, "credmanager").map((f) => f.id)).toEqual(["cred"]);
   });
 
@@ -250,19 +307,24 @@ describe("performBackup", () => {
     expect(transport.files.map((f) => f.id)).toEqual(["old"]);
   });
 
-  it("keeps the newest MAX_VERSIONS versions, including the new one", async () => {
+  it("prunes by the tiered policy after a verified upload, never the new version", async () => {
     const transport = new FakeTransport();
-    for (let i = 0; i < MAX_VERSIONS; i++) {
+    for (let i = 0; i < 12; i++) {
       transport.files.push({ ...remote(`v${i}`, i, "dev-me"), content: "{}" });
     }
-    const outcome = await performBackup({ ...base, transport, lastSyncedRemoteId: `v${MAX_VERSIONS - 1}` });
-    expect(outcome.kind === "uploaded" && outcome.pruned).toEqual(["v0"]);
-    expect(transport.files).toHaveLength(MAX_VERSIONS);
-    // The reported versions match what's actually left, newest first.
+    const outcome = await performBackup({
+      ...base,
+      transport,
+      lastSyncedRemoteId: "v11",
+      now: new Date(Date.UTC(2026, 9, 11, 14, 0)),
+    });
     if (outcome.kind !== "uploaded") throw new Error("expected upload");
-    expect(outcome.versions).toHaveLength(MAX_VERSIONS);
+    // Newest 10 (the upload + v11…v3), then one for the 10:00 hour (v2).
+    expect(outcome.pruned).toEqual(["v1", "v0"]);
+    // The reported versions match what's actually left, newest first.
+    expect(outcome.versions).toHaveLength(11);
     expect(outcome.versions[0].id).toBe(outcome.file.id);
-    expect(outcome.versions.map((v) => v.id)).not.toContain("v0");
+    expect(transport.files).toHaveLength(11);
   });
 
   it("propagates transport failures with nothing deleted", async () => {

@@ -17,6 +17,9 @@ const KEY = "current";
 /** Sessions larger than this are not persisted (recovery isn't worth 100MB writes). */
 export const MAX_PERSIST_CHARS = 5_000_000;
 
+/** A recovery copy older than this is deleted unread (audit F-15). */
+export const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
 export interface StudioSession {
   /** Main editor content. */
   docText: string;
@@ -47,7 +50,7 @@ function db(): Promise<IDBDatabase> {
 export async function loadSession(): Promise<StudioSession | null> {
   try {
     const database = await db();
-    return await new Promise((resolve, reject) => {
+    const session = await new Promise<StudioSession | null>((resolve, reject) => {
       const request = database
         .transaction(STORE)
         .objectStore(STORE)
@@ -55,6 +58,12 @@ export async function loadSession(): Promise<StudioSession | null> {
       request.onsuccess = () => resolve(request.result ?? null);
       request.onerror = () => reject(request.error);
     });
+    // Pasted content shouldn't linger on disk: recovery is for today's work.
+    if (session && Date.now() - session.updatedAt > SESSION_TTL_MS) {
+      await clearSession();
+      return null;
+    }
+    return session;
   } catch {
     // Private windows / blocked storage: recovery is a convenience, not a
     // requirement — the studio works without it.

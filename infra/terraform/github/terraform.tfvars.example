@@ -1,0 +1,13 @@
+# Copy to terraform.tfvars (git-ignored) only if you need to override a
+# default. Every variable has a working default for jaychandra1/coretools.
+
+# owner      = "jaychandra1"
+# repository = "coretools"
+
+# ci.yml's tag-release job creates v* tags with GITHUB_TOKEN. Set to false if
+# you only tag by hand, or if GitHub refuses the GitHub Actions bypass.
+# github_actions_creates_release_tags = false
+
+# Required reviewers on a PRIVATE repository need GitHub Enterprise Cloud.
+# On GitHub Free/Pro, GitHub rejects them: use an empty list.
+# release_reviewers = []

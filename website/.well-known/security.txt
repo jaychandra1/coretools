@@ -1,0 +1,10 @@
+# CoreTools security contact (RFC 9116)
+# Report vulnerabilities privately. Please don't open public issues.
+# The policy page explains scope, safe harbor and response times.
+
+Contact: https://github.com/jaychandra1/artifacts/security/advisories/new
+Contact: mailto:coretools.works@gmail.com
+Expires: 2027-10-12T00:00:00.000Z
+Preferred-Languages: en
+Policy: https://coretools-chi.vercel.app/security.html
+Canonical: https://coretools-chi.vercel.app/.well-known/security.txt

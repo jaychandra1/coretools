@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { copySecret } from "../../secure-clipboard";
   import type { StoredEntry } from "../../core/authenticator/db";
   import { generateCode, groupCode, secondsRemaining } from "../../core/authenticator/otp";
   import { authStore } from "./store.svelte";
@@ -76,19 +77,8 @@
 
   async function copy() {
     if (!code) return;
-    try {
-      await navigator.clipboard.writeText(code);
-    } catch {
-      // Clipboard API unavailable — fall back to a transient textarea.
-      const textarea = document.createElement("textarea");
-      textarea.value = code;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand("copy");
-      textarea.remove();
-    }
+    // Kept out of clipboard history / cloud sync on the desktop (F-07).
+    await copySecret(code);
     oncopied(code);
   }
 

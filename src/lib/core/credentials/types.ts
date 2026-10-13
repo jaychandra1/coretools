@@ -2,10 +2,12 @@
  * Credential Manager data model.
  *
  * Credentials live in the SAME vault as the Authenticator: one master
- * password (and optional Windows Hello unlock), one AES-256-GCM key. Searchable
- * metadata (platform, URL, username, category, owner, tags) is stored in the
- * clear — the same model as authenticator entries — while the password and
- * the notes are always encrypted. There is no unencrypted mode.
+ * password (and optional Windows Hello unlock), one AES-256-GCM data key.
+ * Everything identifying is encrypted at rest: the password and notes each
+ * in their own blob, and the searchable metadata (platform, URL, username,
+ * category, owner, tags) sealed together in `meta` (audit F-14) — search
+ * runs over the copy decrypted into memory after unlock. There is no
+ * unencrypted mode.
  */
 
 import type { EncryptedBlob } from "../authenticator/vault-crypto";
@@ -23,9 +25,14 @@ export interface CredentialFields {
   tags: string[];
 }
 
-/** As persisted in IndexedDB. */
+/**
+ * A credential record. In memory (unlocked) the metadata fields hold
+ * plaintext; on disk they are empty and `meta` holds them sealed.
+ */
 export interface StoredCredential extends CredentialFields {
   id: string;
+  /** The metadata fields, sealed under the vault key (F-14). */
+  meta?: EncryptedBlob;
   password: EncryptedBlob;
   /** Encrypted notes, or null when there are none. */
   notes: EncryptedBlob | null;
@@ -57,13 +64,34 @@ export type AuditAction =
   | "copied-password"
   | "restored-from-backup";
 
-/** One audit-log record. Never contains a secret. */
+/** One audit-log record as shown (decrypted). Never contains a secret. */
 export interface AuditEvent {
   id: string;
   at: number;
   action: AuditAction;
   credentialId: string;
   platform: string;
+}
+
+/**
+ * As stored (audit F-19): the content sealed under the vault key and
+ * hash-chained, so editing, reordering or deleting records is detectable.
+ * Records from before 1.2 carry the plaintext fields and no `seq` until
+ * they are migrated into the chain.
+ */
+export interface StoredAuditEvent {
+  id: string;
+  at: number;
+  /** Position in the chain, from 0. */
+  seq?: number;
+  /** SHA-256 hex of the previous record's `sealed.ct` ("" for seq 0). */
+  prev?: string;
+  /** AES-GCM of { action, credentialId, platform }; the AAD binds id, at, seq and prev. */
+  sealed?: EncryptedBlob;
+  /** Legacy plaintext fields. */
+  action?: AuditAction;
+  credentialId?: string;
+  platform?: string;
 }
 
 /** Trashed credentials are purged automatically after this long. */

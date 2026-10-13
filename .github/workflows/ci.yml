@@ -1,22 +1,32 @@
 name: CI
 
-# Quality gates on every push and pull request. The only thing this workflow
-# ever changes is the `production` branch pointer (promote-web, below), which
-# the Vercel site deploys from — so the website ships only commits that
-# passed these gates. Releases are cut by release.yml on version tags, which
-# runs the same gates before building installers.
+# Quality gates on every push and pull request. Beyond the checks, this
+# workflow only ever (1) moves the `production` branch pointer (promote-web),
+# which the Vercel site deploys from — so the website ships only commits that
+# passed these gates — and (2) tags a new version on master (tag-release),
+# which hands over to release.yml. Both run only for master, after the gates.
+#
+# workflow_dispatch: the Prepare release workflow starts CI on its release
+# branch this way (pull requests opened with GITHUB_TOKEN trigger no
+# workflows); running it on master by hand re-runs the gates and then the
+# master-only jobs (e.g. after a Dependabot auto-merge, whose merge commit —
+# made through GITHUB_TOKEN — starts no push run either).
 
 on:
   push:
     branches: [master]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Pull requests: a new push supersedes the running check. master: every run
+# finishes, in order, so the commit that bumped the version is the one that
+# gets tagged and `production` never moves backwards.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   web:
@@ -55,6 +65,30 @@ jobs:
 
       - name: Version strings in sync
         run: node scripts/sync-version.mjs --check
+
+  e2e:
+    # The production web build in a real browser (audit F-17): Argon2id in
+    # WebAssembly, IndexedDB, lock/unlock, sealed metadata, the audit chain.
+    name: End-to-end smoke tests (browser)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies (lockfile-exact)
+        run: npm ci
+
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the smoke tests
+        run: npm run test:e2e
 
   rust:
     name: Rust lint (clippy), tests and format
@@ -119,41 +153,82 @@ jobs:
     # The Linux job above never compiles `cfg(windows)` code — Windows Hello
     # (hello.rs) and the WebView2 camera permission (webview_permissions.rs).
     # Without this job, a mistake there only surfaces in a release build.
+    #
+    # Windows minutes bill at 2× (audit F-29), so the compile check runs only
+    # when Rust-related files changed. The job itself always runs and passes
+    # when there is nothing to check, so it can stay a required status check
+    # (a workflow-level `paths` filter would leave it pending forever).
     name: Rust build check (Windows)
     runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # Compare with the PR base, or with the commit before the push. When
+      # that can't be determined (manual run, new branch, force-push), run.
+      - name: Rust-related changes?
+        id: changes
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          run_check() {
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "Windows Rust check runs: $1" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          case "$EVENT" in
+            pull_request) base="$PR_BASE" ;;
+            push) base="$PUSH_BEFORE" ;;
+            *) run_check "'$EVENT' run — nothing to compare with" ;;
+          esac
+          if [ -z "$base" ] || [ -z "${base//0/}" ]; then run_check "no base commit to compare with"; fi
+          if ! git fetch --no-tags --depth=1 origin "$base"; then run_check "base ${base} is not fetchable"; fi
+          if ! files=$(git diff --name-only "$base" HEAD); then run_check "could not diff against ${base}"; fi
+          if printf '%s\n' "$files" | grep -Eq '^(src-tauri/|Cargo\.(toml|lock)$|rust-toolchain(\.toml)?$|\.cargo/|\.github/workflows/ci\.yml$)'; then
+            run_check "Rust-related files changed since ${base:0:12}"
+          fi
+          echo "rust=false" >> "$GITHUB_OUTPUT"
+          echo "No Rust-related changes since ${base:0:12} — Windows compile check skipped (job passes)." | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Set up Rust
+        if: steps.changes.outputs.rust == 'true'
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned master
         with:
           toolchain: stable
           components: clippy
 
       - name: Cache Rust build
+        if: steps.changes.outputs.rust == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: "./src-tauri -> target"
 
       - name: Cargo.lock is committed and current
+        if: steps.changes.outputs.rust == 'true'
         working-directory: src-tauri
         shell: bash
         run: |
           if [ -f Cargo.lock ]; then cargo metadata --locked --format-version 1 > /dev/null; fi
 
       - name: Stub frontend dist
+        if: steps.changes.outputs.rust == 'true'
         shell: bash
         run: mkdir -p dist && touch dist/index.html
 
       # The gate: Windows-only code must compile (incl. that webview2-com
       # matches the version tauri uses).
       - name: Compile check (Windows targets)
+        if: steps.changes.outputs.rust == 'true'
         working-directory: src-tauri
         run: cargo check --all-targets
 
       # Advisory until the Windows-only code has a clean clippy baseline.
       - name: Clippy (advisory)
+        if: steps.changes.outputs.rust == 'true'
         working-directory: src-tauri
         continue-on-error: true
         run: cargo clippy --all-targets -- -D warnings
@@ -164,8 +239,8 @@ jobs:
     # commit only after the web checks pass, so an untested commit can never
     # reach the public site (audit F-04).
     name: Promote to production (website)
-    needs: [web]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: [web, e2e]
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     permissions:
       contents: write # moves one branch pointer; nothing else
@@ -183,3 +258,87 @@ jobs:
               -f ref=refs/heads/production -f sha="${GITHUB_SHA}" >/dev/null
           fi
           echo "production → ${GITHUB_SHA}" >> "$GITHUB_STEP_SUMMARY"
+
+  tag-release:
+    # Release pull request flow (audit F-26). When a master commit carries a
+    # package.json version that has no v<version> tag yet — i.e. a merged
+    # "Prepare release" PR — tag it once every gate passed, then start
+    # release.yml on that tag.
+    #
+    # A tag pushed with GITHUB_TOKEN starts no `push` workflows (GitHub's
+    # loop guard), so release.yml is started with workflow_dispatch on the
+    # tag ref instead — the documented exception. It then runs exactly as for
+    # a pushed tag: the tagged commit's workflow file, github.ref =
+    # refs/tags/v<version>, all of its gates, and the `release` environment
+    # approval before anything is published. A tag pushed by hand (`npm
+    # version` + `git push --follow-tags`) already exists by the time this
+    # job runs, so it does nothing and the tag push alone starts the release.
+    name: Tag a new version (starts the release)
+    needs: [web, e2e, rust, rust-windows]
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # creates one v* tag; nothing else
+      actions: write # starts release.yml on that tag
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Is this version tagged yet?
+        id: version
+        run: |
+          set -euo pipefail
+          tag="v$(node -p "require('./package.json').version")"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+            echo "${tag} already exists — nothing to release." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The same checks release.yml applies, before a tag that rulesets make
+      # hard to move or delete exists.
+      - name: Version strings and release notes are ready
+        if: steps.version.outputs.new == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          node scripts/sync-version.mjs --check
+          node scripts/changelog.mjs check "${TAG#v}"
+
+      - name: Create and push the tag
+        if: steps.version.outputs.new == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "release: ${TAG}" "$GITHUB_SHA"
+          if ! git push origin "refs/tags/${TAG}"; then
+            echo "::error::Could not push ${TAG}. If a tag ruleset restricts creating v* tags, add GitHub Actions to its bypass list (DEPLOYMENT.md, Repository protection)."
+            exit 1
+          fi
+
+      - name: Start the Release workflow on the tag
+        if: steps.version.outputs.new == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh workflow run release.yml --repo "$GITHUB_REPOSITORY" --ref "$TAG"
+          {
+            echo "### ${TAG} tagged — release started"
+            echo ""
+            echo "Release workflow runs on \`${TAG}\` and waits for approval in the \`release\` environment:"
+            echo "https://github.com/${GITHUB_REPOSITORY}/actions/workflows/release.yml"
+            echo ""
+            echo "If it did not start, run Actions → Release → Run workflow and pick the tag \`${TAG}\`."
+          } >> "$GITHUB_STEP_SUMMARY"

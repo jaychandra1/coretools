@@ -3,7 +3,7 @@ name: Release
 # Builds the desktop installers and publishes them to the PUBLIC
 # jaychandra1/artifacts repository (this source repo stays private).
 #
-# Trigger: pushing a version tag (v0.3.0, v1.0.0, …). Tag-only releases mean:
+# Tag-only releases mean:
 #   - binaries never enter git history (the old flow grew .git by ~90 MB per
 #     release and taught SmartScreen a fresh unknown hash on every push);
 #   - each installer hash lives long enough to accumulate reputation;
@@ -17,20 +17,45 @@ name: Release
 #   - a regenerated index in coretools/releases/ (README, latest.json).
 # Publishing needs the ARTIFACTS_REPO_TOKEN secret — see DEPLOYMENT.md §2.
 #
+# How a run starts — every mode runs on a v* tag ref or on master, so
+# github.ref / github.sha, the checkout, the tag check, the "on master"
+# check and the Sigstore identity (release.yml@refs/tags/v… or @…/master)
+# always describe the commit being released:
+#   1. Release pull request (audit F-26): Actions → "Prepare release" opens a
+#      PR that bumps the version and dates CHANGELOG.md. Merging it makes CI
+#      (ci.yml → tag-release) tag the merge commit and start THIS workflow
+#      with workflow_dispatch on that tag. (A tag pushed with GITHUB_TOKEN
+#      triggers no `push` workflows; workflow_dispatch is GitHub's documented
+#      exception, and dispatching on the tag ref keeps every check below
+#      identical to a pushed tag.)
+#   2. Manual tag push (still supported):
+#        npm version 0.3.0 -m "release: v%s"
+#        git push origin HEAD --follow-tags
+#   3. Re-publish package.json's version from master without a new tag:
+#      Actions → Release → Run workflow on master (same gates; the
+#      tag-match check is skipped).
+#
 # GitHub runs the workflow as it exists IN THE TAGGED COMMIT. Commit every
-# change first, then `npm version`: a tag on an older commit runs that
-# commit's (possibly outdated) release steps. To (re)publish the version in
-# package.json from master without a new tag: Actions → Release → Run
-# workflow (same gates; the tag-match check is skipped).
+# change first, then tag: a tag on an older commit runs that commit's
+# (possibly outdated) release steps.
 #
-# Release flow:  npm version 0.3.0 -m "release: v%s"
-#                git push origin HEAD --follow-tags
+# Every release ships CoreTools-sbom.cdx.json (CycloneDX: npm + Rust
+# dependencies, audit F-30), listed in SHA256SUMS.txt so the Sigstore
+# signature covers it.
 #
-# Code signing (when certificates are available): add the secrets and wire
-# `bundle.windows.signCommand` (Azure Trusted Signing) or
-# `certificateThumbprint`, plus macOS `signingIdentity` + notarization —
-# see DEPLOYMENT.md §3. Tauri signs during `tauri build`; no structural
-# workflow change is needed.
+# Code signing (audit F-01) switches on per platform once all of that
+# platform's credentials exist (DEPLOYMENT.md §3); without them the
+# installers are built unsigned, exactly as before:
+#   - Windows: Azure Artifact Signing (formerly Trusted Signing) through
+#     artifact-signing-cli as Tauri's bundle.windows.signCommand, passed with
+#     `--config` (src-tauri/tauri.conf.json is not edited).
+#   - macOS: Developer ID + notarization from the APPLE_* variables Tauri
+#     reads (it imports the certificate into a temporary keychain itself).
+#   - Linux: the AppImage stays unsigned; the signed SHA256SUMS.txt covers it.
+# A signed platform compiles first with no signing credentials in the
+# environment (`tauri build --no-bundle`), then bundles and signs in a
+# separate step (`tauri bundle`) — so npm scripts and crate build scripts
+# never see the signing secrets.
 
 on:
   push:
@@ -40,7 +65,8 @@ on:
 permissions:
   contents: read
 
-# Never cancel a release mid-publish.
+# Never cancel a release mid-publish. A pushed tag and a dispatch on the same
+# tag share this group, so they can never publish concurrently.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
@@ -49,7 +75,23 @@ jobs:
   quality:
     name: Gate — tests, types, audit, version match
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      sign-windows: ${{ steps.signing.outputs.windows }}
+      sign-macos: ${{ steps.signing.outputs.macos }}
+      code-signed: ${{ steps.signing.outputs.platforms }}
     steps:
+      - name: Release ref is a v* tag or master
+        run: |
+          case "$GITHUB_REF" in
+            refs/tags/v*) echo "Releasing tag ${GITHUB_REF_NAME} (${GITHUB_EVENT_NAME})." ;;
+            refs/heads/master) echo "::notice::Re-publishing package.json's version from master (no tag)." ;;
+            *)
+              echo "::error::Run the Release workflow on a v* tag or on master, not ${GITHUB_REF}."
+              exit 1
+              ;;
+          esac
+
       # Fail in seconds, not after the ~20-minute platform builds: the
       # publish job needs a working token for the public artifacts repo.
       - name: Publishing token is set and valid
@@ -64,6 +106,57 @@ jobs:
             echo "::error::ARTIFACTS_REPO_TOKEN was rejected by GitHub (expired or revoked?) — regenerate it (DEPLOYMENT.md §2)."
             exit 1
           fi
+
+      # Audit F-01. Each platform is signed only when ALL of its credentials
+      # are configured; none = unsigned build (as today); some = error, so a
+      # half-finished setup never silently ships unsigned installers. Only
+      # presence flags reach the shell — never the secret values.
+      - name: Code-signing configuration
+        id: signing
+        env:
+          HAS_AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID != '' }}
+          HAS_AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET != '' }}
+          HAS_AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID != '' }}
+          HAS_AZURE_ARTIFACT_SIGNING_ENDPOINT: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT != '' }}
+          HAS_AZURE_ARTIFACT_SIGNING_ACCOUNT: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT != '' }}
+          HAS_AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE != '' }}
+          HAS_APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE != '' }}
+          HAS_APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD != '' }}
+          HAS_APPLE_ID: ${{ secrets.APPLE_ID != '' }}
+          HAS_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD != '' }}
+          HAS_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID != '' }}
+        run: |
+          set -euo pipefail
+          signed=()
+          resolve() { # <output name> <platform> <label> <credential names...>
+            local out=$1 platform=$2 label=$3 name flag
+            shift 3
+            local present=() missing=()
+            for name in "$@"; do
+              flag="HAS_${name}"
+              if [ "${!flag}" = "true" ]; then present+=("$name"); else missing+=("$name"); fi
+            done
+            if [ ${#missing[@]} -eq 0 ]; then
+              echo "${out}=true" >> "$GITHUB_OUTPUT"
+              signed+=("$platform")
+              echo "- ${platform}: **code-signed** (${label})" >> "$GITHUB_STEP_SUMMARY"
+            elif [ ${#present[@]} -eq 0 ]; then
+              echo "${out}=false" >> "$GITHUB_OUTPUT"
+              echo "- ${platform}: unsigned (no ${label} credentials configured)" >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "::error::${platform} code signing is half-configured — missing: ${missing[*]} (DEPLOYMENT.md §3). Add them, or remove the others to build unsigned."
+              return 1
+            fi
+          }
+          echo "### Code signing" >> "$GITHUB_STEP_SUMMARY"
+          resolve windows Windows "Azure Artifact Signing" \
+            AZURE_CLIENT_ID AZURE_CLIENT_SECRET AZURE_TENANT_ID \
+            AZURE_ARTIFACT_SIGNING_ENDPOINT AZURE_ARTIFACT_SIGNING_ACCOUNT AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE
+          resolve macos macOS "Developer ID + notarization" \
+            APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+          echo "- Linux: AppImage unsigned (covered by the signed SHA256SUMS.txt)" >> "$GITHUB_STEP_SUMMARY"
+          platforms=$(IFS=,; echo "${signed[*]:-}")
+          echo "platforms=${platforms}" >> "$GITHUB_OUTPUT"
 
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -89,18 +182,34 @@ jobs:
       - name: Version strings in sync
         run: node scripts/sync-version.mjs --check
 
+      # package.json is the version source for every trigger mode.
+      - name: Resolve version
+        id: version
+        run: echo "value=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # Tag push and dispatch-on-tag alike: github.ref is the tag.
       - name: Tag matches package version
         if: startsWith(github.ref, 'refs/tags/')
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
         run: |
-          PKG="v$(node -p "require('./package.json').version")"
-          if [ "$PKG" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $PKG"
+          if [ "v${VERSION}" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version v${VERSION}"
             exit 1
           fi
+
+      # Audit F-26: v1.1.0 shipped with empty notes because its section was
+      # still "Unreleased". No notes, no release.
+      - name: Release notes exist in CHANGELOG.md
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: node scripts/changelog.mjs check "$VERSION"
 
       # Only reviewed code may ship (audit F-03/F-04): the commit being
       # released must already be part of master's history. A tag on a side
       # commit — or on anything pushed around branch protection — is refused.
+      # GITHUB_SHA is the tagged commit (tag push or dispatch on the tag) or
+      # master's head (re-publish from master).
       - name: Released commit is on master
         env:
           GH_TOKEN: ${{ github.token }}
@@ -132,6 +241,10 @@ jobs:
             out: CoreTools-Linux.AppImage
 
     runs-on: ${{ matrix.platform }}
+
+    env:
+      # This platform's installer gets code-signed (decided by the quality job).
+      SIGN: ${{ (matrix.platform == 'windows-latest' && needs.quality.outputs.sign-windows == 'true') || (matrix.platform == 'macos-latest' && needs.quality.outputs.sign-macos == 'true') }}
 
     steps:
       - name: Checkout
@@ -188,12 +301,96 @@ jobs:
       # The Google OAuth "Desktop app" client for Authenticator cloud backup
       # is compiled in (see DEPLOYMENT.md §Cloud backup). When these secrets
       # are absent the build still succeeds and the feature reports itself
-      # as not configured.
+      # as not configured. On a code-signed platform this step only compiles
+      # (--no-bundle); bundling + signing follow in their own step, the only
+      # one that holds signing credentials.
       - name: Build the desktop app
+        shell: bash
         env:
           CORETOOLS_GOOGLE_CLIENT_ID: ${{ secrets.CORETOOLS_GOOGLE_CLIENT_ID }}
           CORETOOLS_GOOGLE_CLIENT_SECRET: ${{ secrets.CORETOOLS_GOOGLE_CLIENT_SECRET }}
-        run: npm run tauri build -- ${{ matrix.args }}
+          TAURI_ARGS: ${{ matrix.args }}
+        run: |
+          set -eo pipefail
+          args=()
+          if [ -n "$TAURI_ARGS" ]; then read -r -a args <<< "$TAURI_ARGS"; fi
+          if [ "$SIGN" = "true" ]; then args+=(--no-bundle); fi
+          npm run tauri build -- "${args[@]}"
+
+      # Windows signing: Azure Artifact Signing (formerly Trusted Signing) via
+      # artifact-signing-cli, which runs signtool with Microsoft's signing
+      # dlib after `az login` as the service principal. Tauri calls it for the
+      # app binary and the installer (bundle.windows.signCommand, object form
+      # so no argument is split on spaces).
+      - name: Prepare code signing (Windows)
+        if: matrix.platform == 'windows-latest' && env.SIGN == 'true'
+        shell: bash
+        env:
+          ENDPOINT: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          ACCOUNT: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT }}
+          PROFILE: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$ENDPOINT" | grep -Eq '^https://[a-z0-9-]+\.codesigning\.azure\.net/?$'; then
+            echo "::error::AZURE_ARTIFACT_SIGNING_ENDPOINT must be the account's regional endpoint, e.g. https://eus.codesigning.azure.net (got \"$ENDPOINT\")."
+            exit 1
+          fi
+          # Pinned version, built from crates.io with its locked dependencies.
+          cargo install artifact-signing-cli --version 0.11.0 --locked
+          # The tool defaults to SDK 10.0.26100.0's signtool and the standard
+          # Azure CLI path; point it at what this runner actually has.
+          signtool=$(ls -d "/c/Program Files (x86)/Windows Kits/10/bin/"10.*/x64/signtool.exe 2>/dev/null | sort -V | tail -n 1 || true)
+          azcli=$(where.exe az.cmd 2>/dev/null | head -n 1 | tr -d '\r' || true)
+          if [ -z "$signtool" ] || [ -z "$azcli" ]; then
+            echo "::error::signtool.exe (Windows SDK) or the Azure CLI is missing on this runner."
+            exit 1
+          fi
+          echo "SIGNTOOL_PATH=$(cygpath -w "$signtool")" >> "$GITHUB_ENV"
+          echo "AZURE_CLI_PATH=${azcli}" >> "$GITHUB_ENV"
+          node -e '
+            const [endpoint, account, profile] = process.argv.slice(1);
+            const config = { bundle: { windows: { signCommand: {
+              cmd: "artifact-signing-cli",
+              args: ["-e", endpoint, "-a", account, "-c", profile, "-d", "CoreTools", "%1"],
+            } } } };
+            require("fs").writeFileSync(
+              require("path").join(process.env.RUNNER_TEMP, "tauri.windows-signing.json"),
+              JSON.stringify(config, null, 2),
+            );
+          ' "$ENDPOINT" "$ACCOUNT" "$PROFILE"
+
+      - name: Bundle and sign (Windows)
+        if: matrix.platform == 'windows-latest' && env.SIGN == 'true'
+        shell: bash
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+        run: npm run tauri bundle -- --config "$(cygpath -w "$RUNNER_TEMP/tauri.windows-signing.json")"
+
+      # macOS signing: Tauri imports APPLE_CERTIFICATE (base64 .p12) into a
+      # temporary keychain, signs with the Developer ID identity, notarizes
+      # with APPLE_ID / APPLE_PASSWORD (app-specific) / APPLE_TEAM_ID and
+      # staples the ticket. APPLE_SIGNING_IDENTITY is optional (default: the
+      # certificate's identity) — exported only when set, because Tauri
+      # treats an empty variable as set.
+      - name: Bundle, sign and notarize (macOS)
+        if: matrix.platform == 'macos-latest' && env.SIGN == 'true'
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          TAURI_ARGS: ${{ matrix.args }}
+        run: |
+          set -eo pipefail
+          if [ -n "$SIGNING_IDENTITY" ]; then export APPLE_SIGNING_IDENTITY="$SIGNING_IDENTITY"; fi
+          unset SIGNING_IDENTITY
+          read -r -a args <<< "$TAURI_ARGS"
+          npm run tauri bundle -- "${args[@]}"
 
       - name: Collect the installer under its stable asset name
         shell: bash
@@ -204,6 +401,29 @@ jobs:
           echo "Found installer: $src"
           cp "$src" "staging/${{ matrix.out }}"
 
+      # A signed platform must really be signed before anything is uploaded.
+      - name: Verify the Authenticode signature (Windows)
+        if: matrix.platform == 'windows-latest' && env.SIGN == 'true'
+        shell: pwsh
+        env:
+          OUT: ${{ matrix.out }}
+        run: |
+          $sig = Get-AuthenticodeSignature -FilePath "staging/$env:OUT"
+          Write-Host "Status: $($sig.Status) — signer: $($sig.SignerCertificate.Subject) — timestamped: $($null -ne $sig.TimeStamperCertificate)"
+          if ($sig.Status -ne 'Valid') {
+            Write-Host "::error::staging/$env:OUT is not validly signed ($($sig.Status): $($sig.StatusMessage))."
+            exit 1
+          }
+
+      - name: Verify signature and notarization (macOS)
+        if: matrix.platform == 'macos-latest' && env.SIGN == 'true'
+        run: |
+          set -euo pipefail
+          app=$(ls -d src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app | head -n1)
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+
       - name: Upload installer artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -212,11 +432,82 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  sbom:
+    # Audit F-30: a CycloneDX SBOM of everything the release is built from —
+    # npm (package-lock.json, via npm's own `npm sbom`) and Rust
+    # (src-tauri/Cargo.lock for every target platform, via the CycloneDX
+    # project's cargo-cyclonedx) — merged into one document by
+    # scripts/sbom-merge.mjs and published as CoreTools-sbom.cdx.json.
+    name: SBOM (CycloneDX — npm + Rust)
+    needs: quality
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned master
+        with:
+          toolchain: stable
+
+      # Pinned version, built from crates.io with its locked dependencies.
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --version 0.5.9 --locked
+
+      # Until Cargo.lock is committed (audit F-05) there is no exact record of
+      # the Rust dependency set: resolve one now and say so in the SBOM
+      # (property coretools:cargo-lock = resolved-at-release).
+      - name: Rust dependency set
+        id: lock
+        working-directory: src-tauri
+        run: |
+          set -euo pipefail
+          if [ -f Cargo.lock ]; then
+            cargo metadata --locked --format-version 1 > /dev/null
+            echo "source=committed" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::src-tauri/Cargo.lock is not committed — the SBOM's Rust part is resolved now and may differ slightly from what each platform build resolved (audit F-05)."
+            cargo generate-lockfile
+            echo "source=resolved-at-release" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Rust SBOM (all target platforms)
+        working-directory: src-tauri
+        run: cargo cyclonedx --format json --spec-version 1.5 --target all --override-filename rust-sbom
+
+      - name: npm SBOM (package-lock.json)
+        run: npm sbom --sbom-format cyclonedx --sbom-type application --package-lock-only > "$RUNNER_TEMP/npm-sbom.json"
+
+      - name: Merge into the release SBOM
+        env:
+          VERSION: ${{ needs.quality.outputs.version }}
+          CARGO_LOCK: ${{ steps.lock.outputs.source }}
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          node scripts/sbom-merge.mjs --name CoreTools --version "$VERSION" \
+            --npm "$RUNNER_TEMP/npm-sbom.json" --cargo src-tauri/rust-sbom.json \
+            --cargo-lock "$CARGO_LOCK" --out staging/CoreTools-sbom.cdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: CoreTools-sbom.cdx.json
+          path: staging/CoreTools-sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 30
+
   publish:
     name: Publish to jaychandra1/artifacts
-    # A release is all-or-nothing: if any platform failed, nothing ships and
-    # nothing is overwritten. No mixed-version download sets, ever.
-    needs: build
+    # A release is all-or-nothing: if any platform (or the SBOM) failed,
+    # nothing ships and nothing is overwritten. No mixed-version download
+    # sets, ever.
+    needs: [quality, build, sbom]
     runs-on: ubuntu-latest
     # Publishing pauses here for a required reviewer once the `release`
     # environment has protection rules (DEPLOYMENT.md §2 · audit F-03): no
@@ -241,31 +532,32 @@ jobs:
         with:
           node-version-file: .nvmrc
 
-      - name: Download all built installers
+      - name: Download all built installers and the SBOM
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: incoming
           merge-multiple: true
 
-      - name: Require all three installers
+      - name: Require all three installers and the SBOM
         run: |
           set -e
           ls -lh incoming
-          for f in CoreTools-Windows-Setup.exe CoreTools-macOS.dmg CoreTools-Linux.AppImage; do
+          for f in CoreTools-Windows-Setup.exe CoreTools-macOS.dmg CoreTools-Linux.AppImage CoreTools-sbom.cdx.json; do
             test -f "incoming/$f" || { echo "::error::Missing $f — refusing to publish a partial release"; exit 1; }
           done
 
+      # The SBOM is listed too, so the signature below covers it.
       - name: Generate SHA-256 checksums
         run: |
           cd incoming
-          sha256sum CoreTools-Windows-Setup.exe CoreTools-macOS.dmg CoreTools-Linux.AppImage > SHA256SUMS.txt
+          sha256sum CoreTools-Windows-Setup.exe CoreTools-macOS.dmg CoreTools-Linux.AppImage CoreTools-sbom.cdx.json > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       # Keyless Sigstore signature over the checksum file (which pins every
-      # installer). The certificate names this repository + workflow + tag,
-      # so someone holding only ARTIFACTS_REPO_TOKEN can replace the files
-      # but cannot produce a signature that verifies (audit F-03). The
-      # signature is recorded in Sigstore's public transparency log.
+      # installer and the SBOM). The certificate names this repository +
+      # workflow + ref, so someone holding only ARTIFACTS_REPO_TOKEN can
+      # replace the files but cannot produce a signature that verifies (audit
+      # F-03). The signature is recorded in Sigstore's public transparency log.
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
@@ -290,3 +582,5 @@ jobs:
           assets-dir: incoming
           # Lets the notes print the exact `cosign verify-blob` command.
           signer: https://github.com/${{ github.repository }}/.github/workflows/release.yml
+          # Which installers the build signed (empty = all unsigned).
+          code-signed: ${{ needs.quality.outputs.code-signed }}

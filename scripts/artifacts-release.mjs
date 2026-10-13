@@ -23,6 +23,7 @@
  *   node scripts/artifacts-release.mjs notes --app coretools --name CoreTools \
  *     --version 0.3.0 --artifacts-repo jaychandra1/artifacts \
  *     --assets-dir incoming [--changelog CHANGELOG.md] [--summary "text"] \
+ *     [--signer <workflow url>] [--code-signed Windows,macOS] \
  *     --out release-notes.md --latest-out latest-notes.md
  *
  *   node scripts/artifacts-release.mjs index --app coretools --name CoreTools \
@@ -30,7 +31,9 @@
  *     --assets-dir incoming --repo-dir artifacts-repo [--date 2026-10-12]
  *
  * `--assets-dir` must contain the installers plus SHA256SUMS.txt
- * ("<sha256>  <file>" per line, as written by sha256sum).
+ * ("<sha256>  <file>" per line, as written by sha256sum). Other files listed
+ * there — e.g. a CycloneDX SBOM (*.cdx.json) — are published and indexed
+ * alongside the installers.
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -100,12 +103,59 @@ function formatSize(bytes) {
   return `${bytes} B`;
 }
 
-/** Short platform hint from a file extension (display only). */
+/** Software bill of materials: CycloneDX/SPDX file, or "sbom" in the name. */
+function isSbom(file) {
+  return /\.(cdx|spdx)\.(json|xml)$/i.test(file) || /(^|[-_.])sbom([-_.]|$)/i.test(file);
+}
+
+/** Short platform hint from a file extension, or "SBOM" (display only). */
 function kind(file) {
   if (/\.(exe|msi)$/i.test(file)) return "Windows";
   if (/\.(dmg|pkg)$/i.test(file)) return "macOS";
   if (/\.(AppImage|deb|rpm)$/i.test(file)) return "Linux";
+  if (isSbom(file)) return "SBOM";
   return "";
+}
+
+const PLATFORMS = ["Windows", "macOS", "Linux"];
+
+/** "a", "a and b", "a, b and c" */
+function listText(items) {
+  return items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`;
+}
+
+/**
+ * Code-signing status line. --code-signed names the platforms whose
+ * installers the release workflow signed (e.g. "Windows,macOS"); without it
+ * every installer is reported as unsigned.
+ */
+function signingText(assets) {
+  const signedPlatforms = (args["code-signed"] || "").split(",").map((s) => s.trim());
+  const platforms = PLATFORMS.filter((p) => assets.some((a) => kind(a.name) === p));
+  const yes = platforms.filter((p) => signedPlatforms.includes(p));
+  const no = platforms.filter((p) => !signedPlatforms.includes(p));
+  if (yes.length === 0) {
+    return "Installers are currently unsigned; Windows SmartScreen or macOS Gatekeeper may warn.";
+  }
+  if (no.length === 0) return `The ${listText(yes)} installers are code-signed.`;
+  return (
+    `The ${listText(yes)} installer${yes.length > 1 ? "s are" : " is"} code-signed; ` +
+    `the ${listText(no)} one${no.length > 1 ? "s are" : " is"} not — verify ${no.length > 1 ? "them" : "it"} against \`SHA256SUMS.txt\`.`
+  );
+}
+
+/** One line per SBOM, saying what it is and that the checksums cover it. */
+function sbomText(assets) {
+  return assets
+    .filter((a) => isSbom(a.name))
+    .map((a) => {
+      const format = /\.cdx\./i.test(a.name) ? "CycloneDX" : /spdx/i.test(a.name) ? "SPDX" : "";
+      return (
+        `\`${a.name}\` is the software bill of materials${format ? ` (${format})` : ""} for this release — ` +
+        "every dependency it was built from, with versions. `SHA256SUMS.txt` lists it too, so the same checks cover it."
+      );
+    })
+    .join("\n\n");
 }
 
 const BUNDLE = "SHA256SUMS.txt.sigstore.json";
@@ -161,10 +211,11 @@ function changelogSection(path) {
 function writeNotes() {
   const { assets } = readAssets();
   const table = [
-    "| File | Size | Platform |",
+    "| File | Size | Type |",
     "| --- | --- | --- |",
     ...assets.map((a) => `| \`${a.name}\` | ${formatSize(a.size)} | ${kind(a.name)} |`),
   ].join("\n");
+  const sboms = sbomText(assets);
   // --summary wins (e.g. imported historical builds with no changelog entry).
   const changes = args.summary || changelogSection(args.changelog);
 
@@ -177,9 +228,10 @@ function writeNotes() {
     "",
     table,
     "",
+    ...(sboms ? [sboms, ""] : []),
     verifyText(),
     "",
-    "Installers are currently unsigned; Windows SmartScreen or macOS Gatekeeper may warn.",
+    signingText(assets),
     "",
     `All versions and checksums: ${folderUrl}`,
     "",

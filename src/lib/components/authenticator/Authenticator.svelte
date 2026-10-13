@@ -11,6 +11,8 @@
   import { cloudBackup } from "./cloud.svelte";
   import { previewImport, type ExportableEntry } from "../../core/authenticator/backup";
   import { compareDisplay } from "../../core/authenticator/order";
+  import { clearSecretLater } from "../../secure-clipboard";
+  import type { CloudBackupFile } from "../../core/authenticator/cloud-backup";
   import type { ParsedAccount } from "../../core/authenticator/types";
   import type { StoredEntry } from "../../core/authenticator/db";
 
@@ -69,7 +71,6 @@
 
   let toast = $state("");
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
-  let clipboardTimer: ReturnType<typeof setTimeout> | undefined;
 
   function showToast(message: string) {
     toast = message;
@@ -79,21 +80,8 @@
 
   function onCopied(code: string) {
     showToast("Copied!");
-    if (authStore.settings.clipboardClear) {
-      clearTimeout(clipboardTimer);
-      clipboardTimer = setTimeout(() => {
-        // Clear ONLY when we can verify the clipboard still holds the code we
-        // put there. readText() failing is the normal case in many browsers
-        // (permission-gated or unavailable) — clearing blind would destroy
-        // whatever the user copied since, so on any failure we do nothing.
-        navigator.clipboard
-          .readText()
-          .then((text) => {
-            if (text === code) return navigator.clipboard.writeText("");
-          })
-          .catch(() => {});
-      }, 30_000);
-    }
+    // Clears ONLY if the clipboard still holds this code (see clearSecretLater).
+    if (authStore.settings.clipboardClear) clearSecretLater(code);
   }
 
   // ---- dialogs --------------------------------------------------------------
@@ -103,8 +91,12 @@
   /** Backup version the restore dialog should start on (conflict review). */
   let restorePreselect = $state<string | null>(null);
 
+  /** An exported backup file to restore from instead of Drive (F-24). */
+  let restoreFile = $state<{ file: CloudBackupFile; name: string } | null>(null);
+
   function openRestore(preselectId?: string) {
     restorePreselect = preselectId ?? null;
+    restoreFile = null;
     dialog = "restore";
   }
   let editMode = $state(false);
@@ -240,7 +232,9 @@
 <svelte:window onkeydown={onGlobalKeydown} />
 
 <div class="authenticator">
-  {#if !authStore.ready}
+  {#if authStore.loadError}
+    <p class="load-error" role="alert">{authStore.loadError}</p>
+  {:else if !authStore.ready}
     <p class="muted center">Loading…</p>
   {:else if authStore.locked}
     <LockScreen />
@@ -304,6 +298,17 @@
         {/if}
       </div>
     </div>
+
+    {#if authStore.weakPassword}
+      <div class="banner warn" role="status">
+        <span>
+          Your master password is weaker than CoreTools now requires (12+
+          characters, not easily guessed). It also protects your backups —
+          please change it.
+        </span>
+        <button onclick={() => (dialog = "settings")}>Change password</button>
+      </div>
+    {/if}
 
     {#if showEncryptBanner}
       <div class="banner warn" role="status">
@@ -423,11 +428,16 @@
       onclose={() => (dialog = null)}
       ontoast={showToast}
       onrestore={openRestore}
+      onimportfile={(source) => {
+        restoreFile = source;
+        dialog = "restore";
+      }}
     />
   {:else if dialog === "restore"}
     <RestoreDialog
       scope="authenticator"
       preselectId={restorePreselect}
+      fromFile={restoreFile}
       onclose={() => (dialog = null)}
       ontoast={showToast}
     />
@@ -481,6 +491,16 @@
   .authenticator {
     max-width: 720px;
     margin: 0 auto;
+  }
+  .load-error {
+    margin: 40px auto;
+    max-width: 460px;
+    padding: 14px 16px;
+    border-radius: 10px;
+    background: var(--removed-bg);
+    color: var(--removed-fg);
+    font-size: 13px;
+    line-height: 1.5;
   }
   .center {
     text-align: center;

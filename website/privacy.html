@@ -142,11 +142,12 @@
           </li>
         </ul>
 
-        <h2>4. Optional Google Drive backup (Authenticator, desktop app)</h2>
+        <h2>4. Optional Google Drive backup (Authenticator and Credential Manager, desktop app)</h2>
         <p>
           If you choose <em>Connect Google Account</em>, CoreTools backs up your
-          Authenticator accounts to your own Google Drive so you can restore
-          them after reinstalling or on a new device. You sign in with Google in
+          Authenticator accounts and Credential Manager logins — each as its
+          own set of files — to your own Google Drive so you can restore them
+          after reinstalling or on a new device. You sign in with Google in
           your own web browser; CoreTools never sees your Google password.
         </p>
 
@@ -183,8 +184,9 @@
             supports it, a Windows Hello check.
           </li>
           <li>
-            The newest 10 backup versions are kept so you can roll back; older
-            ones are deleted automatically.
+            Versions are kept so you can roll back: the newest 10, then one
+            per hour for a day, one per day for a month and one per month for
+            a year. Older ones are deleted automatically.
           </li>
         </ul>
 
@@ -217,13 +219,21 @@
           never read by people.
         </p>
 
-        <h2>5. This website and downloads</h2>
+        <h2>5. This website, downloads and update notifications</h2>
         <p>
           This website uses no cookies, analytics or third-party scripts. It is
           hosted on Vercel, and installers are downloaded from GitHub; both may
           keep standard technical server logs (such as IP address and time of
           request) under their own privacy policies. We do not receive or
           combine those logs.
+        </p>
+        <p>
+          The desktop app can tell you when a new version is out. This is off
+          until you turn it on. When on, the app reads one public file from
+          GitHub at most once a day. The request carries only the app's
+          version in its user agent — nothing about you, your device or your
+          data — and GitHub may log it like any download. The app never
+          downloads or installs anything on its own.
         </p>
 
         <h2>6. Sharing and selling</h2>

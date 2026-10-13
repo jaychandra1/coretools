@@ -2,11 +2,28 @@
   import Modal from "../authenticator/Modal.svelte";
   import { credentialStore } from "./credentials.svelte";
   import { AUDIT_LIMIT, type AuditAction } from "../../core/credentials/types";
+  import { getPlatform } from "../../platform";
 
   let { onclose }: { onclose: () => void } = $props();
 
   let loading = $state(true);
   let filter = $state<"all" | "access" | "changes">("all");
+  let exportNote = $state("");
+
+  const status = $derived(credentialStore.auditStatus);
+
+  async function exportLog() {
+    exportNote = "";
+    try {
+      const json = await credentialStore.exportAudit(__APP_VERSION__);
+      const stamp = new Date().toISOString().slice(0, 10);
+      if (await getPlatform().saveTextFile(`coretools-audit-${stamp}.json`, json)) {
+        exportNote = "Exported, with the integrity result and chain head.";
+      }
+    } catch (e) {
+      exportNote = e instanceof Error ? e.message : "Export failed";
+    }
+  }
 
   $effect(() => {
     credentialStore.loadAudit().finally(() => (loading = false));
@@ -47,7 +64,18 @@
       Every credential you create, edit, delete or restore, and every time a
       password is viewed or copied. Stored only on this device; the newest
       {AUDIT_LIMIT.toLocaleString()} events are kept. No secrets are logged.
+      Entries are encrypted and chained, so changes are detectable.
     </p>
+    {#if status}
+      <p class="integrity" class:bad={status.state === "tampered"} role="status">
+        {#if status.state === "verified"}
+          ✓ Integrity verified — {status.count.toLocaleString()} {status.count === 1 ? "entry" : "entries"}, none altered or removed.
+        {:else}
+          ⚠ This log was altered outside CoreTools ({status.reason}). The entries below are the ones that could still be verified.
+        {/if}
+      </p>
+    {/if}
+    <div class="tools">
     <div class="segmented" role="tablist" aria-label="Filter events">
       {#each [["all", "All"], ["access", "Password access"], ["changes", "Changes"]] as const as [value, label] (value)}
         <button
@@ -60,6 +88,9 @@
         </button>
       {/each}
     </div>
+    <button class="export" onclick={exportLog} disabled={loading}>Export…</button>
+    </div>
+    {#if exportNote}<p class="muted note">{exportNote}</p>{/if}
   </div>
 
   {#if loading}
@@ -89,6 +120,31 @@
   .head p {
     margin: 0;
     font-size: 12.5px;
+  }
+  .tools {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .export {
+    font-size: 12px;
+    padding: 5px 12px;
+  }
+  .note {
+    font-size: 12px;
+  }
+  .integrity {
+    font-size: 12.5px;
+    padding: 7px 10px;
+    border-radius: 8px;
+    background: var(--added-bg);
+    color: var(--added-fg);
+  }
+  .integrity.bad {
+    background: var(--removed-bg);
+    color: var(--removed-fg);
   }
   .segmented {
     display: inline-flex;

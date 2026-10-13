@@ -1,0 +1,161 @@
+name: Prepare release
+
+# Release pull request flow (audit F-26).
+#
+# Run: Actions → "Prepare release" → Run workflow (from master), version
+# without the leading v, e.g. 1.2.0. This workflow:
+#   1. bumps package.json + package-lock.json and copies the version into
+#      Cargo.toml, tauri.conf.json, website/scripts/downloads.js (and
+#      src-tauri/Cargo.lock once committed) — scripts/sync-version.mjs;
+#   2. renames CHANGELOG.md's "## [Unreleased]" to "## [<version>] — <today,
+#      UTC>" and opens a fresh, empty "## [Unreleased]" above it — refusing
+#      when there are no notes to release (scripts/changelog.mjs);
+#   3. commits that as "release: v<version>" on branch release/v<version>,
+#      starts CI on it and opens a pull request into master.
+#
+# Merging the pull request is the release decision: CI on master
+# (ci.yml → tag-release) tags the merge commit v<version> and starts
+# release.yml on that tag, which still waits for approval in the `release`
+# environment before publishing. The manual flow (`npm version` + `git push
+# --follow-tags`) keeps working.
+#
+# Needs: Settings → Actions → General → Workflow permissions → "Allow GitHub
+# Actions to create and approve pull requests".
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: New version, semver without the leading v (e.g. 1.2.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Open the release pull request
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # pushes the release/v<version> branch
+      pull-requests: write # opens the pull request
+      actions: write # starts CI on that branch (see below)
+    env:
+      VERSION: ${{ inputs.version }}
+      BRANCH: release/v${{ inputs.version }}
+    steps:
+      - name: Validate the request
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/master" ]; then
+            echo "::error::Run Prepare release from master (this run uses ${GITHUB_REF})."
+            exit 1
+          fi
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z_.]+)?$'; then
+            echo "::error::The version must be semver without a leading v, e.g. 1.2.0 (got \"${VERSION}\")."
+            exit 1
+          fi
+
+      - name: Checkout master
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: master
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      - name: The version is new
+        run: |
+          set -euo pipefail
+          current=$(node -p "require('./package.json').version")
+          node -e '
+            const [next, current] = process.argv.slice(1);
+            const parse = (v) => v.split("-")[0].split(".").map(Number);
+            const [a, b] = [parse(next), parse(current)];
+            let cmp = 0;
+            for (let i = 0; i < 3 && cmp === 0; i++) cmp = a[i] - b[i];
+            if (cmp === 0) cmp = (next.includes("-") ? 0 : 1) - (current.includes("-") ? 0 : 1);
+            if (cmp <= 0) {
+              console.error(`::error::${next} is not newer than the current version ${current}.`);
+              process.exit(1);
+            }
+          ' "$VERSION" "$current"
+          if git ls-remote --exit-code --tags origin "refs/tags/v${VERSION}" >/dev/null; then
+            echo "::error::Tag v${VERSION} already exists."
+            exit 1
+          fi
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
+            echo "::error::Branch ${BRANCH} already exists — merge or close its pull request, or delete the branch, then run this again."
+            exit 1
+          fi
+
+      # `npm version` would run the package's `version` hook even with
+      # --no-git-tag-version (that hook also `git add`s files); skip it and
+      # sync explicitly so this step is the whole, predictable change.
+      - name: Bump the version everywhere
+        run: |
+          set -euo pipefail
+          npm version "$VERSION" --no-git-tag-version --ignore-scripts
+          node scripts/sync-version.mjs
+          node scripts/sync-version.mjs --check
+
+      - name: Move the Unreleased notes under the new version
+        run: node scripts/changelog.mjs release "$VERSION" "$(date -u +%F)"
+
+      - name: Commit and push the release branch
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add package.json package-lock.json CHANGELOG.md \
+            src-tauri/Cargo.toml src-tauri/tauri.conf.json website/scripts/downloads.js
+          if [ -f src-tauri/Cargo.lock ]; then git add src-tauri/Cargo.lock; fi
+          if ! git diff --quiet; then
+            echo "::error::Unexpected changes outside the release files:"
+            git diff --stat
+            exit 1
+          fi
+          git diff --cached --stat
+          git commit -m "release: v${VERSION}"
+          git push origin "HEAD:refs/heads/${BRANCH}"
+
+      # Pushes and pull requests made with GITHUB_TOKEN start no workflows
+      # (GitHub's loop guard), so CI would never report on this pull request.
+      # workflow_dispatch is the documented exception; its check runs attach
+      # to the branch's head commit, which is the pull request's.
+      - name: Start CI on the release branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+
+      - name: Open the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/release-pr.md"
+          {
+            echo "Release **v${VERSION}**: bumps the version in \`package.json\`, \`package-lock.json\`, \`Cargo.toml\`, \`tauri.conf.json\` and \`website/scripts/downloads.js\`, and dates the changelog."
+            echo ""
+            echo "**Merging this pull request releases v${VERSION}.** Once CI passes on \`master\`, it tags the merge commit \`v${VERSION}\` and starts the Release workflow, which waits for approval in the \`release\` environment before anything is published."
+            echo ""
+            echo "Need to change the notes? Edit \`CHANGELOG.md\` on this branch; pushes run CI as usual. (CI for the opening commit was started by the Prepare release workflow — pull requests opened by GitHub Actions don't trigger it themselves.)"
+            echo ""
+            echo "## Release notes"
+            echo ""
+            node scripts/changelog.mjs notes "$VERSION"
+          } > "$body"
+          if ! url=$(gh pr create --repo "$GITHUB_REPOSITORY" --base master --head "$BRANCH" \
+              --title "release: v${VERSION}" --body-file "$body"); then
+            echo "::error::Could not open the pull request. Enable Settings → Actions → General → \"Allow GitHub Actions to create and approve pull requests\", or open it yourself: https://github.com/${GITHUB_REPOSITORY}/compare/master...${BRANCH}?expand=1"
+            exit 1
+          fi
+          echo "### Release pull request: ${url}" >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,21 @@
+# Terraform working files. State can hold resource ids, emails and plan
+# details: keep it out of git (see README.md → "State").
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+*.tfplan
+crash.log
+crash.*.log
+
+# Real variable values (emails, project ids) stay local. The checked-in
+# examples end in .example and are not matched by these patterns.
+*.tfvars
+*.tfvars.json
+
+# Temporary import blocks (README.md → "Importing what already exists").
+imports.tf
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json

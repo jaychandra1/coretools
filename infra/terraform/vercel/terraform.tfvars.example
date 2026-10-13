@@ -1,0 +1,8 @@
+# Copy to terraform.tfvars (git-ignored) only if you need to override a
+# default.
+
+# Vercel → Team Settings → General → Team ID (team_…). Needed when the token
+# can see more than one team.
+# team = "team_xxxxxxxxxxxxxxxxxxxxxxxx"
+
+# project_name = "coretools"

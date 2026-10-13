@@ -3,7 +3,6 @@
   import { cloudBackup, type CloudNotice } from "./cloud.svelte";
   import {
     BACKUP_KIND_LABELS,
-    MAX_VERSIONS,
     ofKind,
     type BackupKind,
   } from "../../core/authenticator/cloud-sync";
@@ -217,7 +216,7 @@
 
       <ul class="benefits">
         <li>{@render check()}<span><strong>End-to-end encrypted</strong> with your password — Google can't read it</span></li>
-        <li>{@render check()}<span><strong>Automatic</strong> after every change, with {MAX_VERSIONS} versions to roll back to</span></li>
+        <li>{@render check()}<span><strong>Automatic</strong> after every change, with a year of versions to roll back to</span></li>
         <li>{@render check()}<span><strong>Restore anywhere</strong> — new device or reinstall, just sign in</span></li>
       </ul>
 
@@ -272,10 +271,13 @@
           <span class="stat-label">Last backup</span>
           <span class="stat-value">{relative(lastBackupAt)}</span>
         </div>
-        <div class="stat">
+        <div
+          class="stat"
+          title="Kept: the newest 10, then one per hour for a day, one per day for a month and one per month for a year"
+        >
           <span class="stat-label">Versions kept</span>
           <span class="stat-value">
-            {versionCount === null ? "—" : `${versionCount} of ${MAX_VERSIONS}`}
+            {versionCount === null ? "—" : versionCount}
           </span>
           {#if versionCount}<span class="stat-sub">{formatSize(totalSize)} total</span>{/if}
         </div>

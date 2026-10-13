@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import {
   CLOUD_BACKUP_FORMAT,
+  CLOUD_BACKUP_FORMAT_V1,
   CloudBackupError,
   deriveBackupKey,
   openCloudBackup,
@@ -15,11 +16,13 @@ import {
   decryptString,
   deriveVaultKey,
   encryptString,
+  importVaultKey,
   randomBytes,
   sha256Hex,
   VERIFIER_PLAINTEXT,
   type EncryptedBlob,
 } from "./vault-crypto";
+import { generateDataKey, wrapDataKey } from "./vault-keys";
 
 // The floor accepted by parseCloudBackup; keeps PBKDF2 fast in tests.
 const ITERATIONS = 100_000;
@@ -68,8 +71,7 @@ beforeAll(async () => {
 function seal(entries = ENTRIES) {
   return sealCloudBackup({
     key,
-    salt,
-    iterations: ITERATIONS,
+    keyHeader: { kdf: { name: "PBKDF2-SHA256", iterations: ITERATIONS }, salt },
     verifier,
     device: DEVICE,
     contents: "authenticator",
@@ -111,7 +113,8 @@ describe("cloud backup envelope", () => {
       expect(text).not.toContain(leaked);
     }
     const file = JSON.parse(text) as CloudBackupFile;
-    expect(file.format).toBe(CLOUD_BACKUP_FORMAT);
+    // No wrapped key in the header → the legacy v1 layout, readable by 1.1.
+    expect(file.format).toBe(CLOUD_BACKUP_FORMAT_V1);
     expect(file.device).toEqual(DEVICE);
     expect(file.kdf).toEqual({ name: "PBKDF2-SHA256", salt, iterations: ITERATIONS });
   });
@@ -248,8 +251,7 @@ describe("cloud backup: Credential Manager records", () => {
   function sealWith(credentials: typeof CREDENTIALS) {
     return sealCloudBackup({
       key,
-      salt,
-      iterations: ITERATIONS,
+      keyHeader: { kdf: { name: "PBKDF2-SHA256", iterations: ITERATIONS }, salt },
       verifier,
       device: DEVICE,
       contents: "credmanager",
@@ -370,6 +372,118 @@ describe("cloud backup: Credential Manager records", () => {
       "corrupt",
     );
   });
+});
+
+describe("cloud backup format v2 (Argon2id + wrapped data key)", () => {
+  // The lowest work factor parseKdf accepts, so the suite stays fast.
+  const FAST_ARGON = { name: "Argon2id" as const, memoryKiB: 19 * 1024, iterations: 1, parallelism: 1 };
+  let dataKey: CryptoKey;
+  let wrapped: Awaited<ReturnType<typeof wrapDataKey>>;
+  let v2Verifier: EncryptedBlob;
+
+  beforeAll(async () => {
+    const raw = generateDataKey();
+    wrapped = await wrapDataKey(PASSWORD, raw, FAST_ARGON);
+    dataKey = await importVaultKey(raw);
+    v2Verifier = await encryptString(dataKey, VERIFIER_PLAINTEXT);
+  });
+
+  function sealV2(tombstones: { k: string; at: number }[] = []) {
+    return sealCloudBackup({
+      key: dataKey,
+      keyHeader: { kdf: wrapped.kdf, salt: wrapped.salt, wrappedKey: wrapped.wrappedKey },
+      verifier: v2Verifier,
+      device: DEVICE,
+      contents: "authenticator",
+      entries: ENTRIES,
+      settings: { ...SETTINGS },
+      tombstones,
+      writer: "1.2.0",
+    });
+  }
+
+  it("writes v2 and restores on a new device from the password alone", async () => {
+    const file = parseCloudBackup(await sealV2());
+    expect(file.format).toBe(CLOUD_BACKUP_FORMAT);
+    expect(file.kdf).toMatchObject({ name: "Argon2id", memoryKiB: 19 * 1024, iterations: 1 });
+    const payload = await openCloudBackup(file, await deriveBackupKey(file, PASSWORD));
+    expect(payload.entries.map((e) => e.issuer)).toEqual(["Bank", "GitHub"]);
+    expect(payload.writer).toBe("1.2.0");
+  });
+
+  it("reports a wrong password at the key unwrap", async () => {
+    const file = parseCloudBackup(await sealV2());
+    await expectCode(deriveBackupKey(file, "not the password"), "wrong_password");
+  });
+
+  it("binds the KDF parameters and wrapped key into the header AAD", async () => {
+    for (const mutate of [
+      (f: CloudBackupFile) => ((f.kdf as { iterations: number }).iterations = 2),
+      (f: CloudBackupFile) => (f.wrappedKey = { ...f.wrappedKey!, iv: f.verifier.iv }),
+    ]) {
+      const file = JSON.parse(await sealV2()) as CloudBackupFile;
+      mutate(file);
+      // Either the key no longer unwraps, or the payload tag fails: never a silent open.
+      const parsed = parseCloudBackup(JSON.stringify(file));
+      await expect(
+        deriveBackupKey(parsed, PASSWORD).then((k) => openCloudBackup(parsed, k)),
+      ).rejects.toBeInstanceOf(CloudBackupError);
+    }
+  });
+
+  it("refuses out-of-bounds Argon2id parameters before deriving anything", async () => {
+    for (const memoryKiB of [1024, 4 * 1024 * 1024]) {
+      const file = JSON.parse(await sealV2()) as CloudBackupFile;
+      (file.kdf as { memoryKiB: number }).memoryKiB = memoryKiB;
+      expect(() => parseCloudBackup(JSON.stringify(file))).toThrow(/key-derivation/);
+    }
+    const missing = JSON.parse(await sealV2()) as CloudBackupFile;
+    delete missing.wrappedKey;
+    expect(() => parseCloudBackup(JSON.stringify(missing))).toThrow(/wrapped key/);
+  });
+
+  it("carries tombstones and rejects malformed ones", async () => {
+    const k = "a".repeat(64);
+    const file = parseCloudBackup(await sealV2([{ k, at: 1_760_000_000_000 }]));
+    const payload = await openCloudBackup(file, await deriveBackupKey(file, PASSWORD));
+    expect(payload.tombstones).toEqual([{ k, at: 1_760_000_000_000 }]);
+    expect(restoreParts([payload]).entryTombstones).toEqual(payload.tombstones);
+
+    const json = JSON.parse(await decryptString(dataKey, file.payload, aadOfV2(file)));
+    json.tombstones = [{ k: "not-a-hash", at: 1 }];
+    const bad = { ...file, payload: await encryptString(dataKey, JSON.stringify(json), aadOfV2(file)) };
+    await expectCode(openCloudBackup(bad, dataKey), "corrupt");
+  });
+
+  it("still opens v1 files with the same data key after a vault upgrade", async () => {
+    // An upgraded vault keeps its data key, so its old v1 backups open with it.
+    const file = parseCloudBackup(await seal());
+    expect(file.format).toBe(CLOUD_BACKUP_FORMAT_V1);
+    const payload = await openCloudBackup(file, await deriveBackupKey(file, PASSWORD));
+    expect(payload.entries).toHaveLength(2);
+  });
+
+  function aadOfV2(file: CloudBackupFile): Uint8Array {
+    const kdf = file.kdf as { name: string; salt: string; memoryKiB: number; iterations: number; parallelism: number };
+    return new TextEncoder().encode(
+      JSON.stringify([
+        file.format,
+        file.createdAt,
+        file.device.id,
+        file.device.label,
+        kdf.name,
+        kdf.salt,
+        kdf.memoryKiB,
+        kdf.iterations,
+        kdf.parallelism,
+        file.wrappedKey?.iv ?? "",
+        file.wrappedKey?.ct ?? "",
+        file.verifier.iv,
+        file.verifier.ct,
+        file.cipher,
+      ]),
+    );
+  }
 });
 
 // Helpers that re-seal a modified payload under the real key + header AAD,

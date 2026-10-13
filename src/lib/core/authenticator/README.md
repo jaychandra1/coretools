@@ -37,11 +37,14 @@ backup files, including encrypted ones.
   Hello check, dedupes on merge, and is written in one IndexedDB transaction.
   OAuth/HTTP run in Rust (`src-tauri/src/cloud.rs`); the token lives in the OS
   keychain and never reaches the webview.
-- **Encryption at rest**: optional password (independent of anything else) —
-  PBKDF2-SHA256 (310,000 iterations) → AES-256-GCM per-secret with random
-  12-byte IVs and a 16-byte per-user salt. The derived key is a
-  **non-extractable** WebCrypto key held only in memory; the section locks on
-  page load and after N minutes of inactivity (default 5, configurable).
+- **Encryption at rest**: optional password (independent of anything else;
+  at least 12 characters and not easily guessed). A random data key encrypts
+  every secret and the issuer/account names (AES-256-GCM, random 12-byte
+  IVs); the password unwraps that key through Argon2id (64 MiB × 3, 16-byte
+  salt). Vaults from 1.1 (PBKDF2-SHA256, 310,000 iterations) are upgraded on
+  the next password unlock. The working key is **non-extractable** and held
+  only in memory; the section locks on page load and after N minutes of
+  inactivity (default 5, configurable).
   Without a password, secrets are stored unencrypted and a persistent warning
   banner is shown (same behavior as the extension).
 - **Import** (with a preview step and duplicate skipping):
@@ -69,7 +72,11 @@ src/lib/core/authenticator/     pure logic (unit-tested, framework-free)
   migration.ts      otpauth-migration:// protobuf decoder
   md5.ts            MD5 (ONLY for legacy backup compatibility)
   legacy-crypto.ts  CryptoJS/OpenSSL AES-CBC (EVP_BytesToKey) decrypt+encrypt
-  vault-crypto.ts   PBKDF2-SHA256 + AES-256-GCM vault primitives
+  vault-crypto.ts   AES-256-GCM vault primitives
+  kdf.ts            Argon2id (hash-wasm) / legacy PBKDF2, bounded parameters
+  vault-keys.ts     data key ↔ password wrapping (the key hierarchy)
+  password-strength.ts  master-password policy (12+ chars, strength estimate)
+  tombstones.ts     deletion records for backup merges
   backup.ts         extension JSON / URI list / GCM backup import & export
   cloud-backup.ts   E2E-encrypted cloud backup envelope (seal / parse / open)
   cloud-sync.ts     cloud policy: naming, retention, conflicts, retry, errors
@@ -96,12 +103,14 @@ src/lib/components/authenticator/   Svelte 5 UI
   ever transmitted is the opt-in cloud backup: already encrypted, and sent by
   the Rust backend to the user's own Drive app-data folder.
 - Secrets, codes and passwords never appear in URLs, logs or error messages.
-- Entry metadata (issuer/account/type) is stored in the clear — the same
-  model the extension uses; only secrets are encrypted.
+- With a password set, the issuer and account name are sealed with the
+  secret's key too; only non-identifying fields (type, digits, period,
+  counter, order, pin, a SHA-256 of the secret) stay in the clear.
 - Password verification uses an encrypted sentinel; AES-GCM's authenticated
   decryption performs the constant-time check.
-- Locking drops the CryptoKey reference and clears the decrypted-secret map.
-  The key itself is non-extractable, so raw key bytes are never exposed to JS.
+- Locking drops the CryptoKey reference, clears the decrypted-secret map and
+  blanks the decrypted names. The working key is non-extractable; raw key
+  bytes exist only briefly (wrapping) and are zeroed.
 - The legacy CryptoJS format (MD5-based EVP_BytesToKey, AES-CBC) is implemented
   **only** for compatibility with existing extension backups; anything imported
   from it is re-encrypted with the modern AES-GCM scheme on save.

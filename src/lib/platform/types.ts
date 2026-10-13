@@ -96,4 +96,43 @@ export interface Platform {
   readonly hello?: HelloUnlock;
   /** Authenticator cloud backup transport. Desktop only. */
   readonly cloud?: CloudBridge;
+  /** Clipboard writes kept out of history and cloud sync (F-07). Desktop only. */
+  readonly clipboard?: SecureClipboardBridge;
+  /** Opt-in check for a newer release (F-02). Desktop only. */
+  readonly updates?: UpdateBridge;
+  /** Local diagnostics log (F-16). Desktop only. */
+  readonly diagnostics?: DiagnosticsBridge;
+}
+
+/**
+ * Copying secrets (passwords, 2FA codes) so they don't land in clipboard
+ * history or the Windows cloud clipboard. The text is never stored natively.
+ */
+export interface SecureClipboardBridge {
+  copySecret(text: string): Promise<void>;
+  /** Clear only if the clipboard still holds `text`; true when it cleared. */
+  clearIfUnchanged(text: string): Promise<boolean>;
+}
+
+/** The newest release announced by the public index. */
+export interface UpdateInfo {
+  version: string;
+  /** YYYY-MM-DD, or "". */
+  date: string;
+  /** Always a page in the public release repository. */
+  releaseUrl: string;
+  notice: string | null;
+  security: boolean;
+}
+
+export interface UpdateBridge {
+  /** Rejects with "update_network" / "update_invalid". */
+  check(): Promise<UpdateInfo>;
+}
+
+export interface DiagnosticsBridge {
+  /** Record a failure's cause (an error token — never content or secrets). */
+  record(source: string, cause: string): Promise<void>;
+  /** The newest log lines, for "Copy diagnostics". */
+  report(): Promise<string>;
 }

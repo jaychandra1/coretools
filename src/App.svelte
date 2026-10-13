@@ -1,12 +1,20 @@
 <script lang="ts">
   import DiffChecker from "./lib/components/DiffChecker.svelte";
-  import YamlOptimizer from "./lib/components/YamlOptimizer.svelte";
-  import SentencePolisher from "./lib/components/SentencePolisher.svelte";
   import Authenticator from "./lib/components/authenticator/Authenticator.svelte";
-  import JsonStudio from "./lib/components/json-studio/JsonStudio.svelte";
   import CredentialManager from "./lib/components/credentials/CredentialManager.svelte";
+  import AboutDialog from "./lib/components/AboutDialog.svelte";
   import { cloudBackup } from "./lib/components/authenticator/cloud.svelte";
+  import { updates } from "./lib/updates.svelte";
   import { getPlatform } from "./lib/platform";
+
+  // Heavy tools load on first use (audit F-23): JSON-Studio carries the
+  // Monaco editor, which alone is most of the bundle.
+  const loadYaml = () => import("./lib/components/YamlOptimizer.svelte");
+  const loadPolisher = () => import("./lib/components/SentencePolisher.svelte");
+  const loadJsonStudio = () => import("./lib/components/json-studio/JsonStudio.svelte");
+
+  let about = $state(false);
+  updates.start();
 
   type Tab = "diff" | "yaml" | "polish" | "authenticator" | "credentials" | "json";
   let tab = $state<Tab>("diff");
@@ -95,8 +103,21 @@
       <span class="mode muted" title={connectivity.title}>
         <span class="dot" class:online={connectivity.online} aria-hidden="true">●</span>
         {connectivity.label} · {platform.kind === "tauri" ? "Desktop" : "Preview"} ·
-        v{__APP_VERSION__}
       </span>
+      {#if updates.available}
+        <button
+          class="update-pill"
+          class:security={updates.available.security}
+          onclick={() => (about = true)}
+          title="A newer CoreTools is available"
+        >
+          {updates.available.security ? "Security update" : "Update"} {updates.available.version}
+        </button>
+      {:else}
+        <button class="version muted" onclick={() => (about = true)} title="About, updates and diagnostics">
+          v{__APP_VERSION__}
+        </button>
+      {/if}
       <button
         class="theme-toggle"
         onclick={toggleTheme}
@@ -117,26 +138,45 @@
     </div>
   </header>
 
+  {#if updates.supported && updates.pref === null}
+    <div class="update-ask" role="status">
+      <span>
+        Get notified when a new version of CoreTools is out? It checks the public
+        release page once a day — nothing about you or your data is sent.
+      </span>
+      <button class="primary" onclick={() => updates.setPref("on")}>Turn on</button>
+      <button onclick={() => updates.setPref("off")}>Not now</button>
+    </div>
+  {/if}
+
   <main>
     {#key tab}
       <div class="tab-panel">
         {#if tab === "diff"}
           <DiffChecker />
         {:else if tab === "yaml"}
-          <YamlOptimizer />
+          {#await loadYaml() then module}<module.default />{/await}
         {:else if tab === "polish"}
-          <SentencePolisher />
+          {#await loadPolisher() then module}<module.default />{/await}
         {:else if tab === "authenticator"}
           <Authenticator />
         {:else if tab === "credentials"}
           <CredentialManager />
         {:else}
-          <JsonStudio />
+          {#await loadJsonStudio()}
+            <p class="loading muted">Loading JSON-Studio…</p>
+          {:then module}
+            <module.default />
+          {/await}
         {/if}
       </div>
     {/key}
   </main>
 </div>
+
+{#if about}
+  <AboutDialog onclose={() => (about = false)} />
+{/if}
 
 <style>
   .shell {
@@ -169,6 +209,54 @@
   }
   .dot.online {
     color: var(--added-fg);
+  }
+  /* The version reads as part of the status line, but opens About. */
+  .version {
+    margin-left: -9px;
+    padding: 0;
+    border: none;
+    background: none;
+    font-size: 12px;
+    color: var(--text-muted);
+    cursor: pointer;
+  }
+  .version:hover {
+    background: none;
+    color: var(--accent);
+    text-decoration: underline;
+  }
+  .update-pill {
+    margin-left: -6px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 11.5px;
+    font-weight: 650;
+    color: var(--accent);
+    background: var(--accent-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .update-pill.security {
+    color: var(--removed-fg);
+    background: var(--removed-bg);
+    border-color: color-mix(in srgb, var(--removed-fg) 30%, transparent);
+  }
+  .update-ask {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 24px 0;
+    padding: 9px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    font-size: 12.5px;
+  }
+  .update-ask span {
+    flex: 1;
+  }
+  .loading {
+    padding: 40px;
+    text-align: center;
   }
   .theme-toggle {
     display: inline-grid;

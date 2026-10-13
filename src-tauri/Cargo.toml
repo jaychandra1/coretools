@@ -31,6 +31,11 @@ sha2 = "0.10"
 base64 = "0.22"
 getrandom = "0.2"
 
+# Copying passwords and 2FA codes without them landing in clipboard history
+# or the Windows cloud clipboard (src/secure_clipboard.rs, audit F-07).
+# Text only: no image support compiled in.
+arboard = { version = "3.6", default-features = false }
+
 # Windows Hello (Authenticator unlock). WinRT KeyCredentialManager bindings;
 # compiled only on Windows targets.
 [target.'cfg(windows)'.dependencies]

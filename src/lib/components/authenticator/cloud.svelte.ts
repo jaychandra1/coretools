@@ -23,9 +23,6 @@
  */
 
 import { authStore, type AuthEvent, type RestoreResult } from "./store.svelte";
-// Registers the Credential Manager with the vault, so its series can be
-// sealed and restored even before its tab was ever opened.
-import "../credentials/credentials.svelte";
 import { getPlatform } from "../../platform";
 import {
   EMPTY_SERIES,
@@ -35,6 +32,7 @@ import {
   type CloudSeriesState,
 } from "../../core/authenticator/db";
 import {
+  AUTO_BACKUP_INTERVAL_MS,
   BACKUP_KIND_LABELS,
   BACKUP_KINDS,
   backupKindOf,
@@ -98,15 +96,20 @@ function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-/** "Restored 4 accounts and 2 credentials (1 already on this device)." */
+/**
+ * "Restored 4 accounts (1 already on this device or deleted here). Removed
+ * 1 that another device deleted."
+ */
 export function restoreSummary(result: RestoreResult): string {
   const parts: string[] = [];
   if (result.restoredAccounts) parts.push(plural(result.added, "account"));
   if (result.restoredCredentials) parts.push(plural(result.credentialsAdded, "credential"));
   const skipped = result.skipped + result.credentialsSkipped;
+  const removed = result.removed + result.credentialsRemoved;
   return (
     `Restored ${parts.join(" and ") || "nothing"}` +
-    (skipped ? ` (${skipped} already on this device).` : ".")
+    (skipped ? ` (${skipped} already here or deleted here).` : ".") +
+    (removed ? ` Removed ${removed} that another device deleted.` : "")
   );
 }
 
@@ -152,6 +155,8 @@ export class CloudBackupController {
   #retryTimer: ReturnType<typeof setTimeout> | undefined;
   #attempt = 0;
   #running: Promise<void> | null = null;
+  /** When the last automatic pass started (coalescing, F-10). */
+  #lastAutoPassAt = 0;
   /** Bumped on every change per series; tells whether a change raced a backup. */
   #changeSeq: Record<BackupKind, number> = { authenticator: 0, credmanager: 0 };
   #suppressChanges = false;
@@ -325,9 +330,16 @@ export class CloudBackupController {
     }
   }
 
+  /**
+   * Schedule an automatic pass. Passes are coalesced to at most one per
+   * AUTO_BACKUP_INTERVAL_MS (F-10): a burst of edits — reordering, HOTP
+   * counter steps — becomes one backup, which keeps both the shared Drive
+   * quota and the version history useful. Manual backups aren't throttled.
+   */
   #schedule(delay: number): void {
     clearTimeout(this.#debounce);
-    this.#debounce = setTimeout(() => void this.backupNow({ auto: true }), delay);
+    const wait = Math.max(delay, this.#lastAutoPassAt + AUTO_BACKUP_INTERVAL_MS - Date.now());
+    this.#debounce = setTimeout(() => void this.backupNow({ auto: true }), wait);
   }
 
   #kick(): void {
@@ -380,6 +392,7 @@ export class CloudBackupController {
     }
     if (authStore.locked) return; // stays dirty; the unlock event resumes
 
+    if (auto) this.#lastAutoPassAt = Date.now();
     this.activity = "backing-up";
     const uploaded: string[] = [];
     const conflicted: BackupKind[] = [];

@@ -72,47 +72,79 @@ A real `.exe` / `.dmg` / `.AppImage` is compiled native code produced by
 **`tauri build`**, which needs **Rust** and must run **on each target OS**. This
 can't happen on Vercel (web-only) — Vercel only builds web assets.
 
-### How installers are released (tag-triggered, public artifacts repo)
+### How installers are released (release PR → tag → signed publish)
 
-Two workflows own quality and distribution:
+Three workflows own quality and distribution:
 
-- **`.github/workflows/ci.yml`** — every push/PR: `svelte-check`, the full
-  vitest suite, a production `npm audit` (must be clean), a version-drift
-  check, a guard against temporary test code, `cargo clippy` + `cargo test`
-  on Linux, and a `cargo check` on Windows (Windows Hello and WebView2 code
-  only compiles there). Once `Cargo.lock` is committed, every Rust job
-  verifies it. CI publishes nothing. Its only write is moving the
-  `production` branch for the website (§1).
-- **`.github/workflows/release.yml`** — runs when you push a version tag:
+- **`.github/workflows/ci.yml`** — every push/PR: `svelte-check`, the vitest
+  suite (including the vault and backup state machines against a real
+  IndexedDB), a production `npm audit` (must be clean), a version-drift
+  check, a guard against temporary test code, **browser end-to-end tests** of
+  the production web build (Playwright), `cargo clippy` + `cargo test` on
+  Linux, and a `cargo check` on Windows (Windows Hello, WebView2 and the
+  secure clipboard only compile there; it does real work only when Rust code
+  changed). Once `Cargo.lock` is committed, every Rust job verifies it. On
+  `master` it moves the `production` branch for the website (§1) and, when
+  `package.json` carries a version that has no tag yet, tags it and starts
+  the release.
+- **`.github/workflows/prepare-release.yml`** — opens the release pull request.
+- **`.github/workflows/release.yml`** — builds, signs and publishes a tag.
+
+**Cutting a release.** Write notes under `## [Unreleased]` in `CHANGELOG.md`
+as you go. To release, run **Actions → Prepare release → Run workflow** from
+`master` with the new version (e.g. `1.2.0`). It bumps the version in
+`package.json`, `package-lock.json`, `Cargo.toml`, `tauri.conf.json` and
+`website/scripts/downloads.js` (and `Cargo.lock` once committed), moves the
+Unreleased notes under `## [1.2.0] — <date>`, and opens a `release: v1.2.0`
+pull request; it refuses to run when there are no notes. Review and merge
+that PR. Once CI passes on `master`, its **tag-release** job tags the merge
+commit `v1.2.0` and starts the Release workflow on that tag (a tag created by
+Actions can't trigger workflows by itself).
+
+Where `master` accepts direct pushes (no ruleset), the manual path also
+works:
 
 ```bash
-# One command. package.json is the source of truth; npm bumps it and
-# package-lock.json, scripts/sync-version.mjs copies that version into
-# Cargo.toml, tauri.conf.json, and website/scripts/downloads.js, then
-# npm commits and tags (v0.3.0). The working tree must be clean.
-npm version 0.3.0 -m "release: v%s"
-
-# Push the commit and the tag — this is the entire release action:
+npm version 1.2.0 -m "release: v%s"
 git push origin HEAD --follow-tags
 ```
 
 The release workflow then:
 
-1. Re-runs the quality gates. It **refuses tags that don't match
-   `package.json`**, and tags on a commit that isn't on `master`.
-2. Builds on **Windows, macOS, and Linux** runners.
+1. Re-runs the quality gates. It **refuses** a tag that doesn't match
+   `package.json`, a commit that isn't on `master`, and a version whose
+   `CHANGELOG.md` section is missing or empty.
+2. Builds on **Windows, macOS, and Linux** runners — **code-signed** for each
+   platform whose signing credentials exist (§3) — and a CycloneDX **SBOM**.
 3. Publishes **all three or nothing** — a failed platform build fails the
    release; no mixed-version download sets.
-4. **Waits for approval** in the `release` environment (once you add a
-   required reviewer — see "Repository protection" below).
+4. Runs the publish job in the `release` environment (an approval pause where
+   your GitHub plan supports it — see "Repository protection" below).
 5. **Signs `SHA256SUMS.txt` with Sigstore** (keyless, bound to this
-   workflow), then publishes the signature bundle
-   `SHA256SUMS.txt.sigstore.json` with the installers.
+   workflow and tag). The checksums cover the installers and the SBOM.
 6. Publishes to the **public** repository
    [`jaychandra1/artifacts`](https://github.com/jaychandra1/artifacts). This
    source repo stays private. Stable asset names (`CoreTools-Windows-Setup.exe`,
-   `CoreTools-macOS.dmg`, `CoreTools-Linux.AppImage`) plus a `SHA256SUMS.txt`
-   generated over the exact published files.
+   `CoreTools-macOS.dmg`, `CoreTools-Linux.AppImage`, `CoreTools-sbom.cdx.json`)
+   plus `SHA256SUMS.txt` and its signature bundle.
+
+**SBOM.** Every release publishes `CoreTools-sbom.cdx.json`, a CycloneDX
+software bill of materials: the npm dependencies (from `package-lock.json`,
+via `npm sbom`) and the Rust crates for every target platform (from
+`src-tauri/Cargo.lock`, via `cargo-cyclonedx`). It is listed in
+`SHA256SUMS.txt`, so the Sigstore signature covers it. Until `Cargo.lock`
+is committed, the Rust part is resolved at release time and marked
+`coretools:cargo-lock = resolved-at-release`.
+
+**Dependabot auto-merge.** Dependabot proposes updates weekly, grouped per
+ecosystem, once a release is at least 3 days old. Pull requests where every
+update is a semver patch, or a GitHub Actions minor/patch, get auto-merge
+(squash); everything else needs a manual merge. Auto-merge still waits for CI
+(and a Code Owner approval where required). Those merges don't start CI on
+`master`: the website is promoted with the next push, or run **Actions → CI →
+Run workflow** on `master`. Needs: Settings → General → *Allow auto-merge*,
+and Settings → Actions → General → *Allow GitHub Actions to create and approve
+pull requests* (also used by Prepare release).
 
 ### Where releases live: `jaychandra1/artifacts`
 
@@ -191,27 +223,88 @@ The release notes and `coretools/releases/README.md` print the same command.
 
 ### Repository protection (one-time, in GitHub settings)
 
-The workflows assume these settings. Without them, the gates above are
-advisory.
+The workflows assume these settings; without them, the gates above are
+advisory. They are also written as Terraform in `infra/terraform/github/`
+(see "Infrastructure as code" below).
 
-1. **Protect `master`** — Settings → Rules → Rulesets → New branch ruleset,
-   target `master`. Enable *Restrict deletions*, *Block force pushes*,
-   *Require a pull request before merging* (with *Require review from Code
-   Owners*; `.github/CODEOWNERS` names the owner) and *Require status checks
-   to pass*. The required checks are the `ci.yml` jobs **Web**, **Rust lint
-   (clippy), tests and format** and **Rust build check (Windows)**. Working
-   solo? Put yourself on the bypass list for pull requests only, so the status
-   checks still apply.
+> **What your GitHub plan allows on a private repository.** Rulesets (and
+> classic branch protection) need **GitHub Pro** (or Team/Enterprise).
+> Environments with branch/tag rules need Pro too. **Required reviewers on an
+> environment need GitHub Enterprise** on a private repository — on Free,
+> Pro and Team they work only for public repositories. Without them, the
+> "approve each publish" pause below doesn't happen; the Sigstore signature
+> (bound to this repository's release workflow and a `v*` tag) and the
+> other release gates still apply.
+
+1. **Protect `master`** — Settings → Rules → Rulesets. Use two rulesets so
+   your bypass can't skip CI:
+   - *Require a pull request before merging* with *Require review from Code
+     Owners* (`.github/CODEOWNERS` names the owner); bypass: you, **for pull
+     requests only**.
+   - *Require status checks to pass* — `Type-check, unit tests, dependency
+     audit`, `End-to-end smoke tests (browser)`, `Rust lint (clippy), tests
+     and format` and `Rust build check (Windows)`, from the GitHub Actions
+     app — plus *Block force pushes* and *Restrict deletions*; no bypass.
+
+   With these on, releases go through **Prepare release** (the manual
+   `npm version` push to `master` is refused).
 2. **Protect release tags** — New tag ruleset, target `v*`: *Restrict
-   creations*, *Restrict updates*, *Restrict deletions*, with yourself on the
-   bypass list. Only you can cut a release.
+   updates* and *Restrict deletions*, and *Restrict creations* with you and
+   **GitHub Actions** on the bypass list (the tag-release job creates tags).
+   If GitHub Actions can't be added as a bypass actor, leave *Restrict
+   creations* off.
 3. **Approve each publish** — Settings → Environments → New environment
-   `release` → *Required reviewers*: yourself. Under *Deployment branches and
-   tags*, allow only tags matching `v*`. Every release then pauses at
-   "Publish" until you approve it.
+   `release` → *Deployment branches and tags*: tags matching `v*`; and,
+   where your plan offers it, *Required reviewers*: yourself.
 4. **Generate `Cargo.lock`** — Actions → **Generate Cargo.lock** → Run
    workflow, then open the pull request it links and merge it. From then on
    CI and releases build exactly the locked dependency set.
+5. **Allow Actions to open pull requests and enable auto-merge** (see
+   "Dependabot auto-merge" above).
+
+### Infrastructure as code
+
+The repository, Google Cloud and Vercel settings this page describes as
+one-time clicks are also kept as Terraform under `infra/terraform/`, in three
+root modules with separate state and credentials:
+
+- `github/` holds the `master` rulesets, the `v*` tag ruleset, and the
+  `release` environment with a deployment policy that only accepts `v*`
+  tags. At plan time it checks that the Actions secrets exist and that
+  `ARTIFACTS_REPO_TOKEN` is under 90 days old; secret values never pass
+  through Terraform.
+- `google/` holds the APIs, the deletion lien, alerting and an optional dev
+  project.
+- `vercel/` holds Production Branch `production`, Framework Other, the
+  repo-root build and the `vercel.json` commands.
+
+Provider versions are pinned and locked. Nothing applies automatically: you
+import what already exists, then run `terraform plan` and `apply` locally.
+`infra/terraform/README.md` lists the import commands and what has to stay
+manual — chiefly the Google OAuth consent screen and the Desktop OAuth client.
+
+### Google project protection and alerting
+
+A Resource Manager lien on `resourcemanager.projects.delete` makes the
+production Google Cloud project impossible to delete, even for an Owner,
+until someone deliberately removes the lien (audit F-24). That matters
+because each user's backups live in a Drive appDataFolder that only this
+project's OAuth clients can read. As a second line, every section can export
+an **encrypted backup file** that restores without Google at all.
+
+Cloud Monitoring emails the owner when, over 30 minutes with at least five
+failures, more than 5% of Drive API requests fail with 5xx or more than 10%
+get 403/429; when a per-minute Drive rate quota stays above 70% of its limit
+for five minutes; or when a quota is exceeded. Google charges for alerting
+policies from 1 May 2026, so the project may need a billing account (or set
+`enable_alerting = false`).
+
+Local and preview builds can use a separate dev project with its own OAuth
+client (`create_dev_project`, audit F-25), so development never spends
+production quota; backups made that way live only in the dev project.
+
+Runbooks for project loss, a pipeline compromise, a bad release and Drive
+outages are in `docs/runbooks/`.
 
 > **Optional:** purge the historical binaries from git history
 > (`git filter-repo --path website/downloads --invert-paths` + coordinated
@@ -268,15 +361,29 @@ releases. Options, cheapest first:
 | **OV certificate** (Sectigo, SSL.com, …) | ~$100–400/yr | Signed; reputation builds over weeks of downloads. |
 | **EV certificate** | ~$250–700/yr | Near-instant SmartScreen reputation. |
 
-Wiring it in: add the signing secrets to the repo (Settings → Secrets), then
-configure `src-tauri/tauri.conf.json` → `bundle.windows.signCommand` (Trusted
-Signing / custom signtool) or `certificateThumbprint` per the Tauri
-"Windows – Code signing" guide. `release.yml` needs no structural change —
-Tauri signs during `tauri build`; expose the secrets as env vars on the build
-job's "Build the desktop app" step.
+**Already wired in `release.yml`** — it signs a platform's installer once all
+of that platform's credentials exist, and builds it unsigned otherwise. A
+half-configured platform fails the release instead of quietly shipping
+unsigned.
 
-**macOS:** the `.dmg` is also unsigned — Gatekeeper shows a similar prompt.
-The fix there is an Apple Developer ID ($99/yr) + notarization.
+- **Windows** — Azure Artifact Signing (the new name of Trusted Signing), via
+  `artifact-signing-cli` as Tauri's `signCommand`. Repository secrets
+  `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` (an app
+  registration with the certificate-profile signer role) and repository
+  variables `AZURE_ARTIFACT_SIGNING_ENDPOINT` (e.g.
+  `https://eus.codesigning.azure.net`), `AZURE_ARTIFACT_SIGNING_ACCOUNT`,
+  `AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE`.
+- **macOS** — Developer ID ($99/yr) + notarization. Repository secrets
+  `APPLE_CERTIFICATE` (`openssl base64 -A -in DeveloperIDApplication.p12`),
+  `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_PASSWORD`
+  (app-specific), `APPLE_TEAM_ID`, optionally `APPLE_SIGNING_IDENTITY`.
+
+Signed platforms compile without the credentials in the environment, then
+bundle and sign in a separate step; the signature is verified before upload,
+and the release notes say which installers are signed. The Linux AppImage
+stays unsigned; the signed `SHA256SUMS.txt` covers it. To trial signing
+safely: add the credentials, run Actions → Release on `master`, check the
+build logs, and let the environment policy stop the publish.
 
 ### Mitigations until you sign
 
@@ -362,44 +469,54 @@ backup.
 
 ## Updates for installed copies
 
-There is no auto-updater: apart from the opt-in Authenticator cloud backup,
-the app makes no network requests, and it never phones home to check for
-versions (see SECURITY.md). The manual-update policy is:
+Installed copies learn about new releases through **opt-in update
+notifications** (desktop): on first run the app asks once; when on, it reads
+`coretools/releases/latest.json` from the public release repository at most
+once a day (through Rust, one fixed URL, nothing about the user sent) and
+shows "Update x.y.z" in the header with a link to the release page. It never
+downloads or installs anything itself — automatic installs wait for OS code
+signing (§3). To flag a release as a **security** update or show a one-line
+notice, add `"security": true` / `"notice": "…"` to that version's
+`latest.json`; the app renders them.
 
-- The app shows its version in the header; each release lists changes in
-  `CHANGELOG.md` and on its `coretools-v<version>` release in
-  `jaychandra1/artifacts`.
-- Users update by downloading the new installer over the old one; Authenticator
-  and JSON-Studio data live in the webview profile and survive reinstalls.
+- The app shows its version in the header (click it for *About &
+  diagnostics*); each release lists changes in `CHANGELOG.md` and on its
+  `coretools-v<version>` release in `jaychandra1/artifacts`.
+- Users update by downloading the new installer over the old one; vault and
+  JSON-Studio data live in the webview profile and survive reinstalls. **No
+  downgrade past 1.2:** older versions can't open an upgraded vault.
 - **Watch releases**: on `jaychandra1/artifacts`, GitHub → Watch → Custom →
-  Releases gives an email/notification feed (it covers every app published
-  there); `https://github.com/jaychandra1/artifacts/releases.atom` is the
-  Atom feed.
-- If a security fix ever ships, announce it prominently on the download page —
-  there is no other channel to reach installed copies. Revisit
-  `tauri-plugin-updater` (opt-in prompt, signed manifests) if the user base
-  grows.
+  Releases gives an email/notification feed;
+  `https://github.com/jaychandra1/artifacts/releases.atom` is the Atom feed.
+- For a security fix, also announce it on the download page and publish a
+  GitHub Security Advisory (see `docs/runbooks/README.md`).
 
 ## Summary checklist
 
-- [ ] Push to `master` → **CI** must be green (types, tests, audit, clippy,
+- [ ] Push to `master` (or merge a PR) → **CI** must be green (types, unit
+      and store tests, audit, browser end-to-end tests, clippy, Rust tests,
       Windows check, version sync); `promote-web` then deploys the site.
-- [ ] Release: `npm version X.Y.Z -m "release: v%s"` → `git push origin HEAD --follow-tags`
-      → approve the **release** environment → verify `coretools-v<version>`
-      and `coretools-latest` in `jaychandra1/artifacts` have all three
-      installers + `SHA256SUMS.txt` + `SHA256SUMS.txt.sigstore.json`, and
-      `coretools/releases/README.md` lists the new version.
+- [ ] Release: **Actions → Prepare release** → merge its PR → CI tags it and
+      starts **Release** → (approve the `release` environment where available)
+      → verify `coretools-v<version>` and `coretools-latest` in
+      `jaychandra1/artifacts` have the three installers, the SBOM,
+      `SHA256SUMS.txt` and `SHA256SUMS.txt.sigstore.json`.
 - [ ] One-time: Vercel **Production Branch = `production`** (§1).
-- [ ] One-time: `master` and `v*` rulesets, and a `release` environment with
-      a required reviewer (§2, "Repository protection").
+- [ ] One-time (GitHub Pro or above for a private repo): `master` and `v*`
+      rulesets, and the `release` environment (§2, "Repository protection"),
+      or apply `infra/terraform/github`.
+- [ ] One-time: *Allow auto-merge* and *Allow GitHub Actions to create and
+      approve pull requests*.
 - [ ] One-time: `ARTIFACTS_REPO_TOKEN` secret (fine-grained PAT, Contents
       read/write on `jaychandra1/artifacts` only, expiry ≤ 90 days) so
       releases can publish (§2).
-- [ ] (Optional) Actions → **Import old release** to publish the last 0.1.0
-      build into the public history.
-- [ ] One-time: Google OAuth client + `CORETOOLS_GOOGLE_CLIENT_ID` /
-      `CORETOOLS_GOOGLE_CLIENT_SECRET` repo secrets for cloud backup (§4).
 - [ ] One-time: Actions → **Generate Cargo.lock** → merge its pull request.
-- [ ] (Optional) purge historical binaries from git history (filter-repo).
-- [ ] (Recommended) set up code signing — Windows cert + macOS Developer ID —
-      to remove OS "unknown publisher" warnings.
+- [ ] One-time: Google OAuth client + `CORETOOLS_GOOGLE_CLIENT_ID` /
+      `CORETOOLS_GOOGLE_CLIENT_SECRET` repo secrets for cloud backup (§4);
+      then apply `infra/terraform/google` for the deletion lien and alerts.
+- [ ] One-time: turn on private vulnerability reporting on
+      `jaychandra1/artifacts` (Settings → Code security).
+- [ ] (Recommended) code signing credentials — Windows Artifact Signing +
+      macOS Developer ID (§3).
+- [ ] (Optional) Actions → **Import old release**; purge historical binaries
+      from git history (filter-repo).
