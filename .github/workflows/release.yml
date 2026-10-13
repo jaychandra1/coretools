@@ -247,7 +247,10 @@ jobs:
 
     env:
       # This platform's installer gets code-signed (decided by the quality job).
-      SIGN: ${{ (matrix.platform == 'windows-latest' && needs.quality.outputs.sign-windows == 'true') || (matrix.platform == 'macos-latest' && needs.quality.outputs.sign-macos == 'true') }}
+      # Never name this SIGN: linuxdeploy's AppImage plugin reads $SIGN as
+      # "GPG-sign the AppImage" when it is set at all — even to "false" — and
+      # then aborts for want of a key (the v1.2.0 Linux release failure).
+      CODE_SIGN: ${{ (matrix.platform == 'windows-latest' && needs.quality.outputs.sign-windows == 'true') || (matrix.platform == 'macos-latest' && needs.quality.outputs.sign-macos == 'true') }}
 
     steps:
       - name: Checkout
@@ -316,18 +319,15 @@ jobs:
           CORETOOLS_GOOGLE_CLIENT_ID: ${{ secrets.CORETOOLS_GOOGLE_CLIENT_ID }}
           CORETOOLS_GOOGLE_CLIENT_SECRET: ${{ secrets.CORETOOLS_GOOGLE_CLIENT_SECRET }}
           TAURI_ARGS: ${{ matrix.args }}
-          # AppImage bundling (Linux only; ignored elsewhere). linuxdeploy and
-          # its plugins are AppImages fetched from upstream "continuous"
-          # builds on every run: extract-and-run them instead of mounting
-          # through FUSE, and skip linuxdeploy's bundled `strip`, which is
-          # older than the runner's toolchain and fails on newer ELF sections.
+          # AppImage bundling (Linux only; ignored elsewhere): linuxdeploy and
+          # its plugins are themselves AppImages — extract and run them rather
+          # than mounting through FUSE, so a runner-image change can't break it.
           APPIMAGE_EXTRACT_AND_RUN: "1"
-          NO_STRIP: "true"
         run: |
           set -eo pipefail
           args=()
           if [ -n "$TAURI_ARGS" ]; then read -r -a args <<< "$TAURI_ARGS"; fi
-          if [ "$SIGN" = "true" ]; then args+=(--no-bundle); fi
+          if [ "$CODE_SIGN" = "true" ]; then args+=(--no-bundle); fi
           npm run tauri build -- "${args[@]}"
 
       # Windows signing: Azure Artifact Signing (formerly Trusted Signing) via
@@ -336,7 +336,7 @@ jobs:
       # app binary and the installer (bundle.windows.signCommand, object form
       # so no argument is split on spaces).
       - name: Prepare code signing (Windows)
-        if: matrix.platform == 'windows-latest' && env.SIGN == 'true'
+        if: matrix.platform == 'windows-latest' && env.CODE_SIGN == 'true'
         shell: bash
         env:
           ENDPOINT: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
@@ -373,7 +373,7 @@ jobs:
           ' "$ENDPOINT" "$ACCOUNT" "$PROFILE"
 
       - name: Bundle and sign (Windows)
-        if: matrix.platform == 'windows-latest' && env.SIGN == 'true'
+        if: matrix.platform == 'windows-latest' && env.CODE_SIGN == 'true'
         shell: bash
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -388,7 +388,7 @@ jobs:
       # certificate's identity) — exported only when set, because Tauri
       # treats an empty variable as set.
       - name: Bundle, sign and notarize (macOS)
-        if: matrix.platform == 'macos-latest' && env.SIGN == 'true'
+        if: matrix.platform == 'macos-latest' && env.CODE_SIGN == 'true'
         shell: bash
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -416,7 +416,7 @@ jobs:
 
       # A signed platform must really be signed before anything is uploaded.
       - name: Verify the Authenticode signature (Windows)
-        if: matrix.platform == 'windows-latest' && env.SIGN == 'true'
+        if: matrix.platform == 'windows-latest' && env.CODE_SIGN == 'true'
         shell: pwsh
         env:
           OUT: ${{ matrix.out }}
@@ -429,7 +429,7 @@ jobs:
           }
 
       - name: Verify signature and notarization (macOS)
-        if: matrix.platform == 'macos-latest' && env.SIGN == 'true'
+        if: matrix.platform == 'macos-latest' && env.CODE_SIGN == 'true'
         run: |
           set -euo pipefail
           app=$(ls -d src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app | head -n1)
