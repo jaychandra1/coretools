@@ -493,18 +493,18 @@ notice, add `"security": true` / `"notice": "…"` to that version's
 
 ## Summary checklist
 
+CoreTools runs on free services only. Everything below is free; what would
+need a paid service is listed after it as an accepted risk.
+
 - [ ] Push to `master` (or merge a PR) → **CI** must be green (types, unit
       and store tests, audit, browser end-to-end tests, clippy, Rust tests,
       Windows check, version sync); `promote-web` then deploys the site.
 - [ ] Release: **Actions → Prepare release** → merge its PR → CI tags it and
-      starts **Release** → (approve the `release` environment where available)
-      → verify `coretools-v<version>` and `coretools-latest` in
+      starts **Release** (or the manual `npm version` path in §2) → verify
+      `coretools-v<version>` and `coretools-latest` in
       `jaychandra1/artifacts` have the three installers, the SBOM,
       `SHA256SUMS.txt` and `SHA256SUMS.txt.sigstore.json`.
 - [ ] One-time: Vercel **Production Branch = `production`** (§1).
-- [ ] One-time (GitHub Pro or above for a private repo): `master` and `v*`
-      rulesets, and the `release` environment (§2, "Repository protection"),
-      or apply `infra/terraform/github`.
 - [ ] One-time: *Allow auto-merge* and *Allow GitHub Actions to create and
       approve pull requests*.
 - [ ] One-time: `ARTIFACTS_REPO_TOKEN` secret (fine-grained PAT, Contents
@@ -512,11 +512,29 @@ notice, add `"security": true` / `"notice": "…"` to that version's
       releases can publish (§2).
 - [ ] One-time: Actions → **Generate Cargo.lock** → merge its pull request.
 - [ ] One-time: Google OAuth client + `CORETOOLS_GOOGLE_CLIENT_ID` /
-      `CORETOOLS_GOOGLE_CLIENT_SECRET` repo secrets for cloud backup (§4);
-      then apply `infra/terraform/google` for the deletion lien and alerts.
+      `CORETOOLS_GOOGLE_CLIENT_SECRET` repo secrets for cloud backup (§4).
+- [ ] One-time: protect the Google Cloud project from deletion (free; run in
+      Google Cloud Shell):
+      `gcloud alpha resource-manager liens create --project=YOUR_PROJECT_ID --restrictions=resourcemanager.projects.delete --reason="CoreTools users' Drive backups depend on this project"`
 - [ ] One-time: turn on private vulnerability reporting on
       `jaychandra1/artifacts` (Settings → Code security).
-- [ ] (Recommended) code signing credentials — Windows Artifact Signing +
-      macOS Developer ID (§3).
+- [ ] When Drive usage grows: request a Drive API quota increase (free) in the
+      Google Cloud console.
 - [ ] (Optional) Actions → **Import old release**; purge historical binaries
       from git history (filter-repo).
+
+### Accepted risks (free tier)
+
+These need paid services, so they are accepted rather than planned. Each
+still has a free control in place.
+
+| Not done | Needs | Risk accepted | What still protects users |
+| --- | --- | --- | --- |
+| Code signing (F-01) | Azure Artifact Signing (~USD 10/month), Apple Developer (USD 99/year) | Windows SmartScreen and macOS Gatekeeper warnings; no auto-install updates | Sigstore-signed `SHA256SUMS.txt`; signing is wired and turns on when secrets exist |
+| Branch and tag rulesets (F-04) | GitHub Pro for a private repo | Nothing enforces PR review on `master` | Website deploys only after CI; release refuses non-master commits |
+| Release approval pause (F-03) | GitHub Enterprise, or a public source repo | A release publishes without a manual approval | Release gates (version, notes, commit on `master`); Sigstore identity bound to this workflow |
+| Cloud Monitoring alerts (F-16) | Billing on the Google project | No automatic email on Drive API errors or quota spikes | Drive API dashboard in the Google Cloud console; in-app diagnostics |
+| Applying `infra/terraform` (F-25) | GitHub Pro for the GitHub module; billing for alerts | Settings stay manual and can drift | The Terraform files document the intended settings; no paid state storage is needed if it is ever applied |
+| Organization accounts (F-11) | A paid domain for a Google Cloud organization | Account lockout stops releases and backups | Deletion lien; encrypted backup files restore without Google |
+| Vercel Pro and an app subdomain (F-28, F-13) | Vercel Pro; a custom domain | Hobby terms are for non-commercial use; app shares the marketing origin | Marketing pages run only first-party scripts under `script-src 'self'` |
+| Penetration test (F-30) | An external reviewer | No independent review | Signed SBOM, `security.txt`, disclosure policy, test suites |

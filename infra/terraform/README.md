@@ -1,5 +1,12 @@
 # CoreTools infrastructure as code
 
+> **Status: not applied.** CoreTools runs on free services only, so this is
+> kept as documentation of the intended settings, not applied. Parts of it
+> need paid plans (GitHub Pro for the rulesets, billing for Cloud Monitoring
+> alerts); those are accepted risks — see DEPLOYMENT.md → "Accepted risks
+> (free tier)". Nothing here runs automatically, and it needs no remote state
+> storage: state stays local and git-ignored if it is ever applied.
+
 Terraform for the settings CoreTools depends on outside its own code:
 repository protection on GitHub, the Google Cloud project behind Drive
 backup, and the Vercel project that serves the site. It covers audit
