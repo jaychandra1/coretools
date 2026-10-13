@@ -71,6 +71,12 @@ export interface CloudBridge {
   }): Promise<RemoteBackup>;
   download(id: string): Promise<string>;
   remove(id: string): Promise<void>;
+  /**
+   * Open Google Drive's settings page (Manage apps → CoreTools shows and
+   * can delete the hidden backup data) in the system browser. The URL is
+   * fixed in the backend; the webview can't choose what opens.
+   */
+  openDriveSettings(): Promise<void>;
 }
 
 /**
@@ -87,6 +93,11 @@ export interface Platform {
   saveTextFile(suggestedName: string, content: string): Promise<boolean>;
   /** Same as saveTextFile, for binary payloads (e.g. .xlsx exports). */
   saveBinaryFile(suggestedName: string, bytes: Uint8Array): Promise<boolean>;
+  /**
+   * Open an http(s) URL in the user's browser (Credential Manager "Open
+   * link"). Anything else is refused — by the frontend and again by Rust.
+   */
+  openExternal(url: string): Promise<void>;
   /** OS biometric unlock. Absent where the host has no such facility (browser). */
   readonly hello?: HelloUnlock;
   /** Authenticator cloud backup transport. Desktop only. */

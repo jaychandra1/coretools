@@ -397,7 +397,7 @@ where
 // ---- sign-in -------------------------------------------------------------------
 
 /// Hand a URL to the OS default browser.
-fn open_browser(url: &str) -> Result<(), String> {
+pub(crate) fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(windows)]
     let spawned = {
         use std::os::windows::process::CommandExt;
@@ -789,6 +789,17 @@ pub async fn cloud_download(
         return Err("cloud_too_large".into());
     }
     String::from_utf8(bytes.to_vec()).map_err(|_| "cloud_corrupt".to_string())
+}
+
+/// Where Google Drive lists apps with hidden data (Manage apps → CoreTools
+/// shows the backup's size and offers "Delete hidden app data").
+const DRIVE_SETTINGS_URL: &str = "https://drive.google.com/drive/settings";
+
+/// Open Google Drive's settings in the system browser. The URL is fixed
+/// here, so the webview cannot use this to open anything else.
+#[tauri::command]
+pub fn cloud_open_drive_settings() -> Result<(), String> {
+    open_browser(DRIVE_SETTINGS_URL)
 }
 
 /// Delete one backup version. Already-gone counts as success.

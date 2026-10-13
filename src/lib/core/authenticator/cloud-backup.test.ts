@@ -11,6 +11,7 @@ import {
 import type { ExportableEntry } from "./backup";
 import { bytesToBase64 } from "./legacy-crypto";
 import {
+  decryptString,
   deriveVaultKey,
   encryptString,
   randomBytes,
@@ -193,5 +194,119 @@ describe("cloud backup envelope", () => {
     const payload = await openCloudBackup(parseCloudBackup(await seal([])), key);
     expect(payload.entries).toEqual([]);
     expect(payload.entryCount).toBe(0);
+    expect(payload.credentials).toEqual([]);
   });
 });
+
+describe("cloud backup: Credential Manager records", () => {
+  const CREDENTIALS = [
+    {
+      platform: "AWS Production",
+      url: "https://console.aws.amazon.com/",
+      username: "devops-admin",
+      password: "s3cr3t-P@ss",
+      notes: "MFA on the yubikey",
+      category: "Cloud",
+      owner: "Platform team",
+      tags: ["prod"],
+      createdAt: 1_760_000_000_000,
+      updatedAt: 1_760_000_100_000,
+      passwordUpdatedAt: 1_760_000_100_000,
+      deletedAt: null,
+    },
+    {
+      platform: "Old bank",
+      url: "",
+      username: "me",
+      password: "hunter2",
+      notes: "",
+      category: "",
+      owner: "",
+      tags: [],
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_000,
+      passwordUpdatedAt: 1_700_000_000_000,
+      deletedAt: 1_760_000_000_000, // in the trash
+    },
+  ];
+
+  function sealWith(credentials: typeof CREDENTIALS) {
+    return sealCloudBackup({
+      key,
+      salt,
+      iterations: ITERATIONS,
+      verifier,
+      device: DEVICE,
+      entries: ENTRIES,
+      settings: { ...SETTINGS },
+      credentials,
+    });
+  }
+
+  it("round-trips credentials, including trashed ones", async () => {
+    const payload = await openCloudBackup(parseCloudBackup(await sealWith(CREDENTIALS)), key);
+    expect(payload.credentials).toEqual(CREDENTIALS);
+    expect(payload.entries).toHaveLength(2);
+  });
+
+  it("never leaves passwords, notes or usernames in the clear", async () => {
+    const text = await sealWith(CREDENTIALS);
+    for (const leaked of ["s3cr3t-P@ss", "hunter2", "yubikey", "devops-admin", "AWS Production"]) {
+      expect(text).not.toContain(leaked);
+    }
+  });
+
+  it("restores backups made before credentials existed", async () => {
+    // Rebuild a payload without the credentials fields, sealed the old way.
+    const file = parseCloudBackup(await seal());
+    const json = JSON.parse(await decryptPayload(file));
+    delete json.credentials;
+    delete json.credentialsDigest;
+    const legacy = await resealPayload(file, json);
+    const payload = await openCloudBackup(legacy, key);
+    expect(payload.credentials).toEqual([]);
+    expect(payload.entries).toHaveLength(2);
+  });
+
+  it("detects a credentials checksum mismatch", async () => {
+    const file = parseCloudBackup(await sealWith(CREDENTIALS));
+    const json = JSON.parse(await decryptPayload(file));
+    json.credentials[0].password = "changed";
+    await expectCode(openCloudBackup(await resealPayload(file, json), key), "corrupt");
+  });
+
+  it("rejects non-http(s) login URLs inside a backup", async () => {
+    const bad = [{ ...CREDENTIALS[0], url: "javascript:alert(1)" }];
+    await expectCode(
+      openCloudBackup(parseCloudBackup(await sealWith(bad)), key),
+      "corrupt",
+    );
+  });
+});
+
+// Helpers that re-seal a modified payload under the real key + header AAD,
+// to simulate writer bugs / old formats rather than attackers.
+function aadOf(file: CloudBackupFile): Uint8Array {
+  return new TextEncoder().encode(
+    JSON.stringify([
+      file.format,
+      file.createdAt,
+      file.device.id,
+      file.device.label,
+      file.kdf.name,
+      file.kdf.salt,
+      file.kdf.iterations,
+      file.verifier.iv,
+      file.verifier.ct,
+      file.cipher,
+    ]),
+  );
+}
+
+async function decryptPayload(file: CloudBackupFile): Promise<string> {
+  return decryptString(key, file.payload, aadOf(file));
+}
+
+async function resealPayload(file: CloudBackupFile, json: unknown): Promise<CloudBackupFile> {
+  return { ...file, payload: await encryptString(key, JSON.stringify(json), aadOf(file)) };
+}

@@ -10,6 +10,12 @@ import type { Platform, LoadedFile } from "./types";
 export const browserPlatform: Platform = {
   kind: "browser",
 
+  async openExternal(url: string): Promise<void> {
+    if (!/^https?:\/\//i.test(url)) throw new Error("Only http(s) links can be opened");
+    // noopener + noreferrer: the opened site gets no handle back to this page.
+    window.open(url, "_blank", "noopener,noreferrer");
+  },
+
   openTextFile(): Promise<LoadedFile | null> {
     return new Promise((resolve) => {
       const input = document.createElement("input");

@@ -107,6 +107,11 @@ const tauriCloud: CloudBridge = {
     const { invoke } = await import("@tauri-apps/api/core");
     await invoke("cloud_delete", { id });
   },
+
+  async openDriveSettings(): Promise<void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("cloud_open_drive_settings");
+  },
 };
 
 /**
@@ -121,6 +126,11 @@ export const tauriPlatform: Platform = {
   kind: "tauri",
   hello: tauriHello,
   cloud: tauriCloud,
+
+  async openExternal(url: string): Promise<void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("open_external_url", { url });
+  },
 
   // Dialogs are opened in RUST (`pick_open_path` / `pick_save_path`), which
   // canonicalizes and remembers the chosen path; the read/write commands only

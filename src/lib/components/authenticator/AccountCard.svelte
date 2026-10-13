@@ -95,8 +95,18 @@
   let dragOver = $state(false);
 
   function handleDragStart(event: DragEvent) {
-    event.dataTransfer?.setData("text/plain", entry.id);
+    if (event.dataTransfer) {
+      // Some engines refuse to start a drag without data.
+      event.dataTransfer.setData("text/plain", entry.id);
+      event.dataTransfer.effectAllowed = "move";
+    }
     ondragstartcard(entry.id);
+  }
+  function handleDragOver(event: DragEvent) {
+    if (!editMode) return;
+    event.preventDefault(); // required for the drop event to fire
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    dragOver = true;
   }
   function handleDrop(event: DragEvent) {
     event.preventDefault();
@@ -111,13 +121,9 @@
   draggable={editMode}
   role="listitem"
   ondragstart={handleDragStart}
-  ondragover={(e) => {
-    if (editMode) {
-      e.preventDefault();
-      dragOver = true;
-    }
-  }}
+  ondragover={handleDragOver}
   ondragleave={() => (dragOver = false)}
+  ondragend={() => (dragOver = false)}
   ondrop={handleDrop}
 >
   {#if editMode}

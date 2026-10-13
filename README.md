@@ -3,7 +3,7 @@
 A lightweight, **offline-first** desktop toolkit by **JDG Initiates**, built
 with **Tauri v2 + Svelte 5 + TypeScript**.
 
-It bundles five focused utilities:
+It bundles six focused utilities:
 
 1. **Diff-Checker** — compare two versions of a file, review each difference,
    choose which side to keep per-change, and export a merged file.
@@ -23,7 +23,13 @@ It bundles five focused utilities:
    (fingerprint / face / PIN, TPM-backed) and back up to **Google Drive**,
    end-to-end encrypted, for restore after a reinstall or on a new device.
    See [SECURITY.md](./SECURITY.md) for the storage, unlock and backup model.
-5. **JSON-Studio** — a full JSON workbench: Monaco editor with live
+5. **Credential-Manager** — keep platform logins (URL, username, password,
+   notes, category, owner, tags) in the same encrypted vault as the
+   Authenticator. It has a table/card view, an eye toggle and one-click copy
+   (gated by Windows Hello or the master password), open-login-page,
+   search & filters, Trash with restore, a local activity log, and inclusion
+   in the encrypted Google Drive backup.
+6. **JSON-Studio** — a full JSON workbench: Monaco editor with live
    validation, tree editing, JSON Schema validation & generation, JSONPath /
    JMESPath explorers, side-by-side + semantic diff, JSON repair, OpenAPI
    linting, conversion to/from CSV / XML / YAML / Excel, code generation

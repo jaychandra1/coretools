@@ -23,6 +23,7 @@
 
 import type { AuthSettings } from "./db";
 import type { ExportableEntry } from "./backup";
+import type { BackupCredential } from "../credentials/types";
 import { isValidBase32, normalizeBase32 } from "./base32";
 import type { OtpAlgorithm, OtpType } from "./types";
 import {
@@ -77,6 +78,13 @@ export interface CloudBackupPayload {
   digest: string;
   entries: ExportableEntry[];
   settings: CloudBackupSettings;
+  /**
+   * Credential Manager records (plaintext — the whole payload is encrypted).
+   * Absent in backups made before the Credential Manager existed.
+   */
+  credentials: BackupCredential[];
+  /** SHA-256 hex of JSON.stringify(credentials). */
+  credentialsDigest: string;
 }
 
 export type CloudBackupErrorCode = "corrupt" | "wrong_password" | "unsupported";
@@ -124,6 +132,7 @@ export interface SealInput {
   device: CloudBackupDevice;
   entries: ExportableEntry[];
   settings: CloudBackupSettings;
+  credentials?: BackupCredential[];
   createdAt?: Date;
 }
 
@@ -143,6 +152,20 @@ export async function sealCloudBackup(input: SealInput): Promise<string> {
       index: i,
       pinned: entry.pinned,
     }));
+  const credentials = (input.credentials ?? []).map((c) => ({
+    platform: c.platform,
+    url: c.url,
+    username: c.username,
+    password: c.password,
+    notes: c.notes,
+    category: c.category,
+    owner: c.owner,
+    tags: [...c.tags],
+    createdAt: c.createdAt,
+    updatedAt: c.updatedAt,
+    passwordUpdatedAt: c.passwordUpdatedAt,
+    deletedAt: c.deletedAt,
+  }));
   const payload: CloudBackupPayload = {
     version: PAYLOAD_VERSION,
     entryCount: entries.length,
@@ -153,6 +176,8 @@ export async function sealCloudBackup(input: SealInput): Promise<string> {
       clipboardClear: input.settings.clipboardClear,
       groupCodes: input.settings.groupCodes,
     },
+    credentials,
+    credentialsDigest: await sha256Hex(JSON.stringify(credentials)),
   };
 
   const header: Omit<CloudBackupFile, "payload"> = {
@@ -347,11 +372,70 @@ export async function openCloudBackup(
     groupCodes: s.groupCodes !== false,
   };
 
+  // Credentials: absent in backups made before the Credential Manager.
+  const credentials: BackupCredential[] = [];
+  if (raw.credentials !== undefined) {
+    if (!Array.isArray(raw.credentials)) throw corrupt("unexpected credentials layout");
+    if (raw.credentialsDigest !== (await sha256Hex(JSON.stringify(raw.credentials)))) {
+      throw corrupt("credentials checksum mismatch");
+    }
+    for (const item of raw.credentials) {
+      const credential = validCredential(item);
+      if (!credential) throw corrupt("invalid credential record");
+      credentials.push(credential);
+    }
+  }
+
   return {
     version: PAYLOAD_VERSION,
     entryCount: entries.length,
     digest: raw.digest as string,
     entries,
     settings,
+    credentials,
+    credentialsDigest: (raw.credentialsDigest as string) ?? "",
+  };
+}
+
+function isTime(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function validCredential(value: unknown): BackupCredential | null {
+  const c = value as Record<string, unknown> | null;
+  if (!c || typeof c !== "object") return null;
+  if (
+    !isString(c.platform) ||
+    !c.platform.trim() ||
+    !isString(c.url) ||
+    !isString(c.username) ||
+    !isString(c.password) ||
+    !isString(c.notes) ||
+    !isString(c.category) ||
+    !isString(c.owner) ||
+    !Array.isArray(c.tags) ||
+    !c.tags.every(isString) ||
+    !isTime(c.createdAt) ||
+    !isTime(c.updatedAt) ||
+    !isTime(c.passwordUpdatedAt) ||
+    !(c.deletedAt === null || isTime(c.deletedAt))
+  ) {
+    return null;
+  }
+  // Same rule as the editor: only http(s) links are ever stored.
+  if (c.url && !/^https?:\/\//i.test(c.url)) return null;
+  return {
+    platform: c.platform,
+    url: c.url,
+    username: c.username,
+    password: c.password,
+    notes: c.notes,
+    category: c.category,
+    owner: c.owner,
+    tags: c.tags as string[],
+    createdAt: c.createdAt,
+    updatedAt: c.updatedAt,
+    passwordUpdatedAt: c.passwordUpdatedAt,
+    deletedAt: c.deletedAt as number | null,
   };
 }

@@ -258,7 +258,13 @@ export function describeCloudError(error: unknown): CloudErrorInfo {
 }
 
 export type BackupOutcome =
-  | { kind: "uploaded"; file: RemoteBackup; pruned: string[] }
+  | {
+      kind: "uploaded";
+      file: RemoteBackup;
+      pruned: string[];
+      /** Versions remaining after this pass, newest first. */
+      versions: RemoteBackup[];
+    }
   | { kind: "conflict"; remote: RemoteBackup };
 
 export interface BackupRequest {
@@ -305,9 +311,17 @@ export async function performBackup(request: BackupRequest): Promise<BackupOutco
   // Retention never considers the version we just wrote for deletion.
   const others = remote.filter((file) => file.id !== uploaded.id);
   const pruned = planPrune(others, MAX_VERSIONS - 1);
+  const removed = new Set<string>();
   for (const id of pruned) {
     // Best effort: a failed prune only leaves an extra old version behind.
-    await transport.remove(id).catch(() => {});
+    await transport
+      .remove(id)
+      .then(() => removed.add(id))
+      .catch(() => {});
   }
-  return { kind: "uploaded", file: uploaded, pruned };
+  const versions = sortNewestFirst([
+    uploaded,
+    ...others.filter((file) => !removed.has(file.id)),
+  ]);
+  return { kind: "uploaded", file: uploaded, pruned, versions };
 }

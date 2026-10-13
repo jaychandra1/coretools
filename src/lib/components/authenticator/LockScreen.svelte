@@ -1,6 +1,9 @@
 <script lang="ts">
   import { authStore } from "./store.svelte";
 
+  // The vault is shared with the Credential Manager, which reuses this screen.
+  let { title = "Authenticator locked" }: { title?: string } = $props();
+
   let password = $state("");
   let error = $state("");
   let busy = $state(false);
@@ -108,7 +111,7 @@
       <path d="M8 10V7a4 4 0 0 1 8 0v3" />
       <circle cx="12" cy="15" r="1.4" fill="var(--accent)" stroke="none" />
     </svg>
-    <h2>Authenticator locked</h2>
+    <h2>{title}</h2>
     <p class="muted">
       {#if authStore.canUnlockWithHello}
         Confirm it's you with Windows Hello, or enter your encryption

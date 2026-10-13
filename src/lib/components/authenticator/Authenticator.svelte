@@ -10,6 +10,7 @@
   import RestoreDialog from "./RestoreDialog.svelte";
   import { cloudBackup } from "./cloud.svelte";
   import { previewImport, type ExportableEntry } from "../../core/authenticator/backup";
+  import { compareDisplay } from "../../core/authenticator/order";
   import type { ParsedAccount } from "../../core/authenticator/types";
   import type { StoredEntry } from "../../core/authenticator/db";
 
@@ -61,9 +62,7 @@
           entry.issuer.toLowerCase().includes(query) ||
           entry.account.toLowerCase().includes(query),
       )
-      .toSorted(
-        (a, b) => Number(b.pinned) - Number(a.pinned) || a.index - b.index,
-      );
+      .toSorted(compareDisplay); // same order drag-to-reorder acts on
   });
 
   // ---- toast + clipboard --------------------------------------------------

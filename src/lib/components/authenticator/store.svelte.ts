@@ -43,6 +43,7 @@ import {
   bytesToBase64,
 } from "../../core/authenticator/legacy-crypto";
 import { normalizeBase32 } from "../../core/authenticator/base32";
+import { moveInDisplayOrder } from "../../core/authenticator/order";
 import { accountKey, type ExportableEntry } from "../../core/authenticator/backup";
 import {
   openCloudBackup,
@@ -53,6 +54,8 @@ import {
   type CloudBackupPayload,
   type CloudBackupSettings,
 } from "../../core/authenticator/cloud-backup";
+import type { EncryptedBlob } from "../../core/authenticator/vault-crypto";
+import type { BackupCredential, StoredCredential } from "../../core/credentials/types";
 import { getPlatform } from "../../platform";
 
 /**
@@ -60,13 +63,45 @@ import { getPlatform } from "../../platform";
  *  - "change": entries were added/edited/removed/reordered (persisted);
  *  - "unlock": the vault key is available again;
  *  - "password": the vault key changed (new password → new salt);
+ *  - "lock": the vault key was dropped;
  *  - "wipe": everything local was deleted.
  */
-export type AuthEvent = "change" | "unlock" | "password" | "wipe";
+export type AuthEvent = "change" | "unlock" | "password" | "lock" | "wipe";
 
 export interface RestoreResult {
   added: number;
   skipped: number;
+  credentialsAdded: number;
+  credentialsSkipped: number;
+}
+
+type Decrypt = (blob: EncryptedBlob) => Promise<string>;
+type Encrypt = (plaintext: string) => Promise<EncryptedBlob>;
+
+/**
+ * How the Credential Manager takes part in vault-wide operations. The vault
+ * (this store) owns the key; the credential store owns its records. Every
+ * operation that changes the key or replaces data asks it for the records to
+ * persist, and writes them in the SAME transaction as the vault itself.
+ */
+export interface CredentialVaultHooks {
+  /** Resolves once the records are loaded; awaited before any hook below. */
+  ready(): Promise<void>;
+  count(): number;
+  /** Plaintext of every credential (incl. trash) for the cloud backup. */
+  exportPlain(decrypt: Decrypt): Promise<BackupCredential[]>;
+  /** Every stored credential re-encrypted under a new key. */
+  reseal(decrypt: Decrypt, encrypt: Encrypt): Promise<StoredCredential[]>;
+  /** Records after restoring backup credentials (merge or replace). */
+  restore(
+    items: BackupCredential[],
+    mode: "merge" | "replace",
+    encrypt: Encrypt,
+  ): Promise<{ records: StoredCredential[]; added: number; skipped: number }>;
+  /** The records were persisted — make them the in-memory state. */
+  adopt(records: StoredCredential[]): void;
+  /** Everything was wiped. */
+  clear(): void;
 }
 
 export class AuthStore {
@@ -92,6 +127,29 @@ export class AuthStore {
   #lastActivity = Date.now();
   #ticker: ReturnType<typeof setInterval> | null = null;
   #initPromise: Promise<void> | null = null;
+  #credentials: CredentialVaultHooks | null = null;
+
+  /** Called once by the Credential Manager's store. */
+  registerCredentials(hooks: CredentialVaultHooks): void {
+    this.#credentials = hooks;
+  }
+
+  /** Encrypt with the vault key (Credential Manager). Requires unlocked + encrypted. */
+  async encryptSecret(plaintext: string): Promise<EncryptedBlob> {
+    if (this.locked || !this.#key) throw new Error("Unlock first");
+    return encryptString(this.#key, plaintext);
+  }
+
+  /** Decrypt with the vault key (Credential Manager). Requires unlocked. */
+  async decryptSecret(blob: EncryptedBlob): Promise<string> {
+    if (this.locked || !this.#key) throw new Error("Unlock first");
+    return decryptString(this.#key, blob);
+  }
+
+  /** Let other vault data (credentials) trigger observers such as cloud backup. */
+  notifyChange(): void {
+    this.#emit("change");
+  }
   #listeners = new Set<(event: AuthEvent) => void>();
 
   /** Observe lifecycle events; returns an unsubscribe function. */
@@ -187,6 +245,7 @@ export class AuthStore {
     this.#secrets.clear();
     this.locked = true;
     this.lockReason = reason;
+    this.#emit("lock");
   }
 
   async #deriveAndVerify(password: string): Promise<CryptoKey> {
@@ -402,14 +461,17 @@ export class AuthStore {
     this.#emit("change");
   }
 
-  /** Move `fromId` to the position of `toId`, persisting the new order. */
+  /**
+   * Move `fromId` to where `toId` is in the DISPLAYED order (pinned first),
+   * persisting the new order. Positions in `this.entries` are irrelevant.
+   */
   async reorder(fromId: string, toId: string): Promise<void> {
-    const from = this.entries.findIndex((e) => e.id === fromId);
-    const to = this.entries.findIndex((e) => e.id === toId);
-    if (from < 0 || to < 0 || from === to) return;
-    const [moved] = this.entries.splice(from, 1);
-    this.entries.splice(to, 0, moved);
-    this.entries.forEach((entry, i) => (entry.index = i));
+    const next = moveInDisplayOrder(this.entries, fromId, toId);
+    if (!next) return;
+    for (const entry of this.entries) {
+      entry.index = next.get(entry.id) ?? entry.index;
+    }
+    this.entries.sort((a, b) => a.index - b.index);
     await saveEntries(this.entries);
     this.#emit("change");
   }
@@ -480,12 +542,25 @@ export class AuthStore {
       await getPlatform().hello?.deleteKey().catch(() => {});
     }
 
+    await this.#credentials?.ready();
     const sealed = await this.#sealVault(password, this.entries, this.#secrets);
-    await saveVaultAndEntries(sealed.vault, sealed.entries);
+
+    // Saved credentials are re-encrypted under the new key in the same write.
+    const oldKey = this.#key;
+    let credentials: StoredCredential[] | undefined;
+    if (this.#credentials && this.#credentials.count() > 0) {
+      if (!oldKey) throw new Error("Unlock first");
+      credentials = await this.#credentials.reseal(
+        (blob) => decryptString(oldKey, blob),
+        (plain) => encryptString(sealed.key, plain),
+      );
+    }
+    await saveVaultAndEntries(sealed.vault, sealed.entries, credentials);
 
     this.#key = sealed.key;
     this.vault = sealed.vault;
     this.entries = sealed.entries;
+    if (credentials) this.#credentials?.adopt(credentials);
     this.touch();
     this.#emit("password");
   }
@@ -504,6 +579,13 @@ export class AuthStore {
   async removePassword(currentPassword: string): Promise<void> {
     if (this.locked) throw new Error("Unlock first");
     await this.#deriveAndVerify(currentPassword); // throws on wrong password
+    // Credential Manager passwords have no unencrypted mode.
+    await this.#credentials?.ready();
+    if (this.#credentials && this.#credentials.count() > 0) {
+      throw new Error(
+        "The Credential Manager has saved logins, which must stay encrypted. Delete them (and empty its Trash) before removing the password.",
+      );
+    }
 
     // No password → no vault key → nothing for Hello to unwrap.
     if (this.helloEnabled) {
@@ -542,6 +624,9 @@ export class AuthStore {
       throw new Error("Set an encryption password first");
     }
     const entries = this.exportables();
+    await this.#credentials?.ready();
+    const credentials =
+      (await this.#credentials?.exportPlain((blob) => decryptString(key, blob))) ?? [];
     const settings: CloudBackupSettings = {
       autoLockMinutes: this.settings.autoLockMinutes,
       clipboardClear: this.settings.clipboardClear,
@@ -555,10 +640,14 @@ export class AuthStore {
       device,
       entries,
       settings,
+      credentials,
     });
 
     const check = await openCloudBackup(parseCloudBackup(text), key);
-    if (check.entryCount !== entries.length) {
+    if (
+      check.entryCount !== entries.length ||
+      check.credentials.length !== credentials.length
+    ) {
       throw new Error("Backup self-check failed");
     }
     return text;
@@ -618,6 +707,7 @@ export class AuthStore {
     if (!this.encrypted && !password) {
       throw new Error("The backup's password is required to restore it");
     }
+    await this.#credentials?.ready();
 
     const secrets = new Map<string, string>();
     const kept: StoredEntry[] = [];
@@ -668,6 +758,19 @@ export class AuthStore {
       created.push(entry);
     }
 
+    // Credential Manager records ride along in the same transaction. A
+    // backup from before the Credential Manager (no credentials digest)
+    // leaves existing credentials alone even in "replace" mode — it has no
+    // opinion about them, so rolling back must not erase them.
+    const backupHasCredentials = payload.credentialsDigest !== "";
+    const restoreCredentials = async (encrypt: Encrypt) =>
+      this.#credentials &&
+      backupHasCredentials &&
+      (payload.credentials.length > 0 || mode === "replace")
+        ? this.#credentials.restore(payload.credentials, mode, encrypt)
+        : null;
+
+    let credentialResult: Awaited<ReturnType<typeof restoreCredentials>>;
     if (this.encrypted) {
       const key = this.#key;
       const vault = this.vault;
@@ -676,7 +779,12 @@ export class AuthStore {
         entry.secret = { enc: await encryptString(key, secrets.get(entry.id) ?? "") };
       }
       const all = [...kept, ...created];
-      await saveVaultAndEntries($state.snapshot(vault) as VaultConfig, all);
+      credentialResult = await restoreCredentials((plain) => encryptString(key, plain));
+      await saveVaultAndEntries(
+        $state.snapshot(vault) as VaultConfig,
+        all,
+        credentialResult?.records,
+      );
       this.entries = all;
       this.#secrets = secrets;
     } else {
@@ -685,17 +793,24 @@ export class AuthStore {
         [...kept, ...created],
         secrets,
       );
-      await saveVaultAndEntries(sealed.vault, sealed.entries);
+      credentialResult = await restoreCredentials((plain) => encryptString(sealed.key, plain));
+      await saveVaultAndEntries(sealed.vault, sealed.entries, credentialResult?.records);
       this.#key = sealed.key;
       this.vault = sealed.vault;
       this.entries = sealed.entries;
       this.#secrets = secrets;
       this.#emit("password");
     }
+    if (credentialResult) this.#credentials?.adopt(credentialResult.records);
 
     this.touch();
     this.#emit("change");
-    return { added: created.length, skipped };
+    return {
+      added: created.length,
+      skipped,
+      credentialsAdded: credentialResult?.added ?? 0,
+      credentialsSkipped: credentialResult?.skipped ?? 0,
+    };
   }
 
   async updateSettings(patch: Partial<AuthSettings>): Promise<void> {
@@ -709,6 +824,7 @@ export class AuthStore {
       await getPlatform().hello?.deleteKey().catch(() => {});
     }
     await wipeAll();
+    this.#credentials?.clear();
     this.entries = [];
     this.#secrets.clear();
     this.#key = null;

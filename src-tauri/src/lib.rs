@@ -182,6 +182,23 @@ fn write_binary_file(
     fs::write(&canonical, contents).map_err(|e| format!("Could not write file: {e}"))
 }
 
+/// Open a saved login page (Credential Manager) in the system browser.
+///
+/// Only absolute http(s) URLs with a host are accepted, re-serialized by the
+/// URL parser before use — so a page can't launch file:, custom-protocol or
+/// shell handlers through this command.
+#[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    if url.len() > 2048 {
+        return Err("invalid_url".into());
+    }
+    let parsed = reqwest::Url::parse(&url).map_err(|_| "invalid_url".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err("invalid_url".into());
+    }
+    cloud::open_browser(parsed.as_str())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -194,6 +211,7 @@ pub fn run() {
             read_text_file,
             write_text_file,
             write_binary_file,
+            open_external_url,
             hello::hello_available,
             hello::hello_create_key,
             hello::hello_sign,
@@ -207,7 +225,8 @@ pub fn run() {
             cloud::cloud_list,
             cloud::cloud_upload,
             cloud::cloud_download,
-            cloud::cloud_delete
+            cloud::cloud_delete,
+            cloud::cloud_open_drive_settings
         ])
         .run(tauri::generate_context!())
         .expect("error while running CoreTools");

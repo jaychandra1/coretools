@@ -66,8 +66,9 @@ be audited rather than taken on faith.
 ## 3. Minimal, guarded native surface
 
 The Rust backend (`src-tauri/src/lib.rs`, `src-tauri/src/hello.rs`,
-`src-tauri/src/cloud.rs`) exposes exactly nineteen commands: five for files,
-five for Windows Hello, nine for cloud backup. **The dialog-origin rule is enforced in Rust, not by
+`src-tauri/src/cloud.rs`) exposes exactly twenty-one commands: five for
+files, one to open a saved login page, five for Windows Hello, ten for cloud
+backup. **The dialog-origin rule is enforced in Rust, not by
 frontend convention:** the file dialogs are opened by Rust
 (`pick_open_path` / `pick_save_path`), every path they issue is canonicalized
 and stored in managed state, and each read/write command accepts only a
@@ -83,6 +84,7 @@ webview holds no dialog capability of its own
 | `read_text_file(path)` | Read a user-selected file | Path must match a dialog-issued authorization (single use); must be a regular file; rejected if larger than 50 MiB; read as UTF-8 only |
 | `write_text_file(path, contents)` | Write to a user-selected path | Dialog-issued authorization (single use); refuses writes above 100 MiB |
 | `write_binary_file(path, contents)` | Binary counterpart (e.g. .xlsx exports) | Same single-use authorization; refuses writes above 100 MiB |
+| `open_external_url(url)` | Credential Manager "Open login page" in the system browser | Absolute `http`/`https` URLs with a host only (≤ 2048 chars), re-serialized by the URL parser — no `file:`, custom-protocol or shell handlers |
 | `hello_available()` | Report whether Windows Hello is set up | Read-only capability probe; Windows-only (`false` elsewhere) |
 | `hello_create_key(challenge)` | Create/replace the app's Hello key and sign the enrollment challenge | OS shows the Hello verification prompt; challenge limited to 128 bytes; never sees secrets or passwords |
 | `hello_sign(challenge)` | Sign the stored challenge to unlock | OS enforces a biometric/PIN verification on **every** call; challenge limited to 128 bytes |
@@ -97,6 +99,7 @@ webview holds no dialog capability of its own
 | `cloud_upload(name, content, deviceId, deviceLabel)` | Upload one encrypted backup version | Name must match `coretools-authenticator-*.json` (charset-restricted); content ≤ 5 MiB; labels sanitized and byte-capped; always written to the connected account's app-data folder |
 | `cloud_download(id)` | Fetch one version | Id charset-restricted; response ≤ 5 MiB; UTF-8 only |
 | `cloud_delete(id)` | Delete one version | Id charset-restricted; already-gone counts as success |
+| `cloud_open_drive_settings()` | Open Google Drive settings (Manage apps → CoreTools) | The URL is a constant in Rust; takes no input, so it can't open anything else |
 
 Business logic stays out of the backend, keeping the trusted native surface small.
 The one exception is the OAuth/HTTP plumbing in `cloud.rs`. No
@@ -363,6 +366,48 @@ verifier (itself AES-GCM ciphertext).
   keep the password they were made with.
 - *Wipe all data* disconnects this device but leaves the Drive backups in
   place. *Delete cloud backups* removes every version.
+
+### Credential Manager (same vault)
+
+Saved platform logins live in the same IndexedDB database (`credentials`
+and `audit` stores) and the **same vault** as the Authenticator. One master
+password, plus optional Windows Hello, unlocks both, and auto-lock covers
+both.
+
+- **Encrypted at rest, no exceptions.** Every password and note is AES-256-GCM
+  encrypted under the vault key. The Credential Manager has no unencrypted
+  mode: it asks for a master password before the first save, and the
+  password can't be removed while credentials exist. Metadata (platform,
+  URL, username, category, owner, tags) is stored in the clear for search,
+  like authenticator issuers.
+- **Decrypted on demand only.** Plaintext is produced only for the one
+  credential being shown, copied or edited, and is never held in a store.
+  Shown passwords auto-hide after 20 seconds and are cleared immediately on
+  lock. Copying honours the clipboard auto-clear setting.
+- **Confirm before revealing.** Showing or copying a password requires
+  Windows Hello (`hello_verify_user`) or, where Hello isn't available, the
+  master password. A success is trusted for 60 seconds and ends on lock. This
+  is on by default and can be turned off in settings.
+- **Audit log.** Create, edit, password change, move to trash, restore,
+  permanent delete, password view and password copy are recorded locally
+  (newest 2,000 events) with time and platform name. The log never contains a
+  secret.
+- **Password changes and restores are atomic.** Changing the master password
+  re-encrypts every credential, and a cloud restore writes credentials, in
+  the same IndexedDB transaction as the vault config and authenticator
+  entries.
+- **Access control.** This is a single-user, local application with no
+  accounts or server, so there are no roles to enforce. The controls above
+  (vault lock, per-reveal re-authentication, audit log) are its
+  access-control model. Passwords never cross the IPC boundary into the
+  Rust backend; "Open login page" passes only the URL, which both sides
+  restrict to http(s).
+- **Trash.** Deleting is a soft delete: items can be restored for 30 days,
+  then are purged permanently.
+- **Cloud backup.** Credentials, including trashed ones, travel inside the
+  same end-to-end encrypted payload as the Authenticator, with their own
+  SHA-256 checksum. A rollback to a backup made before the Credential
+  Manager existed leaves current credentials untouched.
 
 ### Legacy-format compatibility (deliberate, contained weakness)
 

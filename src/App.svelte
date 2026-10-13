@@ -4,16 +4,18 @@
   import SentencePolisher from "./lib/components/SentencePolisher.svelte";
   import Authenticator from "./lib/components/authenticator/Authenticator.svelte";
   import JsonStudio from "./lib/components/json-studio/JsonStudio.svelte";
+  import CredentialManager from "./lib/components/credentials/CredentialManager.svelte";
   import { cloudBackup } from "./lib/components/authenticator/cloud.svelte";
   import { getPlatform } from "./lib/platform";
 
-  type Tab = "diff" | "yaml" | "polish" | "authenticator" | "json";
+  type Tab = "diff" | "yaml" | "polish" | "authenticator" | "credentials" | "json";
   let tab = $state<Tab>("diff");
 
   const platform = getPlatform();
 
   // Connectivity badge — must tell the truth per section. Every tool is
-  // offline except the Authenticator once Google Drive backup is connected;
+  // offline except the vault sections (Authenticator, Credential Manager)
+  // once Google Drive backup is connected;
   // and while a backup/sign-in is actually running (debounced backups can
   // finish after the user switched tabs) it reads "Online" wherever you are.
   // The badge only observes: it never starts cloud activity itself.
@@ -22,10 +24,11 @@
       return {
         online: true,
         label: "Online · Syncing…",
-        title: "Talking to Google Drive for Authenticator backup (end-to-end encrypted). Other tools stay offline.",
+        title: "Talking to Google Drive for the encrypted vault backup (Authenticator + Credential Manager). Other tools stay offline.",
       };
     }
-    if (tab === "authenticator" && cloudBackup.connected) {
+    const vaultTab = tab === "authenticator" || tab === "credentials";
+    if (vaultTab && cloudBackup.connected) {
       return {
         online: true,
         label: "Online · Drive backup",
@@ -36,8 +39,8 @@
       online: false,
       label: "Offline",
       title:
-        tab === "authenticator" && cloudBackup.available
-          ? "This section is offline. Connect Google Drive backup in Authenticator settings to back up (end-to-end encrypted)."
+        vaultTab && cloudBackup.available
+          ? "This section is offline. Connect Google Drive backup in settings to back up (end-to-end encrypted)."
           : "Everything in this tool runs locally. No network access.",
     };
   });
@@ -77,6 +80,12 @@
         onclick={() => (tab = "authenticator")}
       >
         Authenticator
+      </button>
+      <button
+        class:active={tab === "credentials"}
+        onclick={() => (tab = "credentials")}
+      >
+        Credential-Manager
       </button>
       <button class:active={tab === "json"} onclick={() => (tab = "json")}>
         JSON-Studio
@@ -119,6 +128,8 @@
           <SentencePolisher />
         {:else if tab === "authenticator"}
           <Authenticator />
+        {:else if tab === "credentials"}
+          <CredentialManager />
         {:else}
           <JsonStudio />
         {/if}

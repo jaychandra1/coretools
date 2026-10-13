@@ -9,6 +9,44 @@ Releases are cut with `npm version X.Y.Z -m "release: v%s"`, then
 the version everywhere else. CI refuses a tag that doesn't match
 `package.json`.
 
+## [Unreleased]
+
+### Added
+
+- **Credential Manager** (new tab): store platform logins — name, login URL,
+  username, password, notes, category, owner and tags — in the same
+  encrypted vault as the Authenticator (one master password / Windows Hello
+  unlock). Passwords and notes are AES-256-GCM encrypted and decrypted only
+  on demand. Features:
+  - a table on desktop and cards on narrow windows;
+  - eye toggle to show or hide passwords (auto-hides after 20 s);
+  - one-click copy of username, password and URL, with toasts;
+  - open the login page in your browser;
+  - hover tooltips on every action;
+  - search (platform, URL, username, tags) and filters (category, owner,
+    creation date);
+  - add, edit and delete; delete moves to a Trash with undo, restore, and
+    automatic purge after 30 days;
+  - a strong-password generator with a strength meter.
+- **Security for credentials**: showing or copying a password asks for
+  Windows Hello or the master password, then trusts the session for a
+  minute (can be turned off in settings). A local **activity log** records
+  every create, edit, delete, restore, password view and copy, and never
+  logs secrets. Credentials are included in the end-to-end encrypted Google
+  Drive backup and restore.
+- Cloud backup panel redesign: status pill, last-backup / versions / encryption
+  tiles, an automatic-backup switch, and where the backup lives in Google
+  Drive (hidden app data → CoreTools, newest file name) with a button to open
+  Drive settings.
+
+### Fixed
+
+- **Authenticator drag-to-reorder** works in the desktop app. Tauri's
+  file-drop handling was swallowing the page's drag events on Windows, which
+  also blocked dropping a QR image into Add Account. Reordering now follows
+  the order on screen, so pinned accounts no longer send a dropped card to
+  the wrong place.
+
 ## [1.0.1] — 2026-10-12
 
 ### Added

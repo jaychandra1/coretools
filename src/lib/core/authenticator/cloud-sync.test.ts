@@ -202,6 +202,11 @@ describe("performBackup", () => {
     const outcome = await performBackup({ ...base, transport, lastSyncedRemoteId: `v${MAX_VERSIONS - 1}` });
     expect(outcome.kind === "uploaded" && outcome.pruned).toEqual(["v0"]);
     expect(transport.files).toHaveLength(MAX_VERSIONS);
+    // The reported versions match what's actually left, newest first.
+    if (outcome.kind !== "uploaded") throw new Error("expected upload");
+    expect(outcome.versions).toHaveLength(MAX_VERSIONS);
+    expect(outcome.versions[0].id).toBe(outcome.file.id);
+    expect(outcome.versions.map((v) => v.id)).not.toContain("v0");
   });
 
   it("propagates transport failures with nothing deleted", async () => {

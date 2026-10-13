@@ -1,6 +1,6 @@
 <script lang="ts">
   import Modal from "./Modal.svelte";
-  import { authStore } from "./store.svelte";
+  import { authStore, type RestoreResult } from "./store.svelte";
   import { cloudBackup } from "./cloud.svelte";
   import { accountKey } from "../../core/authenticator/backup";
   import {
@@ -38,7 +38,7 @@
   /** The password that decrypted the backup (needed to create a fresh vault). */
   let usedPassword = $state<string | undefined>(undefined);
   let mode = $state<"merge" | "replace">("merge");
-  let restored = $state<{ added: number; skipped: number } | null>(null);
+  let restored = $state<RestoreResult | null>(null);
   /** The restore created the vault (fresh install) with the backup's password. */
   let createdVault = $state(false);
 
@@ -186,7 +186,11 @@
       usedPassword = undefined;
       createdVault = wasFresh;
       step = "done";
-      ontoast(`Restored ${plural(restored.added, "account")}`);
+      ontoast(
+        restored.credentialsAdded
+          ? `Restored ${plural(restored.added, "account")} and ${plural(restored.credentialsAdded, "credential")}`
+          : `Restored ${plural(restored.added, "account")}`,
+      );
     } catch (e) {
       error = errorText(e);
     } finally {
@@ -284,7 +288,10 @@
     </form>
   {:else if step === "review" && payload && selected}
     <div class="summary">
-      <strong>{plural(payload.entries.length, "account")}</strong>
+      <strong>
+        {plural(payload.entries.length, "account")}{#if payload.credentials.length}
+          · {plural(payload.credentials.length, "saved credential")}{/if}
+      </strong>
       <span class="muted">
         backed up {formatTime(selected.createdTime)} on
         {selected.deviceLabel || "another device"} · integrity verified
@@ -348,9 +355,13 @@
     </div>
   {:else if step === "done" && restored}
     <p>
-      <strong>Restored {plural(restored.added, "account")}.</strong>
-      {#if restored.skipped}
-        {restored.skipped} already on this device {restored.skipped === 1 ? "was" : "were"} skipped.
+      <strong>
+        Restored {plural(restored.added, "account")}{#if restored.credentialsAdded}
+          and {plural(restored.credentialsAdded, "credential")}{/if}.
+      </strong>
+      {#if restored.skipped + restored.credentialsSkipped}
+        {restored.skipped + restored.credentialsSkipped} already on this device
+        {restored.skipped + restored.credentialsSkipped === 1 ? "was" : "were"} skipped.
       {/if}
     </p>
     {#if createdVault}

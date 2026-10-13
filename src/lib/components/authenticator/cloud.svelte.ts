@@ -18,6 +18,7 @@
  */
 
 import { authStore, type AuthEvent, type RestoreResult } from "./store.svelte";
+import { credentialStore } from "../credentials/credentials.svelte";
 import { getPlatform } from "../../platform";
 import {
   loadCloudConfig,
@@ -100,6 +101,8 @@ export class CloudBackupController {
   lastError = $state<string | null>(null);
   /** When the next automatic retry fires (ms), or null. */
   retryAt = $state<number | null>(null);
+  /** Backup versions in Drive, newest first; null until first known. */
+  versions = $state<RemoteBackup[] | null>(null);
 
   #bridge = getPlatform().cloud ?? null;
   #initPromise: Promise<void> | null = null;
@@ -197,6 +200,10 @@ export class CloudBackupController {
     if (this.#suppressChanges || !this.connected || !this.config) return;
 
     if (event === "change" || event === "password") {
+      // A password now exists: drop the "set a password first" warning.
+      if (event === "password" && authStore.encrypted && this.notice?.kind === "warning") {
+        this.notice = null;
+      }
       this.#changeSeq++;
       if (!this.config.dirty) void this.#update({ dirty: true });
       if (event === "password" && !authStore.encrypted) {
@@ -282,6 +289,7 @@ export class CloudBackupController {
 
       this.conflict = null;
       this.lastError = null;
+      this.versions = outcome.versions;
       this.#clearRetry();
       await this.#update({
         lastBackupAt: Date.now(),
@@ -439,6 +447,7 @@ export class CloudBackupController {
   #resetConnection(): void {
     clearTimeout(this.#debounce);
     this.#clearRetry();
+    this.versions = null;
     this.account = null;
     this.conflict = null;
     this.needsReconnect = false;
@@ -478,6 +487,7 @@ export class CloudBackupController {
     }
     clearTimeout(this.#debounce);
     this.conflict = null;
+    this.versions = failed ? null : [];
     await this.#update({
       lastBackupAt: null,
       lastBackupId: null,
@@ -496,6 +506,29 @@ export class CloudBackupController {
     return deleted;
   }
 
+  /**
+   * Refresh the version list for display (count, size, newest file). Quiet:
+   * no activity state, no notices — a failure just leaves the old list.
+   */
+  async refreshVersions(): Promise<void> {
+    const bridge = this.#bridge;
+    if (!bridge || !this.account || this.needsReconnect) return;
+    try {
+      this.versions = sortNewestFirst(await bridge.list());
+    } catch {
+      // Display-only; the status line already reports real backup failures.
+    }
+  }
+
+  /** Open Google Drive settings, where the hidden backup data is managed. */
+  async openDriveSettings(): Promise<void> {
+    try {
+      await this.#bridge?.openDriveSettings();
+    } catch (e) {
+      this.notice = { kind: "error", text: describeCloudError(e).message };
+    }
+  }
+
   // ---- restore ----------------------------------------------------------------
 
   async listBackups(): Promise<RemoteBackup[]> {
@@ -503,7 +536,9 @@ export class CloudBackupController {
     if (!bridge) return [];
     this.activity = "listing";
     try {
-      return sortNewestFirst(await bridge.list());
+      const list = sortNewestFirst(await bridge.list());
+      this.versions = list;
+      return list;
     } finally {
       this.activity = null;
     }
@@ -549,7 +584,7 @@ export class CloudBackupController {
     await authStore.verifyUserPresence();
 
     const fresh = !authStore.encrypted;
-    const hadEntries = authStore.entries.length > 0;
+    const hadEntries = authStore.entries.length > 0 || credentialStore.items.length > 0;
     this.activity = "restoring";
     this.#suppressChanges = true;
     let result: RestoreResult;
@@ -575,7 +610,10 @@ export class CloudBackupController {
       kind: "success",
       text:
         `Restored ${plural(result.added, "account")}` +
-        (result.skipped ? ` (${result.skipped} already on this device).` : "."),
+        (result.credentialsAdded ? ` and ${plural(result.credentialsAdded, "credential")}` : "") +
+        (result.skipped + result.credentialsSkipped
+          ? ` (${result.skipped + result.credentialsSkipped} already on this device).`
+          : "."),
     };
     if (!matchesNewest && this.connected && authStore.encrypted && this.config?.autoBackup) {
       void this.backupNow({ auto: true }); // auto: keep the restore message
