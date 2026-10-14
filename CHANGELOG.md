@@ -13,6 +13,25 @@ followed by `git push origin HEAD --follow-tags` still works.
 
 ## [Unreleased]
 
+### Added
+
+- **Spaces in the Credential Manager.** Split your logins into tabs such as
+  Personal, Dev team or Organisation. Each login can be in one space, and
+  All always lists every login. Create a space from the tab bar or while
+  adding or editing a login; rename, merge or remove spaces under *Manage
+  spaces* (removing one never deletes logins). The space is encrypted with
+  the rest of the login's details and included in backups. Backups and
+  logins from earlier versions open with no space, under All.
+
+### Changed
+
+- **Uninstalling on Windows with "Delete the application data" ticked now
+  also signs this computer out of Google Drive backup.** The sign-in is kept
+  in Windows Credential Manager, which uninstalling never touched, so a
+  reinstall showed the account as still connected. A plain uninstall, and
+  every update, still keep it. To also revoke access at Google, use
+  *Disconnect* before uninstalling.
+
 ## [1.2.0] — 2026-10-13
 
 ### Upgrade notes

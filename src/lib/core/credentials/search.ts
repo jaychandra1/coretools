@@ -1,7 +1,7 @@
 /**
  * Search and filters for the credential list — pure, so they're unit-tested.
  * Search covers metadata only (platform, URL, username, tags, category,
- * owner); passwords and notes are encrypted and never searched.
+ * owner, space); passwords and notes are encrypted and never searched.
  */
 
 import type { CredentialFields } from "./types";
@@ -63,6 +63,7 @@ export function matchesQuery(item: Searchable, query: string): boolean {
     item.username,
     item.category,
     item.owner,
+    item.space,
     ...item.tags.map((t) => `#${t}`),
     ...item.tags,
   ]

@@ -51,6 +51,7 @@ import {
   type ChainStatus,
 } from "../../core/credentials/audit-chain";
 import { tombstoneKey, type Tombstone } from "../../core/authenticator/tombstones";
+import { normalizeSpaceName } from "../../core/credentials/spaces";
 
 /** How long a successful reveal check is trusted. */
 const REVEAL_GRACE_MS = 60_000;
@@ -72,6 +73,7 @@ const BLANK_FIELDS: CredentialFields = {
   category: "",
   owner: "",
   tags: [],
+  space: "",
 };
 
 function clean(fields: CredentialFields): CredentialFields {
@@ -82,6 +84,8 @@ function clean(fields: CredentialFields): CredentialFields {
     category: fields.category.trim(),
     owner: fields.owner.trim(),
     tags: [...fields.tags],
+    // Absent in records and backups made before spaces existed.
+    space: normalizeSpaceName(fields.space ?? ""),
   };
 }
 
@@ -101,6 +105,13 @@ export class CredentialStore {
   audit = $state<AuditEvent[]>([]);
   /** What verifying the audit log proved (F-19); null until loaded. */
   auditStatus = $state<ChainStatus | null>(null);
+  /** The space tab on screen ("" = All); kept while switching app tabs. */
+  activeSpace = $state("");
+  /**
+   * Spaces created this session that no login uses yet. Memory only: a space
+   * is saved by the logins filed under it.
+   */
+  pendingSpaces = $state<string[]>([]);
 
   #initPromise: Promise<void> | null = null;
   #trustedUntil = 0;
@@ -126,7 +137,12 @@ export class CredentialStore {
     await authStore.init();
     this.items = await loadCredentials();
     authStore.subscribe((event) => {
-      if (event === "lock" || event === "wipe") this.#trustedUntil = 0;
+      if (event === "lock" || event === "wipe") {
+        this.#trustedUntil = 0;
+        // Space names are login metadata: nothing of them stays in view when locked.
+        this.activeSpace = "";
+        this.pendingSpaces = [];
+      }
       if (event === "unlock") void this.#afterUnlock();
     });
     this.ready = true;
@@ -162,6 +178,8 @@ export class CredentialStore {
         this.audit = [];
         this.auditStatus = null;
         this.#trustedUntil = 0;
+        this.activeSpace = "";
+        this.pendingSpaces = [];
       },
     };
   }
@@ -193,7 +211,7 @@ export class CredentialStore {
         const fields = JSON.parse(await crypto.decrypt(record.meta)) as CredentialFields;
         view.push({ ...record, ...clean(fields) });
       } else {
-        view.push(record);
+        view.push({ ...record, ...clean(record) });
         unsealed = true;
       }
     }
@@ -471,6 +489,32 @@ export class CredentialStore {
       passwordChanged ? [[next, "updated"], [next, "password-changed"]] : [[next, "updated"]],
     );
     this.#changed();
+  }
+
+  /**
+   * File logins under `space` ("" = no space) in one write: moving a login,
+   * renaming a space (all its logins, trashed ones included, so a restore
+   * lands in the renamed space) or removing one (its logins stay saved).
+   */
+  async moveToSpace(ids: readonly string[], space: string): Promise<number> {
+    this.#requireVault();
+    const target = normalizeSpaceName(space);
+    const now = Date.now();
+    const moved = this.items
+      .filter((c) => ids.includes(c.id) && c.space !== target)
+      .map((c) => ({ ...snapshot(c), space: target, updatedAt: now }));
+    if (moved.length === 0) return 0;
+    await this.#persist(moved);
+    const byId = new Map(moved.map((c) => [c.id, c]));
+    this.items = this.items.map((c) => byId.get(c.id) ?? c);
+    await this.#log(moved.map((c) => [c, "updated"] as const));
+    this.#changed();
+    return moved.length;
+  }
+
+  /** Ids of every login (trash included) filed under `space`. */
+  idsInSpace(space: string): string[] {
+    return space ? this.items.filter((c) => c.space === space).map((c) => c.id) : [];
   }
 
   /** Soft delete: moves to the trash (restorable for 30 days). */

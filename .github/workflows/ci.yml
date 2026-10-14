@@ -233,6 +233,38 @@ jobs:
         continue-on-error: true
         run: cargo clippy --all-targets -- -D warnings
 
+      # installer/hooks.nsh forgets the Google sign-in only when "Delete the
+      # application data" is ticked — never when an update runs the old
+      # uninstaller. Run all three cases against a throwaway credential with
+      # the real name (this runner is discarded afterwards).
+      - name: Uninstaller hook
+        if: steps.changes.outputs.rust == 'true'
+        working-directory: src-tauri/installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $makensis = "${env:ProgramFiles(x86)}\NSIS\makensis.exe"
+          if (-not (Test-Path $makensis)) { choco install nsis -y --no-progress | Out-Null }
+          $target = 'google.io.coretools.authenticator.cloud'
+          function Test-SignIn {
+            [bool]((cmdkey "/list:$target") -match "Target:.*$([regex]::Escape($target))")
+          }
+          function Invoke-Hook([int]$update, [int]$deleteAppData) {
+            $exe = Join-Path $env:RUNNER_TEMP "hook-$update-$deleteAppData.exe"
+            & $makensis /V2 "/DOUT=$exe" "/DUPDATE=$update" "/DDELETE_APP_DATA=$deleteAppData" hooks.test.nsi
+            if ($LASTEXITCODE -ne 0) { throw "makensis failed ($LASTEXITCODE)" }
+            Start-Process -FilePath $exe -Wait
+          }
+          cmdkey "/generic:$target" /user:google /pass:ci-placeholder | Out-Null
+          if (-not (Test-SignIn)) { throw 'Could not create the test credential' }
+          Invoke-Hook 1 1
+          if (-not (Test-SignIn)) { throw 'An update removed the Google sign-in' }
+          Invoke-Hook 0 0
+          if (-not (Test-SignIn)) { throw 'A plain uninstall removed the Google sign-in' }
+          Invoke-Hook 0 1
+          if (Test-SignIn) { throw '"Delete the application data" left the Google sign-in behind' }
+          Write-Host 'Uninstaller hook: sign-in kept on update and plain uninstall, removed with app data.'
+
   promote-web:
     # Vercel deploys the `production` branch, not `master` (vercel.json
     # disables master deployments). This job moves `production` to a master

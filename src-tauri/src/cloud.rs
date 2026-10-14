@@ -49,6 +49,8 @@ const DRIVE_SCOPE: &str = "https://www.googleapis.com/auth/drive.appdata";
 /// `openid email` only to show which account is connected.
 const SCOPES: &str = "openid email https://www.googleapis.com/auth/drive.appdata";
 
+/// Renaming these orphans existing sign-ins, and the Windows uninstaller
+/// deletes the entry by name (installer/hooks.nsh) — change both together.
 const KEYRING_SERVICE: &str = "io.coretools.authenticator.cloud";
 const KEYRING_USER: &str = "google";
 
@@ -877,6 +879,15 @@ mod tests {
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
         let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         assert_eq!(challenge, "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM");
+    }
+
+    // The Windows uninstaller deletes this keychain entry by name
+    // (installer/hooks.nsh); keyring stores it as "<user>.<service>".
+    #[test]
+    fn uninstaller_hook_deletes_this_keychain_entry() {
+        let hooks = include_str!("../installer/hooks.nsh");
+        let target = format!("w \"{KEYRING_USER}.{KEYRING_SERVICE}\"");
+        assert!(hooks.contains(&target), "installer/hooks.nsh must delete {target}");
     }
 
     #[test]

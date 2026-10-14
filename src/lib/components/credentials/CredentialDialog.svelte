@@ -5,9 +5,18 @@
   import { normalizeUrl, UrlError } from "../../core/credentials/url";
   import { parseTags } from "../../core/credentials/search";
   import { generatePassword, passwordStrength } from "../../core/credentials/generate";
+  import { focusOnMount } from "../../focus";
+  import {
+    canonicalSpace,
+    spaceHue,
+    spaceNameError,
+    spaceNames,
+    SPACE_NAME_MAX,
+  } from "../../core/credentials/spaces";
 
   let {
     credential = null,
+    defaultSpace = "",
     suggestions,
     loadSecret,
     onsave,
@@ -15,7 +24,9 @@
   }: {
     /** Present when editing. */
     credential?: StoredCredential | null;
-    suggestions: { categories: string[]; owners: string[]; tags: string[] };
+    /** Adding: the space tab on screen, preselected. */
+    defaultSpace?: string;
+    suggestions: { categories: string[]; owners: string[]; tags: string[]; spaces: string[] };
     /** Decrypt the current password/notes (gated + audited by the store). */
     loadSecret: (kind: "password" | "notes") => Promise<string | null>;
     onsave: (input: CredentialInput) => Promise<void>;
@@ -36,6 +47,16 @@
   let owner = $state(credential?.owner ?? "");
   // svelte-ignore state_referenced_locally
   let tagsText = $state(credential?.tags.join(", ") ?? "");
+  // svelte-ignore state_referenced_locally
+  let spaceChoice = $state(credential ? credential.space : defaultSpace);
+  /** Typing the name of a space that doesn't exist yet. */
+  let creatingSpace = $state(false);
+  let newSpaceName = $state("");
+  let spaceError = $state("");
+  // svelte-ignore state_referenced_locally — includes a just-created, still empty space.
+  const spaceOptions = spaceNames([], [...suggestions.spaces, spaceChoice]);
+  /** The "New space…" option; no real name can match (control characters are stripped). */
+  const NEW_SPACE = "\u0000new";
   let password = $state("");
   let notes = $state("");
   let showPassword = $state(false);
@@ -66,6 +87,22 @@
       urlError = e instanceof UrlError ? e.message : "Invalid link";
       return null;
     }
+  }
+
+  function pickSpace(event: Event) {
+    const select = event.currentTarget as HTMLSelectElement;
+    if (select.value === NEW_SPACE) {
+      select.value = spaceChoice;
+      creatingSpace = true;
+      return;
+    }
+    spaceChoice = select.value;
+  }
+
+  function cancelNewSpace() {
+    creatingSpace = false;
+    newSpaceName = "";
+    spaceError = "";
   }
 
   function generate() {
@@ -108,6 +145,12 @@
     }
     const normalized = checkUrl();
     if (normalized === null) return;
+    let space = spaceChoice;
+    if (creatingSpace) {
+      spaceError = spaceNameError(newSpaceName) ?? "";
+      if (spaceError) return;
+      space = canonicalSpace(newSpaceName, spaceOptions);
+    }
 
     const changedPassword = editing
       ? passwordDirty && password !== loadedPassword
@@ -125,6 +168,7 @@
         category,
         owner,
         tags,
+        space,
         password: changedPassword,
         notes: changedNotes,
       });
@@ -141,8 +185,12 @@
     <div class="grid">
       <label class="field span-2">
         <span class="label">Platform / application <em>*</em></span>
-        <!-- svelte-ignore a11y_autofocus -->
-        <input bind:value={platform} placeholder="AWS Production" autocomplete="off" autofocus={!editing} />
+        <input
+          bind:value={platform}
+          placeholder="AWS Production"
+          autocomplete="off"
+          {@attach editing ? undefined : focusOnMount}
+        />
       </label>
 
       <label class="field span-2">
@@ -203,6 +251,37 @@
         {/if}
       </div>
 
+      <div class="field">
+        <span class="label" id="space-label">Space</span>
+        {#if creatingSpace}
+          <div class="space-new">
+            <input
+              bind:value={newSpaceName}
+              oninput={() => (spaceError = "")}
+              maxlength={SPACE_NAME_MAX}
+              placeholder="Dev team"
+              autocomplete="off"
+              aria-labelledby="space-label"
+              class:invalid={spaceError}
+              {@attach focusOnMount}
+            />
+            <button type="button" class="ghost" onclick={cancelNewSpace}>Cancel</button>
+          </div>
+        {:else}
+          <div class="space-pick">
+            {#if spaceChoice}
+              <span class="dot" style="background: hsl({spaceHue(spaceChoice)}, 60%, 55%)" aria-hidden="true"></span>
+            {/if}
+            <select value={spaceChoice} onchange={pickSpace} aria-labelledby="space-label">
+              <option value="">No space (All only)</option>
+              {#each spaceOptions as s (s)}<option value={s}>{s}</option>{/each}
+              <option value={NEW_SPACE}>New space…</option>
+            </select>
+          </div>
+        {/if}
+        {#if spaceError}<span class="field-error">{spaceError}</span>{/if}
+      </div>
+
       <label class="field">
         <span class="label">Category</span>
         <input bind:value={category} list="cred-categories" placeholder="Cloud" autocomplete="off" />
@@ -219,7 +298,7 @@
         </datalist>
       </label>
 
-      <label class="field span-2">
+      <label class="field">
         <span class="label">Tags <span class="hint">comma-separated</span></span>
         <input bind:value={tagsText} placeholder="prod, infra" autocomplete="off" />
         {#if tags.length}
@@ -299,7 +378,8 @@
     margin-left: 4px;
   }
   input,
-  textarea {
+  textarea,
+  select {
     font-family: inherit;
     font-size: 13px;
     padding: 9px 11px;
@@ -318,7 +398,8 @@
     letter-spacing: 0.02em;
   }
   input:focus-visible,
-  textarea:focus-visible {
+  textarea:focus-visible,
+  select:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: 1px;
   }
@@ -329,9 +410,35 @@
     color: var(--danger);
     font-size: 11.5px;
   }
-  .pw-row {
+  .pw-row,
+  .space-new {
     display: flex;
     gap: 6px;
+  }
+  .space-new input {
+    flex: 1;
+  }
+  .space-pick {
+    position: relative;
+    display: flex;
+  }
+  .space-pick select {
+    flex: 1;
+  }
+  .space-pick .dot {
+    position: absolute;
+    left: 11px;
+    top: 50%;
+    transform: translateY(-50%);
+    pointer-events: none;
+  }
+  .space-pick .dot + select {
+    padding-left: 26px;
+  }
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
   }
   .pw-row input {
     flex: 1;

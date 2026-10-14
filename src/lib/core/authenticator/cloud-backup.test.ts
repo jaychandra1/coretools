@@ -226,6 +226,7 @@ describe("cloud backup: Credential Manager records", () => {
       notes: "MFA on the yubikey",
       category: "Cloud",
       owner: "Platform team",
+      space: "Dev team",
       tags: ["prod"],
       createdAt: 1_760_000_000_000,
       updatedAt: 1_760_000_100_000,
@@ -241,6 +242,7 @@ describe("cloud backup: Credential Manager records", () => {
       category: "",
       owner: "",
       tags: [],
+      space: "",
       createdAt: 1_700_000_000_000,
       updatedAt: 1_700_000_000_000,
       passwordUpdatedAt: 1_700_000_000_000,
@@ -356,6 +358,30 @@ describe("cloud backup: Credential Manager records", () => {
       settings: null,
       credentials: CREDENTIALS,
     });
+  });
+
+  it("reads backups made before spaces existed as having no space", async () => {
+    const file = parseCloudBackup(await sealWith(CREDENTIALS));
+    const json = JSON.parse(await decryptPayload(file));
+    for (const c of json.credentials) delete c.space;
+    json.credentialsDigest = await sha256Hex(JSON.stringify(json.credentials));
+    const payload = await openCloudBackup(await resealPayload(file, json), key);
+    expect(payload.credentials.map((c) => c.space)).toEqual(["", ""]);
+    expect(payload.credentials[0]).toMatchObject({ platform: "AWS Production", owner: "Platform team" });
+  });
+
+  it("tidies space names and rejects a malformed one", async () => {
+    const tidy = await openCloudBackup(
+      parseCloudBackup(await sealWith([{ ...CREDENTIALS[0], space: "  Dev   team " }])),
+      key,
+    );
+    expect(tidy.credentials[0].space).toBe("Dev team");
+
+    const file = parseCloudBackup(await sealWith(CREDENTIALS));
+    const json = JSON.parse(await decryptPayload(file));
+    json.credentials[0].space = 42;
+    json.credentialsDigest = await sha256Hex(JSON.stringify(json.credentials));
+    await expectCode(openCloudBackup(await resealPayload(file, json), key), "corrupt");
   });
 
   it("detects a credentials checksum mismatch", async () => {

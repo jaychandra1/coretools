@@ -5,7 +5,7 @@
  * password (and optional Windows Hello unlock), one AES-256-GCM data key.
  * Everything identifying is encrypted at rest: the password and notes each
  * in their own blob, and the searchable metadata (platform, URL, username,
- * category, owner, tags) sealed together in `meta` (audit F-14) — search
+ * category, owner, tags, space) sealed together in `meta` (audit F-14) — search
  * runs over the copy decrypted into memory after unlock. There is no
  * unencrypted mode.
  */
@@ -23,6 +23,8 @@ export interface CredentialFields {
   /** Free-text owner (person/team the login belongs to); "" when unset. */
   owner: string;
   tags: string[];
+  /** The space (tab) it's filed under, e.g. "Personal"; "" = none, listed under All only. */
+  space: string;
 }
 
 /**

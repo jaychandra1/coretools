@@ -33,6 +33,7 @@ import type { AuthSettings } from "./db";
 import type { ExportableEntry } from "./backup";
 import type { BackupKind } from "./cloud-sync";
 import type { BackupCredential } from "../credentials/types";
+import { normalizeSpaceName } from "../credentials/spaces";
 import { isValidBase32, normalizeBase32 } from "./base32";
 import type { OtpAlgorithm, OtpType } from "./types";
 import {
@@ -305,6 +306,7 @@ export async function sealCloudBackup(input: SealInput): Promise<string> {
       category: c.category,
       owner: c.owner,
       tags: [...c.tags],
+      space: c.space,
       createdAt: c.createdAt,
       updatedAt: c.updatedAt,
       passwordUpdatedAt: c.passwordUpdatedAt,
@@ -615,6 +617,8 @@ function validCredential(value: unknown): BackupCredential | null {
     !isString(c.owner) ||
     !Array.isArray(c.tags) ||
     !c.tags.every(isString) ||
+    // Absent in backups made before spaces existed.
+    !(c.space === undefined || isString(c.space)) ||
     !isTime(c.createdAt) ||
     !isTime(c.updatedAt) ||
     !isTime(c.passwordUpdatedAt) ||
@@ -633,6 +637,7 @@ function validCredential(value: unknown): BackupCredential | null {
     category: c.category,
     owner: c.owner,
     tags: c.tags as string[],
+    space: isString(c.space) ? normalizeSpaceName(c.space) : "",
     createdAt: c.createdAt,
     updatedAt: c.updatedAt,
     passwordUpdatedAt: c.passwordUpdatedAt,

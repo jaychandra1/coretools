@@ -36,7 +36,8 @@
       "nsis": {
         "installerIcon": "icons/icon.ico",
         "sidebarImage": "installer/nsis-sidebar.bmp",
-        "headerImage": "installer/nsis-header.bmp"
+        "headerImage": "installer/nsis-header.bmp",
+        "installerHooks": "installer/hooks.nsh"
       }
     },
     "icon": [

@@ -26,7 +26,8 @@ It bundles six focused utilities:
    See [SECURITY.md](./SECURITY.md) for the storage, unlock and backup model.
 5. **Credential-Manager** — keep platform logins (URL, username, password,
    notes, category, owner, tags) in the same encrypted vault as the
-   Authenticator. It has a table/card view, an eye toggle and one-click copy
+   Authenticator, split into spaces (tabs such as Personal, Dev team or
+   Organisation; All lists every login). It has a table/card view, an eye toggle and one-click copy
    (gated by Windows Hello or the master password; copies are kept out of
    clipboard history), open-login-page, search & filters, Trash with
    restore, a tamper-evident activity log, encrypted backup files, and its

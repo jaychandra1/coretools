@@ -61,6 +61,7 @@ const LOGIN = {
   category: "Cloud",
   owner: "Platform",
   tags: ["prod"],
+  space: "Dev team",
   password: "s3cr3t-P@ss-word",
   notes: "MFA on the yubikey",
 };
@@ -236,6 +237,70 @@ describe("vault + Credential Manager", () => {
     const before = await m.db.loadVaultConfig();
     await expect(m.authStore.setPassword(STRONG_2)).rejects.toThrow(/Credential Manager/);
     expect(await m.db.loadVaultConfig()).toEqual(before);
+  });
+
+  it("keeps spaces sealed, re-keyed and persistent; moves logins between them", async () => {
+    const created = await setUp();
+    expect(JSON.stringify(await m.db.loadCredentials())).not.toContain("Dev team");
+
+    m.credentialStore.activeSpace = "Dev team";
+    m.credentialStore.pendingSpaces = ["Clients"];
+    m.authStore.lock();
+    expect(m.credentialStore.items[0].space).toBe("");
+    expect(m.credentialStore.activeSpace).toBe("");
+    expect(m.credentialStore.pendingSpaces).toEqual([]);
+    await m.authStore.unlock(STRONG);
+    expect(m.credentialStore.items[0].space).toBe("Dev team");
+
+    expect(await m.credentialStore.moveToSpace(m.credentialStore.idsInSpace("Dev team"), " Platform ")).toBe(1);
+    expect(await m.credentialStore.moveToSpace([created.id], "Platform")).toBe(0); // already there
+    await m.authStore.setPassword(STRONG_2);
+    m.authStore.dispose();
+
+    m = await load();
+    await m.credentialStore.init();
+    await m.authStore.unlock(STRONG_2);
+    expect(m.credentialStore.items[0]).toMatchObject({ id: created.id, space: "Platform" });
+
+    await m.credentialStore.moveToSpace([created.id], "");
+    expect(m.credentialStore.items[0].space).toBe("");
+    await m.credentialStore.loadAudit();
+    expect(m.credentialStore.audit.map((e) => e.action)).toEqual(["updated", "updated", "created"]);
+  });
+
+  it("opens logins saved before spaces existed as having no space", async () => {
+    await setUp();
+    const vault = m.authStore.vaultCrypto();
+    const meta = await vault.encrypt(
+      JSON.stringify({ platform: "Old login", url: "", username: "me", category: "", owner: "", tags: [] }),
+    );
+    await m.db.saveCredentials([
+      {
+        id: "pre-spaces",
+        platform: "",
+        url: "",
+        username: "",
+        category: "",
+        owner: "",
+        tags: [],
+        meta,
+        password: await m.authStore.encryptSecret("old-secret"),
+        notes: null,
+        createdAt: 1,
+        updatedAt: 1,
+        passwordUpdatedAt: 1,
+        deletedAt: null,
+      } as unknown as import("../../core/credentials/types").StoredCredential,
+    ]);
+    m.authStore.dispose();
+
+    m = await load();
+    await m.credentialStore.init();
+    await m.authStore.unlock(STRONG);
+    expect(m.credentialStore.items.find((c) => c.id === "pre-spaces")).toMatchObject({
+      platform: "Old login",
+      space: "",
+    });
   });
 
   it("exports a verifiable audit log", async () => {

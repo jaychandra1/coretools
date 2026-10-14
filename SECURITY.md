@@ -445,6 +445,12 @@ wrapped key); both layouts restore.
   see or touch any other file in the user's Drive.
 - The refresh token lives in the **OS keychain** and never crosses into the
   webview. Access tokens are held in Rust memory only.
+- The keychain belongs to the OS user, not the install, so the sign-in
+  outlives a plain uninstall (a reinstall shows the account as connected).
+  The Windows uninstaller deletes it when "Delete the application data" is
+  ticked — the same choice that deletes the local vault — and never during an
+  update (`src-tauri/installer/hooks.nsh`, tested in CI). That removes only
+  the local copy; *Disconnect* also revokes the token at Google.
 
 **Versions, devices and conflicts.**
 - Every backup is a new immutable version, and a change in one module uploads
@@ -517,7 +523,8 @@ both.
 
 - **Encrypted at rest, no exceptions.** Every password and note is AES-256-GCM
   encrypted under the data key, and the searchable metadata (platform, URL,
-  username, category, owner, tags) is sealed together in a `meta` blob.
+  username, category, owner, tags, space) is sealed together in a `meta`
+  blob.
   Search runs over the copy decrypted into memory after unlock, which locking
   clears. The Credential Manager has no unencrypted mode: it asks for a
   master password before the first save, and the password can't be removed

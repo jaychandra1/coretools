@@ -21,8 +21,18 @@
     type CredentialFilter,
   } from "../../core/credentials/search";
   import { displayUrl } from "../../core/credentials/url";
+  import {
+    canonicalSpace,
+    inSpace,
+    spaceCounts,
+    spaceHue,
+    spaceNameError,
+    spaceNames,
+    SPACE_NAME_MAX,
+  } from "../../core/credentials/spaces";
   import { TRASH_RETENTION_MS, type StoredCredential } from "../../core/credentials/types";
   import { getPlatform } from "../../platform";
+  import { focusOnMount } from "../../focus";
 
   // ---- lifecycle ---------------------------------------------------------------
 
@@ -47,7 +57,15 @@
 
   /** Minute-granular clock: date filters don't need the 500 ms tick. */
   const nowMinute = $derived(Math.floor(authStore.now / 60_000) * 60_000);
-  const source = $derived(showTrash ? credentialStore.trash : credentialStore.active);
+  // Spaces (tabs): "" is All. The trash isn't split by space.
+  const activeSpace = $derived(credentialStore.activeSpace);
+  const spaces = $derived(
+    spaceNames(credentialStore.active, [...credentialStore.pendingSpaces, activeSpace]),
+  );
+  const spaceTotals = $derived(spaceCounts(credentialStore.active));
+  const source = $derived(
+    showTrash ? credentialStore.trash : inSpace(credentialStore.active, activeSpace),
+  );
   const list = $derived(
     filterCredentials(source, filter, nowMinute).toSorted((a, b) =>
       showTrash
@@ -55,7 +73,7 @@
         : a.platform.localeCompare(b.platform, undefined, { sensitivity: "base" }),
     ),
   );
-  const options = $derived(facets(credentialStore.active));
+  const options = $derived({ ...facets(credentialStore.active), spaces });
   const filtered = $derived(
     filter.query.trim() !== "" ||
       filter.category !== "" ||
@@ -173,7 +191,7 @@
 
   // ---- dialogs & CRUD -----------------------------------------------------------
 
-  type Dialog = null | "add" | "edit" | "audit" | "settings" | "restore";
+  type Dialog = null | "add" | "edit" | "audit" | "settings" | "restore" | "new-space" | "spaces";
   let dialog = $state<Dialog>(null);
   let editing = $state<StoredCredential | null>(null);
   let restorePreselect = $state<string | null>(null);
@@ -246,6 +264,127 @@
     return Math.max(0, Math.ceil(((c.deletedAt ?? 0) + TRASH_RETENTION_MS - authStore.now) / 86_400_000));
   }
 
+  // ---- spaces --------------------------------------------------------------------
+
+  function selectSpace(name: string) {
+    credentialStore.activeSpace = name;
+  }
+
+  /** Arrow keys move along the tabs (WAI-ARIA tabs pattern). */
+  function onTabKeydown(event: KeyboardEvent) {
+    const order = ["", ...spaces];
+    const at = order.indexOf(activeSpace);
+    let next = at;
+    if (event.key === "ArrowRight") next = (at + 1) % order.length;
+    else if (event.key === "ArrowLeft") next = (at - 1 + order.length) % order.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = order.length - 1;
+    else return;
+    event.preventDefault();
+    selectSpace(order[next]);
+    const tabs = (event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="tab"]');
+    tabs[next]?.focus();
+  }
+
+  let spaceName = $state("");
+  let spaceFormError = $state("");
+
+  function openNewSpace() {
+    spaceName = "";
+    spaceFormError = "";
+    dialog = "new-space";
+  }
+
+  function createSpace(event: SubmitEvent) {
+    event.preventDefault();
+    spaceFormError = spaceNameError(spaceName) ?? "";
+    if (spaceFormError) return;
+    const name = canonicalSpace(spaceName, spaces);
+    if (!spaces.includes(name)) {
+      credentialStore.pendingSpaces = [...credentialStore.pendingSpaces, name];
+      showToast(`Space “${name}” created — add logins or move them here`);
+    }
+    selectSpace(name);
+    dialog = null;
+  }
+
+  /** Manage dialog: the space being renamed or confirmed for removal. */
+  let renaming = $state<string | null>(null);
+  let renameText = $state("");
+  let removing = $state<string | null>(null);
+  let spaceBusy = $state(false);
+
+  const renameTarget = $derived(
+    renaming ? canonicalSpace(renameText, spaces.filter((s) => s !== renaming)) : "",
+  );
+  const renameMerges = $derived(
+    !!renaming && renameTarget !== "" && spaces.some((s) => s !== renaming && s === renameTarget),
+  );
+
+  function openManageSpaces() {
+    renaming = removing = null;
+    spaceFormError = "";
+    dialog = "spaces";
+  }
+
+  function startRename(name: string) {
+    removing = null;
+    renaming = name;
+    renameText = name;
+    spaceFormError = "";
+  }
+
+  function swapPending(from: string, to: string | null) {
+    const rest = credentialStore.pendingSpaces.filter((s) => s !== from);
+    credentialStore.pendingSpaces = to && !rest.includes(to) ? [...rest, to] : rest;
+  }
+
+  async function commitRename(event: SubmitEvent) {
+    event.preventDefault();
+    const from = renaming;
+    if (!from || spaceBusy) return;
+    spaceFormError = spaceNameError(renameText) ?? "";
+    if (spaceFormError) return;
+    // Read before the move: afterwards `to` is a space either way.
+    const to = renameTarget;
+    const merging = renameMerges;
+    spaceBusy = true;
+    try {
+      if (to !== from) {
+        await credentialStore.moveToSpace(credentialStore.idsInSpace(from), to);
+        swapPending(from, credentialStore.idsInSpace(to).length ? null : to);
+        if (activeSpace === from) selectSpace(to);
+        showToast(merging ? `Moved “${from}” into “${to}”` : `Renamed to “${to}”`);
+      }
+      renaming = null;
+    } catch (e) {
+      failed(e, "Couldn't rename the space");
+    } finally {
+      spaceBusy = false;
+    }
+  }
+
+  async function removeSpace(name: string) {
+    if (spaceBusy) return;
+    spaceBusy = true;
+    try {
+      const moved = await credentialStore.moveToSpace(credentialStore.idsInSpace(name), "");
+      swapPending(name, null);
+      if (activeSpace === name) selectSpace("");
+      removing = null;
+      if (spaces.length === 0) dialog = null; // nothing left to manage
+      showToast(
+        moved
+          ? `Removed “${name}” — its ${moved === 1 ? "login is" : `${moved} logins are`} still under All`
+          : `Removed “${name}”`,
+      );
+    } catch (e) {
+      failed(e, "Couldn't remove the space");
+    } finally {
+      spaceBusy = false;
+    }
+  }
+
   // ---- master password onboarding ------------------------------------------------
 
   let newPw = $state("");
@@ -312,6 +451,8 @@
       <circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
     {:else if name === "cloud"}
       <path d="M17.5 19H8a5 5 0 1 1 1.6-9.7A6 6 0 0 1 21 12.5 4.5 4.5 0 0 1 17.5 19z" />
+    {:else if name === "more"}
+      <circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" />
     {/if}
   </svg>
 {/snippet}
@@ -427,11 +568,47 @@
       </div>
     {/if}
 
+    <!-- ------------------------------------ spaces ------------------------------------ -->
+    {#if !showTrash && (credentialStore.active.length > 0 || spaces.length > 0)}
+      <div class="spaces">
+        <div class="space-tabs" role="tablist" aria-label="Spaces" tabindex="-1" onkeydown={onTabKeydown}>
+          {#each ["", ...spaces] as s (s)}
+            {@const n = s ? (spaceTotals.get(s) ?? 0) : credentialStore.active.length}
+            <button
+              role="tab"
+              class="space-tab"
+              class:on={activeSpace === s}
+              aria-selected={activeSpace === s}
+              aria-label="{s || 'All'}, {n} {n === 1 ? 'login' : 'logins'}"
+              tabindex={activeSpace === s ? 0 : -1}
+              onclick={() => selectSpace(s)}
+            >
+              {#if s}<span class="dot" style="background: hsl({spaceHue(s)}, 60%, 55%)" aria-hidden="true"></span>{/if}
+              <span class="space-name" title={s || undefined}>{s || "All"}</span>
+              <span class="count" aria-hidden="true">{n}</span>
+            </button>
+          {/each}
+        </div>
+        <button class="space-new" onclick={openNewSpace}>+ New space</button>
+        {#if spaces.length}
+          {@render iconButton("more", "Manage spaces", openManageSpaces)}
+        {/if}
+      </div>
+    {/if}
+
     <!-- ------------------------------------- list -------------------------------------- -->
     {#if source.length === 0}
       <div class="empty">
         {#if showTrash}
           <p><strong>Trash is empty.</strong></p>
+        {:else if activeSpace}
+          <span class="hero-icon">{@render icon("key")}</span>
+          <p><strong>No logins in “{activeSpace}” yet.</strong></p>
+          <p class="muted">
+            Add one here, or move an existing login by editing it and choosing
+            this space. A space is kept once a login is in it.
+          </p>
+          <button class="primary" onclick={() => { editing = null; dialog = "add"; }}>+ Add credential</button>
         {:else}
           <span class="hero-icon">{@render icon("key")}</span>
           <p><strong>No credentials yet.</strong></p>
@@ -470,6 +647,11 @@
                 <span class="meta">
                   {#if showTrash}
                     <span class="chip warn">Deleted · {daysLeft(c)} {daysLeft(c) === 1 ? "day" : "days"} left</span>
+                  {/if}
+                  {#if c.space && (showTrash || !activeSpace)}
+                    <span class="chip space-chip" title="Space">
+                      <span class="dot" style="background: hsl({spaceHue(c.space)}, 60%, 55%)" aria-hidden="true"></span>{c.space}
+                    </span>
                   {/if}
                   {#if c.category}<span class="chip">{c.category}</span>{/if}
                   {#if c.owner}<span class="chip subtle">{c.owner}</span>{/if}
@@ -526,11 +708,85 @@
   {#if dialog === "add" || dialog === "edit"}
     <CredentialDialog
       credential={dialog === "edit" ? editing : null}
+      defaultSpace={activeSpace}
       suggestions={options}
       {loadSecret}
       onsave={save}
       onclose={() => { dialog = null; editing = null; }}
     />
+  {:else if dialog === "new-space"}
+    <Modal title="New space" onclose={() => (dialog = null)}>
+      <form class="space-form" onsubmit={createSpace} novalidate>
+        <p class="muted small">
+          Spaces split your logins into tabs, such as Personal, Dev team or
+          Organisation. Each login can be in one space; All lists every login.
+        </p>
+        <input
+          bind:value={spaceName}
+          oninput={() => (spaceFormError = "")}
+          maxlength={SPACE_NAME_MAX}
+          placeholder="Dev team"
+          aria-label="Space name"
+          autocomplete="off"
+          {@attach focusOnMount}
+        />
+        {#if spaceFormError}<span class="field-error" role="alert">{spaceFormError}</span>{/if}
+        <div class="modal-actions">
+          <button type="button" onclick={() => (dialog = null)}>Cancel</button>
+          <button class="primary" type="submit">Create space</button>
+        </div>
+      </form>
+    </Modal>
+  {:else if dialog === "spaces"}
+    <Modal title="Manage spaces" onclose={() => (dialog = null)}>
+      <ul class="space-list">
+        {#each spaces as s (s)}
+          {@const total = spaceTotals.get(s) ?? 0}
+          <li>
+            {#if renaming === s}
+              <form class="space-row" onsubmit={commitRename} novalidate>
+                <span class="dot" style="background: hsl({spaceHue(s)}, 60%, 55%)" aria-hidden="true"></span>
+                <input
+                  bind:value={renameText}
+                  oninput={() => (spaceFormError = "")}
+                  maxlength={SPACE_NAME_MAX}
+                  aria-label="New name for {s}"
+                  autocomplete="off"
+                  {@attach focusOnMount}
+                />
+                <button class="primary" type="submit" disabled={spaceBusy}>Save</button>
+                <button type="button" onclick={() => (renaming = null)}>Cancel</button>
+              </form>
+              {#if spaceFormError}
+                <span class="field-error" role="alert">{spaceFormError}</span>
+              {:else if renameMerges}
+                <span class="space-note">“{renameTarget}” already exists — its logins and these will be one space.</span>
+              {/if}
+            {:else if removing === s}
+              <div class="space-row">
+                <span class="space-confirm">
+                  Remove “{s}”?
+                  {total
+                    ? `${total === 1 ? "Its login stays" : `Its ${total} logins stay`} saved and show under All only.`
+                    : "It has no logins."}
+                </span>
+                <button class="danger-solid" onclick={() => removeSpace(s)} disabled={spaceBusy}>Remove</button>
+                <button onclick={() => (removing = null)}>Cancel</button>
+              </div>
+            {:else}
+              <div class="space-row">
+                <span class="dot" style="background: hsl({spaceHue(s)}, 60%, 55%)" aria-hidden="true"></span>
+                <span class="space-label">{s}</span>
+                <span class="muted small">{total} {total === 1 ? "login" : "logins"}</span>
+                <button class="ghost" onclick={() => startRename(s)}>Rename</button>
+                <button class="ghost danger" onclick={() => { renaming = null; removing = s; }}>Remove</button>
+              </div>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+      <p class="muted small">Removing a space never deletes logins. Spaces travel with your encrypted backups.</p>
+    </Modal>
   {:else if dialog === "audit"}
     <AuditLogDialog onclose={() => (dialog = null)} />
   {:else if dialog === "settings"}
@@ -795,6 +1051,175 @@
     font-size: 12px;
     padding: 5px 10px;
     border-radius: 7px;
+  }
+
+  /* ---- spaces ---- */
+  .spaces {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .space-tabs {
+    display: flex;
+    gap: 2px;
+    min-width: 0;
+    /* Many spaces scroll sideways; never a vertical scrollbar. */
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+  @media (pointer: coarse) {
+    /* Touch screens swipe the strip; a scrollbar would only add a grey bar. */
+    .space-tabs {
+      scrollbar-width: none;
+    }
+  }
+  .space-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    flex: none;
+    padding: 8px 12px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .space-tab:hover {
+    color: var(--text);
+  }
+  .space-tab.on {
+    color: var(--text);
+    font-weight: 600;
+    border-bottom-color: var(--accent);
+  }
+  .space-tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .space-name {
+    max-width: 200px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .count {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 0 7px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text-muted);
+  }
+  .space-tab.on .count {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .dot {
+    flex: none;
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+  }
+  .space-new {
+    flex: none;
+    border: none;
+    background: transparent;
+    color: var(--accent);
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 6px 8px;
+    white-space: nowrap;
+  }
+  .space-new:hover {
+    text-decoration: underline;
+  }
+  .spaces .icon-btn {
+    margin-left: auto;
+    flex: none;
+  }
+  .chip.space-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: var(--surface-2);
+    color: var(--text);
+  }
+  .space-chip .dot {
+    width: 6px;
+    height: 6px;
+  }
+  .space-form {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .space-form p {
+    margin: 0;
+  }
+  .space-form input,
+  .space-row input {
+    font-family: inherit;
+    font-size: 13px;
+    padding: 8px 11px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--text);
+    min-width: 0;
+  }
+  .space-list {
+    list-style: none;
+    margin: 0 0 10px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+  .space-list li {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
+  }
+  .space-list li:first-child {
+    border-top: none;
+  }
+  .space-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+  }
+  .space-row input {
+    flex: 1;
+  }
+  .space-row button {
+    font-size: 12px;
+    padding: 5px 10px;
+    border-radius: 7px;
+  }
+  .space-label {
+    flex: 1;
+    font-weight: 600;
+    font-size: 13px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .space-confirm {
+    flex: 1;
+    font-size: 12.5px;
+  }
+  .space-note {
+    font-size: 12px;
+    color: var(--text-muted);
   }
 
   /* ---- table / cards ---- */

@@ -21,6 +21,7 @@ function item(over: Partial<Parameters<typeof matchesQuery>[0]> = {}) {
     category: "Cloud",
     owner: "Platform team",
     tags: ["prod", "infra"],
+    space: "Dev team",
     createdAt: NOW - 2 * DAY,
     ...over,
   };
@@ -57,11 +58,12 @@ describe("normalizeUrl", () => {
 });
 
 describe("search & filters", () => {
-  it("matches every term across platform, url, username, tags, category, owner", () => {
+  it("matches every term across platform, url, username, tags, category, owner, space", () => {
     expect(matchesQuery(item(), "aws admin")).toBe(true);
     expect(matchesQuery(item(), "#prod")).toBe(true);
     expect(matchesQuery(item(), "cloud platform")).toBe(true);
     expect(matchesQuery(item(), "aws github")).toBe(false);
+    expect(matchesQuery(item(), "dev team")).toBe(true);
     expect(matchesQuery(item(), "")).toBe(true);
   });
 

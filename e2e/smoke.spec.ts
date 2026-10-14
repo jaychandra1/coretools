@@ -100,6 +100,30 @@ test("credential manager: add, search, sealed at rest, audited", async ({ page }
   await expect(page.getByText(/Integrity verified/)).toBeVisible();
 });
 
+test("credential manager: spaces split the list; All keeps every login", async ({ page }) => {
+  await createVault(page);
+  await openTab(page, "Credential-Manager");
+  await page.getByRole("button", { name: "+ Add credential" }).click();
+  await page.getByPlaceholder("AWS Production").fill("E2E Bank");
+  await page.getByRole("button", { name: "Add credential" }).last().click();
+  await expect(page.getByText("E2E Bank")).toBeVisible();
+
+  // A new space opens empty; adding from it files the login there.
+  await page.getByRole("button", { name: "+ New space" }).click();
+  await page.getByLabel("Space name").fill("Dev team");
+  await page.getByRole("button", { name: "Create space" }).click();
+  await expect(page.getByRole("tab", { name: "Dev team, 0 logins" })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("button", { name: "+ Add credential" }).first().click();
+  await page.getByPlaceholder("AWS Production").fill("E2E GitHub");
+  await page.getByRole("button", { name: "Add credential" }).last().click();
+  await expect(page.getByText("E2E GitHub")).toBeVisible();
+  await expect(page.getByText("E2E Bank")).toHaveCount(0);
+
+  await page.getByRole("tab", { name: "All, 2 logins" }).click();
+  await expect(page.getByText("E2E Bank")).toBeVisible();
+  await expect(page.getByText("E2E GitHub")).toBeVisible();
+});
+
 test("JSON-Studio doesn't keep a recovery copy of credentials", async ({ page }) => {
   await openTab(page, "JSON-Studio");
   await expect(page.locator("main")).toContainText(/local only/, { timeout: 30_000 });
