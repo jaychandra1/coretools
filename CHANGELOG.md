@@ -13,6 +13,8 @@ followed by `git push origin HEAD --follow-tags` still works.
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-10-14
+
 ### Added
 
 - **Spaces in the Credential Manager.** Split your logins into tabs such as
