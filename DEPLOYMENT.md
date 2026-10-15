@@ -109,6 +109,11 @@ npm version 1.2.0 -m "release: v%s"
 git push origin HEAD --follow-tags
 ```
 
+`npm version` does the whole cut through `package.json`'s hooks:
+`preversion` stops it before any file changes when `## [Unreleased]` has no
+notes, and `version` syncs every version string and moves the notes under
+`## [1.2.0] — <today>`, all in the `release: v1.2.0` commit and tag.
+
 The release workflow then:
 
 1. Re-runs the quality gates. It **refuses** a tag that doesn't match

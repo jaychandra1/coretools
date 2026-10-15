@@ -31,6 +31,8 @@ name: Release
 #   2. Manual tag push (still supported):
 #        npm version 0.3.0 -m "release: v%s"
 #        git push origin HEAD --follow-tags
+#      (its package.json hooks also move the CHANGELOG notes into the
+#      release commit, and refuse when there are none).
 #   3. Re-publish package.json's version from master without a new tag:
 #      Actions → Release → Run workflow on master (same gates; the
 #      tag-match check is skipped).

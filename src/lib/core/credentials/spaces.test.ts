@@ -2,7 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   canonicalSpace,
   inSpace,
+  moveSpace,
   normalizeSpaceName,
+  orderSpaces,
+  renameInOrder,
   spaceCounts,
   spaceHue,
   spaceNameError,
@@ -56,6 +59,33 @@ describe("spaces", () => {
     expect(inSpace(logins, "").map((l) => l.platform)).toHaveLength(5);
     expect(inSpace(logins, "Dev team").map((l) => l.platform)).toEqual(["GitHub", "AWS"]);
     expect(inSpace(logins, "Missing")).toEqual([]);
+  });
+
+  it("orders tabs by the saved order, then the rest alphabetically", () => {
+    const names = ["Dev team", "Organisation", "Personal", "TechRise"];
+    expect(orderSpaces(names, [])).toEqual(names);
+    expect(orderSpaces(names, ["techrise", "Personal", "Gone"])).toEqual([
+      "TechRise",
+      "Personal",
+      "Dev team",
+      "Organisation",
+    ]);
+  });
+
+  it("moves a space to a position, clamped to the ends", () => {
+    const list = ["A", "B", "C", "D"];
+    expect(moveSpace(list, "A", 2)).toEqual(["B", "C", "A", "D"]); // dropped onto C, moving right
+    expect(moveSpace(list, "D", 1)).toEqual(["A", "D", "B", "C"]); // dropped onto B, moving left
+    expect(moveSpace(list, "B", -1)).toEqual(["B", "A", "C", "D"]);
+    expect(moveSpace(list, "B", 99)).toEqual(["A", "C", "D", "B"]);
+    expect(moveSpace(list, "Missing", 0)).toEqual(list);
+  });
+
+  it("keeps the saved order through a rename, a merge and a removal", () => {
+    const order = ["Personal", "Dev team", "Organisation"];
+    expect(renameInOrder(order, "dev team", "Engineering")).toEqual(["Personal", "Engineering", "Organisation"]);
+    expect(renameInOrder(order, "Dev team", "personal")).toEqual(["Personal", "Organisation"]);
+    expect(renameInOrder(order, "Organisation", null)).toEqual(["Personal", "Dev team"]);
   });
 
   it("gives each space a stable colour, whatever the case", () => {

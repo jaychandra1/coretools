@@ -14,6 +14,15 @@
  *       there is nothing to release. If the notes were already moved by hand
  *       (empty Unreleased + a filled "## [<version>]"), only the date is set.
  *       (The Prepare release workflow runs this.)
+ *         --dry-run   validate and report, write nothing
+ *         --git-add   `git add` the changelog afterwards
+ *
+ *   Run by `npm version <version>` itself (package.json hooks), so a manual
+ *   release is one command: "preversion" does a --dry-run (an empty
+ *   Unreleased stops the bump before any file changes) and "version" cuts
+ *   the section with --git-add, so it lands in the "release: v…" commit and
+ *   tag. Inside those hooks <version> may be left out: npm passes the new
+ *   version as npm_new_version.
  *
  *   node scripts/changelog.mjs notes <version>
  *       Print the section body (used for the release pull request).
@@ -25,6 +34,7 @@
  * Headings, blank lines and HTML comments alone don't count as content.
  * Keeps the file's line endings. Zero dependencies.
  */
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,14 +49,23 @@ function fail(message) {
 const positional = [];
 let file = join(root, "CHANGELOG.md");
 const argv = process.argv.slice(2);
+let dryRun = false;
+let gitAdd = false;
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === "--file") file = argv[++i];
+  else if (argv[i] === "--dry-run") dryRun = true;
+  else if (argv[i] === "--git-add") gitAdd = true;
   else positional.push(argv[i]);
 }
-const [command, version, dateArg] = positional;
+const [command, versionArg, dateArg] = positional;
+// `npm version` passes the version it is bumping to into its hooks.
+const version = versionArg ?? process.env.npm_new_version;
 
 if (!["check", "release", "notes"].includes(command)) {
-  fail('usage: changelog.mjs <check|release|notes> <version> [<YYYY-MM-DD>] [--file CHANGELOG.md]');
+  fail(
+    "usage: changelog.mjs <check|release|notes> <version> [<YYYY-MM-DD>] " +
+      "[--file CHANGELOG.md] [--dry-run] [--git-add]",
+  );
 }
 if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version ?? "")) {
   fail(`<version> must be semver without a leading v, got "${version ?? ""}"`);
@@ -114,7 +133,9 @@ if (command === "check") {
     // Notes were already moved by hand: just date them for today's release.
     lines[existing.start] = heading;
     if (!unreleased) lines.splice(existing.start, 0, "## [Unreleased]", "");
-    console.log(`CHANGELOG.md: "## [${version}]" already had its notes; dated it ${date}.`);
+    console.log(
+      `CHANGELOG.md: "## [${version}]" already had its notes; ${dryRun ? "would date" : "dated"} it ${date}.`,
+    );
   } else {
     if (!unreleased) fail('CHANGELOG.md has no "## [Unreleased]" section to release.');
     if (!pending) {
@@ -124,7 +145,12 @@ if (command === "check") {
       );
     }
     lines.splice(unreleased.start, 1, "## [Unreleased]", "", heading);
-    console.log(`CHANGELOG.md: "## [Unreleased]" → "${heading}", fresh "## [Unreleased]" above it.`);
+    console.log(
+      `CHANGELOG.md: ${dryRun ? "would move" : "moved"} "## [Unreleased]" → "${heading}", fresh "## [Unreleased]" above it.`,
+    );
   }
-  writeFileSync(file, lines.join(eol));
+  if (!dryRun) {
+    writeFileSync(file, lines.join(eol));
+    if (gitAdd) execFileSync("git", ["add", "--", file], { cwd: root, stdio: "inherit" });
+  }
 }

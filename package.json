@@ -9,7 +9,8 @@
   },
   "scripts": {
     "version:sync": "node scripts/sync-version.mjs",
-    "version": "node scripts/sync-version.mjs --git-add",
+    "preversion": "node scripts/changelog.mjs release --dry-run",
+    "version": "node scripts/sync-version.mjs --git-add && node scripts/changelog.mjs release --git-add",
     "dev": "vite",
     "build": "svelte-check --tsconfig ./tsconfig.json && vite build",
     "build:web": "vite build --mode web && node scripts/build-web.mjs",

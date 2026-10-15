@@ -24,6 +24,9 @@
   import {
     canonicalSpace,
     inSpace,
+    moveSpace,
+    orderSpaces,
+    renameInOrder,
     spaceCounts,
     spaceHue,
     spaceNameError,
@@ -60,7 +63,10 @@
   // Spaces (tabs): "" is All. The trash isn't split by space.
   const activeSpace = $derived(credentialStore.activeSpace);
   const spaces = $derived(
-    spaceNames(credentialStore.active, [...credentialStore.pendingSpaces, activeSpace]),
+    orderSpaces(
+      spaceNames(credentialStore.active, [...credentialStore.pendingSpaces, activeSpace]),
+      credentialStore.spaceOrder,
+    ),
   );
   const spaceTotals = $derived(spaceCounts(credentialStore.active));
   const source = $derived(
@@ -270,9 +276,97 @@
     credentialStore.activeSpace = name;
   }
 
+  // The All tab can be switched off once every login is filed in a space
+  // (a view setting for this device, so it lives in localStorage). A login
+  // without a space brings All back on its own: nothing is ever unreachable.
+  const ALL_TAB_KEY = "coretools.credentials.allTab";
+  let allTabWanted = $state(readSetting(ALL_TAB_KEY) !== "hidden");
+  const everyLoginFiled = $derived(
+    credentialStore.active.length > 0 && credentialStore.active.every((c) => c.space !== ""),
+  );
+  const showAllTab = $derived(allTabWanted || !everyLoginFiled);
+  const tabOrder = $derived(showAllTab ? ["", ...spaces] : spaces);
+
+  $effect(() => {
+    if (!showAllTab && activeSpace === "" && spaces.length) selectSpace(spaces[0]);
+  });
+
+  function setAllTab(show: boolean) {
+    allTabWanted = show;
+    writeSetting(ALL_TAB_KEY, show ? null : "hidden");
+  }
+
+  function readSetting(key: string): string | null {
+    try {
+      return localStorage.getItem(key);
+    } catch {
+      return null;
+    }
+  }
+
+  function writeSetting(key: string, value: string | null) {
+    try {
+      if (value === null) localStorage.removeItem(key);
+      else localStorage.setItem(key, value);
+    } catch {
+      // Storage unavailable: the choice lasts until the app closes.
+    }
+  }
+
+  // ---- tab order: drag a tab onto another, or Move up/down in Manage spaces ----
+
+  let draggedSpace = $state<string | null>(null);
+  let dropTarget = $state<string | null>(null);
+
+  async function saveOrder(order: string[]) {
+    try {
+      await credentialStore.setSpaceOrder(order);
+    } catch (e) {
+      failed(e, "Couldn't save the order");
+    }
+  }
+
+  function moveBy(name: string, delta: number) {
+    void saveOrder(moveSpace(spaces, name, spaces.indexOf(name) + delta));
+  }
+
+  /** Keep a saved order in step with a rename, merge or removal (`to` = null). */
+  async function reorderAfter(from: string, to: string | null) {
+    if (credentialStore.spaceOrder.length === 0) return;
+    await credentialStore.setSpaceOrder(renameInOrder(credentialStore.spaceOrder, from, to));
+  }
+
+  function onTabDragStart(event: DragEvent, name: string) {
+    draggedSpace = name;
+    if (event.dataTransfer) {
+      // Some engines refuse to start a drag without data.
+      event.dataTransfer.setData("text/plain", name);
+      event.dataTransfer.effectAllowed = "move";
+    }
+  }
+
+  function onTabDragOver(event: DragEvent, name: string) {
+    if (!draggedSpace || !name || name === draggedSpace) return; // All stays first
+    event.preventDefault(); // required for the drop event to fire
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    dropTarget = name;
+  }
+
+  function onTabDrop(event: DragEvent, name: string) {
+    event.preventDefault();
+    const dragged = draggedSpace;
+    draggedSpace = dropTarget = null;
+    // Dropped onto a tab: take its place (after it when moving right, before when moving left).
+    if (dragged && name && dragged !== name) void saveOrder(moveSpace(spaces, dragged, spaces.indexOf(name)));
+  }
+
+  function onTabDragEnd() {
+    draggedSpace = dropTarget = null;
+  }
+
   /** Arrow keys move along the tabs (WAI-ARIA tabs pattern). */
   function onTabKeydown(event: KeyboardEvent) {
-    const order = ["", ...spaces];
+    const order = tabOrder;
     const at = order.indexOf(activeSpace);
     let next = at;
     if (event.key === "ArrowRight") next = (at + 1) % order.length;
@@ -352,6 +446,7 @@
     try {
       if (to !== from) {
         await credentialStore.moveToSpace(credentialStore.idsInSpace(from), to);
+        await reorderAfter(from, to);
         swapPending(from, credentialStore.idsInSpace(to).length ? null : to);
         if (activeSpace === from) selectSpace(to);
         showToast(merging ? `Moved “${from}” into “${to}”` : `Renamed to “${to}”`);
@@ -369,6 +464,7 @@
     spaceBusy = true;
     try {
       const moved = await credentialStore.moveToSpace(credentialStore.idsInSpace(name), "");
+      await reorderAfter(name, null);
       swapPending(name, null);
       if (activeSpace === name) selectSpace("");
       removing = null;
@@ -451,6 +547,10 @@
       <circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
     {:else if name === "cloud"}
       <path d="M17.5 19H8a5 5 0 1 1 1.6-9.7A6 6 0 0 1 21 12.5 4.5 4.5 0 0 1 17.5 19z" />
+    {:else if name === "up"}
+      <path d="m6 15 6-6 6 6" />
+    {:else if name === "down"}
+      <path d="m6 9 6 6 6-6" />
     {:else if name === "more"}
       <circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" />
     {/if}
@@ -572,7 +672,7 @@
     {#if !showTrash && (credentialStore.active.length > 0 || spaces.length > 0)}
       <div class="spaces">
         <div class="space-tabs" role="tablist" aria-label="Spaces" tabindex="-1" onkeydown={onTabKeydown}>
-          {#each ["", ...spaces] as s (s)}
+          {#each tabOrder as s (s)}
             {@const n = s ? (spaceTotals.get(s) ?? 0) : credentialStore.active.length}
             <button
               role="tab"
@@ -582,6 +682,14 @@
               aria-label="{s || 'All'}, {n} {n === 1 ? 'login' : 'logins'}"
               tabindex={activeSpace === s ? 0 : -1}
               onclick={() => selectSpace(s)}
+              draggable={s !== ""}
+              class:dragging={draggedSpace === s}
+              class:drop-target={dropTarget === s}
+              ondragstart={(e) => onTabDragStart(e, s)}
+              ondragover={(e) => onTabDragOver(e, s)}
+              ondragleave={() => dropTarget === s && (dropTarget = null)}
+              ondrop={(e) => onTabDrop(e, s)}
+              ondragend={onTabDragEnd}
             >
               {#if s}<span class="dot" style="background: hsl({spaceHue(s)}, 60%, 55%)" aria-hidden="true"></span>{/if}
               <span class="space-name" title={s || undefined}>{s || "All"}</span>
@@ -590,9 +698,22 @@
           {/each}
         </div>
         <button class="space-new" onclick={openNewSpace}>+ New space</button>
-        {#if spaces.length}
-          {@render iconButton("more", "Manage spaces", openManageSpaces)}
-        {/if}
+        <div class="spaces-end">
+          {#if everyLoginFiled}
+            <label class="all-switch" title="Every login is in a space, so the All tab is optional">
+              <input
+                type="checkbox"
+                role="switch"
+                checked={allTabWanted}
+                onchange={(e) => setAllTab(e.currentTarget.checked)}
+              />
+              <span>Show All</span>
+            </label>
+          {/if}
+          {#if spaces.length}
+            {@render iconButton("more", "Manage spaces", openManageSpaces)}
+          {/if}
+        </div>
       </div>
     {/if}
 
@@ -740,7 +861,7 @@
   {:else if dialog === "spaces"}
     <Modal title="Manage spaces" onclose={() => (dialog = null)}>
       <ul class="space-list">
-        {#each spaces as s (s)}
+        {#each spaces as s, i (s)}
           {@const total = spaceTotals.get(s) ?? 0}
           <li>
             {#if renaming === s}
@@ -778,6 +899,8 @@
                 <span class="dot" style="background: hsl({spaceHue(s)}, 60%, 55%)" aria-hidden="true"></span>
                 <span class="space-label">{s}</span>
                 <span class="muted small">{total} {total === 1 ? "login" : "logins"}</span>
+                {@render iconButton("up", `Move ${s} up`, () => moveBy(s, -1), "", i === 0)}
+                {@render iconButton("down", `Move ${s} down`, () => moveBy(s, 1), "", i === spaces.length - 1)}
                 <button class="ghost" onclick={() => startRename(s)}>Rename</button>
                 <button class="ghost danger" onclick={() => { renaming = null; removing = s; }}>Remove</button>
               </div>
@@ -785,7 +908,10 @@
           </li>
         {/each}
       </ul>
-      <p class="muted small">Removing a space never deletes logins. Spaces travel with your encrypted backups.</p>
+      <p class="muted small">
+        Drag the tabs, or use the arrows here, to change their order. Removing
+        a space never deletes logins. Spaces travel with your encrypted backups.
+      </p>
     </Modal>
   {:else if dialog === "audit"}
     <AuditLogDialog onclose={() => (dialog = null)} />
@@ -1099,6 +1225,13 @@
     font-weight: 600;
     border-bottom-color: var(--accent);
   }
+  .space-tab.dragging {
+    opacity: 0.45;
+  }
+  .space-tab.drop-target {
+    background: var(--accent-soft);
+    border-radius: 8px 8px 0 0;
+  }
   .space-tab:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
@@ -1140,9 +1273,55 @@
   .space-new:hover {
     text-decoration: underline;
   }
-  .spaces .icon-btn {
-    margin-left: auto;
+  .spaces-end {
+    display: flex;
+    align-items: center;
+    gap: 10px;
     flex: none;
+    margin-left: auto;
+  }
+  .all-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12.5px;
+    color: var(--text-muted);
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+  }
+  .all-switch input {
+    appearance: none;
+    position: relative;
+    flex: none;
+    width: 28px;
+    height: 16px;
+    margin: 0;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--text-muted) 45%, transparent);
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .all-switch input::before {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 0.15s ease;
+  }
+  .all-switch input:checked {
+    background: var(--accent);
+  }
+  .all-switch input:checked::before {
+    transform: translateX(12px);
+  }
+  .all-switch input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
   }
   .chip.space-chip {
     display: inline-flex;

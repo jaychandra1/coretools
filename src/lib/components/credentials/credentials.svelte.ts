@@ -28,8 +28,11 @@ import {
   loadAuditHead,
   loadAuditRecords,
   loadCredentials,
+  loadSpaceOrder,
   replaceAuditRecords,
   saveCredentials,
+  saveSpaceOrder,
+  SPACE_ORDER_KEY,
 } from "../../core/authenticator/db";
 import {
   credentialKey,
@@ -89,6 +92,14 @@ function clean(fields: CredentialFields): CredentialFields {
   };
 }
 
+/** Normalized, non-empty, case-insensitively distinct space names. */
+function cleanOrder(names: readonly string[]): string[] {
+  const seen = new Set<string>();
+  return names
+    .map(normalizeSpaceName)
+    .filter((n) => n && !seen.has(n.toLowerCase()) && seen.add(n.toLowerCase()));
+}
+
 function snapshot(c: StoredCredential): StoredCredential {
   return JSON.parse(JSON.stringify(c)) as StoredCredential;
 }
@@ -112,6 +123,11 @@ export class CredentialStore {
    * is saved by the logins filed under it.
    */
   pendingSpaces = $state<string[]>([]);
+  /**
+   * The user's tab order, while unlocked. Sealed at rest (it names spaces),
+   * per device — backups carry each login's space, not the arrangement.
+   */
+  spaceOrder = $state<string[]>([]);
 
   #initPromise: Promise<void> | null = null;
   #trustedUntil = 0;
@@ -180,6 +196,7 @@ export class CredentialStore {
         this.#trustedUntil = 0;
         this.activeSpace = "";
         this.pendingSpaces = [];
+        this.spaceOrder = [];
       },
     };
   }
@@ -222,10 +239,24 @@ export class CredentialStore {
       view.forEach((c, i) => (c.meta = stored[i].meta));
     }
     this.items = view;
+    this.spaceOrder = await this.#openSpaceOrder(crypto);
+  }
+
+  /** The saved tab order; a blob sealed under an older key reads as none. */
+  async #openSpaceOrder(crypto: VaultCrypto): Promise<string[]> {
+    const stored = await loadSpaceOrder();
+    if (!stored) return [];
+    try {
+      const list: unknown = JSON.parse(await crypto.decrypt(stored.sealed));
+      return Array.isArray(list) ? cleanOrder(list.filter((n): n is string => typeof n === "string")) : [];
+    } catch {
+      return [];
+    }
   }
 
   #close(): void {
     this.items = this.items.map((c) => (c.meta ? { ...snapshot(c), ...BLANK_FIELDS } : c));
+    this.spaceOrder = [];
     this.audit = [];
     this.auditStatus = null;
     this.#trustedUntil = 0;
@@ -280,7 +311,11 @@ export class CredentialStore {
     const head = chain.records.length
       ? { sealed: await sealHead(chain.head, chainCrypto(to)) }
       : null;
-    return { stored, view, audit: { records: chain.records, head } };
+    // The tab order moves to the new key too.
+    const meta = this.spaceOrder.length
+      ? { [SPACE_ORDER_KEY]: { sealed: await to.encrypt(JSON.stringify(this.spaceOrder)) } }
+      : undefined;
+    return { stored, view, audit: { records: chain.records, head }, meta };
   }
 
   async #restoreRecords(
@@ -510,6 +545,15 @@ export class CredentialStore {
     await this.#log(moved.map((c) => [c, "updated"] as const));
     this.#changed();
     return moved.length;
+  }
+
+  /** Save the tab order (a view setting: not audited, not backed up). */
+  async setSpaceOrder(order: readonly string[]): Promise<void> {
+    this.#requireVault();
+    const next = cleanOrder(order);
+    const sealed = await authStore.vaultCrypto().encrypt(JSON.stringify(next));
+    await saveSpaceOrder({ sealed });
+    this.spaceOrder = next;
   }
 
   /** Ids of every login (trash included) filed under `space`. */

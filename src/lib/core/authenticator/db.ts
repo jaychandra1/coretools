@@ -279,6 +279,22 @@ async function setMeta(key: string, value: unknown): Promise<void> {
   await txDone(tx);
 }
 
+/** Meta key of the Credential Manager's space-tab order (sealed: it names spaces). */
+export const SPACE_ORDER_KEY = "credentialSpaceOrder";
+
+export interface StoredSpaceOrder {
+  /** JSON array of space names, encrypted under the vault key. */
+  sealed: EncryptedBlob;
+}
+
+export function loadSpaceOrder(): Promise<StoredSpaceOrder | undefined> {
+  return getMeta<StoredSpaceOrder>(SPACE_ORDER_KEY);
+}
+
+export function saveSpaceOrder(value: StoredSpaceOrder): Promise<void> {
+  return setMeta(SPACE_ORDER_KEY, value);
+}
+
 export function loadVaultConfig(): Promise<VaultConfig | undefined> {
   return getMeta<VaultConfig>("vault");
 }

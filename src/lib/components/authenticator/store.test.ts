@@ -268,6 +268,27 @@ describe("vault + Credential Manager", () => {
     expect(m.credentialStore.audit.map((e) => e.action)).toEqual(["updated", "updated", "created"]);
   });
 
+  it("keeps the tab order sealed, through a lock, a restart and a password change", async () => {
+    await setUp();
+    await m.credentialStore.setSpaceOrder(["Personal", " Dev  team ", "personal", ""]);
+    expect(m.credentialStore.spaceOrder).toEqual(["Personal", "Dev team"]);
+    const stored = await m.db.loadSpaceOrder();
+    expect(stored?.sealed).toBeDefined();
+    expect(JSON.stringify(stored)).not.toMatch(/Personal|Dev team/);
+
+    m.authStore.lock();
+    expect(m.credentialStore.spaceOrder).toEqual([]);
+    await m.authStore.unlock(STRONG);
+    expect(m.credentialStore.spaceOrder).toEqual(["Personal", "Dev team"]);
+
+    await m.authStore.setPassword(STRONG_2); // a new data key: the order is re-sealed with it
+    m.authStore.dispose();
+    m = await load();
+    await m.credentialStore.init();
+    await m.authStore.unlock(STRONG_2);
+    expect(m.credentialStore.spaceOrder).toEqual(["Personal", "Dev team"]);
+  });
+
   it("opens logins saved before spaces existed as having no space", async () => {
     await setUp();
     const vault = m.authStore.vaultCrypto();

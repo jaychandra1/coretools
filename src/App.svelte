@@ -142,10 +142,22 @@
     <div class="update-ask" role="status">
       <span>
         Get notified when a new version of CoreTools is out? It checks the public
-        release page once a day — nothing about you or your data is sent.
+        release page every few hours — nothing about you or your data is sent.
       </span>
       <button class="primary" onclick={() => updates.setPref("on")}>Turn on</button>
       <button onclick={() => updates.setPref("off")}>Not now</button>
+    </div>
+  {/if}
+
+  {#if updates.banner}
+    {@const update = updates.banner}
+    <div class="update-ask update-ready" class:security={update.security} role="status">
+      <span>
+        <strong>{update.security ? "Security update: " : ""}CoreTools {update.version} is available</strong>
+        — you have {__APP_VERSION__}.{#if update.notice}{" "}{update.notice}{/if}
+      </span>
+      <button class="primary" onclick={() => updates.openRelease()}>Download</button>
+      <button onclick={() => updates.dismiss()}>Later</button>
     </div>
   {/if}
 
@@ -253,6 +265,14 @@
   }
   .update-ask span {
     flex: 1;
+  }
+  .update-ready {
+    border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+    background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  }
+  .update-ready.security {
+    border-color: color-mix(in srgb, var(--removed-fg) 40%, transparent);
+    background: var(--removed-bg);
   }
   .loading {
     padding: 40px;

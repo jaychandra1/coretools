@@ -50,6 +50,45 @@ export function spaceNames(items: ReadonlyArray<Pick<CredentialFields, "space">>
   return [...byKey.values()].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
 }
 
+/**
+ * Tab order: spaces in the user's saved order first (matched
+ * case-insensitively; names no longer in use are skipped), then any others
+ * alphabetically — so a new space lands at the end, and with no saved order
+ * the tabs stay alphabetical.
+ */
+export function orderSpaces(names: readonly string[], order: readonly string[]): string[] {
+  const rank = new Map<string, number>();
+  order.forEach((name, i) => {
+    if (!rank.has(name.toLowerCase())) rank.set(name.toLowerCase(), i);
+  });
+  const ranked = names.filter((n) => rank.has(n.toLowerCase()));
+  ranked.sort((a, b) => rank.get(a.toLowerCase())! - rank.get(b.toLowerCase())!);
+  const rest = names
+    .filter((n) => !rank.has(n.toLowerCase()))
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  return [...ranked, ...rest];
+}
+
+/** `list` with `name` moved to `index` (clamped); unchanged if it isn't there. */
+export function moveSpace(list: readonly string[], name: string, index: number): string[] {
+  const from = list.indexOf(name);
+  if (from < 0) return [...list];
+  const rest = list.filter((_, i) => i !== from);
+  rest.splice(Math.max(0, Math.min(index, rest.length)), 0, name);
+  return rest;
+}
+
+/** The saved order after renaming `from` to `to` (merging if `to` is listed), or removing it (`to` = null). */
+export function renameInOrder(order: readonly string[], from: string, to: string | null): string[] {
+  const key = from.toLowerCase();
+  const toKey = to?.toLowerCase();
+  const merging = toKey !== undefined && toKey !== key && order.some((n) => n.toLowerCase() === toKey);
+  return order.flatMap((n) => {
+    if (n.toLowerCase() !== key) return [n];
+    return to === null || merging ? [] : [to];
+  });
+}
+
 /** Logins per space ("" counts logins without one). */
 export function spaceCounts(items: ReadonlyArray<Pick<CredentialFields, "space">>): Map<string, number> {
   const counts = new Map<string, number>();

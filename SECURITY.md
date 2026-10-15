@@ -26,8 +26,10 @@ be audited rather than taken on faith.
     device** first. Details in [§8](#google-drive-backup-optional-desktop-only).
   - **Update notifications.** Off until you say yes (asked once). When on, the
     app reads one fixed public file — `coretools/releases/latest.json` in
-    the public release repository — at most once a day. The request carries
+    the public release repository — when the app opens and every few hours
+    while it's open (at most every 6 hours). The request carries
     nothing about you or your data; the app only shows "update available"
+    (a banner until you choose *Later* for that version, and a header pill)
     with a link to the release page and never downloads or installs anything.
 
   Every other tool — Diff-Checker, YML-Validator, Grammar-Polisher,
@@ -524,7 +526,8 @@ both.
 - **Encrypted at rest, no exceptions.** Every password and note is AES-256-GCM
   encrypted under the data key, and the searchable metadata (platform, URL,
   username, category, owner, tags, space) is sealed together in a `meta`
-  blob.
+  blob. The space-tab order, which names spaces, is sealed the same way
+  (the `credentialSpaceOrder` record) and re-keyed on a password change.
   Search runs over the copy decrypted into memory after unlock, which locking
   clears. The Credential Manager has no unencrypted mode: it asks for a
   master password before the first save, and the password can't be removed

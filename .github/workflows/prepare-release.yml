@@ -96,9 +96,9 @@ jobs:
             exit 1
           fi
 
-      # `npm version` would run the package's `version` hook even with
-      # --no-git-tag-version (that hook also `git add`s files); skip it and
-      # sync explicitly so this step is the whole, predictable change.
+      # `npm version` would run the package's hooks even with
+      # --no-git-tag-version (they `git add` files and cut the changelog);
+      # skip them and do each step explicitly so the run stays predictable.
       - name: Bump the version everywhere
         run: |
           set -euo pipefail

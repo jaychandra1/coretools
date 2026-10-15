@@ -9,9 +9,35 @@ Releases: write notes under `## [Unreleased]` as you go. Then run
 the version heading, bumps every version string and opens a pull request.
 Merging it lets CI tag the release, which builds, signs and publishes it.
 Where `master` accepts direct pushes, `npm version X.Y.Z -m "release: v%s"`
-followed by `git push origin HEAD --follow-tags` still works.
+followed by `git push origin HEAD --follow-tags` still works: `npm version`
+moves the notes itself, into the same commit and tag, and refuses before
+changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
+
+### Added
+
+- **Hide the All tab in the Credential Manager.** Once every login is in a
+  space, a *Show All* switch appears at the right of the space tabs; turn it
+  off to see only your spaces. The choice is remembered on this computer. A
+  login without a space (added, edited or restored) brings All back on its
+  own, so no login can drop out of sight.
+- **Order your spaces.** Drag a space tab onto another to move it there, or
+  use the arrows in *Manage spaces*. All stays first. Renaming or removing
+  a space keeps the rest of your order; a new space goes at the end. The
+  order is encrypted with your vault and kept on this computer (backups
+  carry each login's space, not the tab order).
+
+### Fixed
+
+- **Update notifications now actually notice new versions.** The app only
+  looked once a day, and only when it was opened, so a release could go
+  unnoticed for a day or more, and never while the app stayed open. It now
+  checks when it opens and every few hours while it's open (at most every
+  6 hours; a failed check retries after an hour). A new version shows as a
+  banner with *Download* and *Later* (which hides it until the next
+  version), besides the header pill. A found update is remembered across
+  restarts.
 
 ## [1.2.1] — 2026-10-14
 

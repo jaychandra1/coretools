@@ -124,6 +124,57 @@ test("credential manager: spaces split the list; All keeps every login", async (
   await expect(page.getByText("E2E GitHub")).toBeVisible();
 });
 
+test("credential manager: All can be hidden once every login is in a space", async ({ page }) => {
+  await createVault(page);
+  await openTab(page, "Credential-Manager");
+  await page.getByRole("button", { name: "+ Add credential" }).click();
+  await page.getByPlaceholder("AWS Production").fill("E2E Work login");
+  await page.getByLabel("Space", { exact: true }).selectOption({ label: "New space…" });
+  await page.getByLabel("Space", { exact: true }).fill("Work");
+  await page.getByRole("button", { name: "Add credential" }).last().click();
+
+  const showAll = page.getByRole("switch", { name: "Show All" });
+  await expect(showAll).toBeChecked();
+  await showAll.uncheck();
+  await expect(page.getByRole("tab", { name: /^All,/ })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "Work, 1 login" })).toHaveAttribute("aria-selected", "true");
+
+  // A login without a space brings All back, so it can't become unreachable.
+  await page.getByRole("button", { name: "+ Add credential" }).click();
+  await page.getByPlaceholder("AWS Production").fill("E2E Loose login");
+  await page.getByLabel("Space", { exact: true }).selectOption({ label: "No space (All only)" });
+  await page.getByRole("button", { name: "Add credential" }).last().click();
+  await expect(page.getByRole("tab", { name: "All, 2 logins" })).toBeVisible();
+  await expect(showAll).toHaveCount(0);
+});
+
+test("credential manager: spaces can be reordered by arrows and by dragging", async ({ page }) => {
+  await createVault(page);
+  await openTab(page, "Credential-Manager");
+  for (const [platform, space] of [
+    ["E2E A", "Alpha"],
+    ["E2E B", "Beta"],
+  ]) {
+    await page.getByRole("button", { name: "+ Add credential" }).click();
+    await page.getByPlaceholder("AWS Production").fill(platform);
+    await page.getByLabel("Space", { exact: true }).selectOption({ label: "New space…" });
+    await page.getByLabel("Space", { exact: true }).fill(space);
+    await page.getByRole("button", { name: "Add credential" }).last().click();
+    await expect(page.getByText(platform)).toBeVisible();
+  }
+  const order = () =>
+    page.getByRole("tab").evaluateAll((tabs) => tabs.map((t) => t.getAttribute("aria-label")?.split(",")[0]));
+  expect(await order()).toEqual(["All", "Alpha", "Beta"]);
+
+  await page.getByRole("button", { name: "Manage spaces" }).click();
+  await page.getByRole("button", { name: "Move Beta up" }).click();
+  await expect.poll(order).toEqual(["All", "Beta", "Alpha"]);
+  await page.keyboard.press("Escape");
+
+  await page.getByRole("tab", { name: /^Alpha,/ }).dragTo(page.getByRole("tab", { name: /^Beta,/ }));
+  await expect.poll(order).toEqual(["All", "Alpha", "Beta"]);
+});
+
 test("JSON-Studio doesn't keep a recovery copy of credentials", async ({ page }) => {
   await openTab(page, "JSON-Studio");
   await expect(page.locator("main")).toContainText(/local only/, { timeout: 30_000 });

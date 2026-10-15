@@ -133,6 +133,8 @@ export interface CredentialSnapshot {
   view: StoredCredential[];
   /** The audit log re-sealed to match, when it changed. */
   audit?: { records: StoredAuditEvent[]; head: StoredAuditHead | null };
+  /** Other sealed meta records re-keyed with it (e.g. the space-tab order). */
+  meta?: Record<string, unknown>;
 }
 
 /**
@@ -892,7 +894,10 @@ export class AuthStore {
     await saveVaultAndEntries(sealed.vault, sealed.stored, {
       credentials: credentials?.stored,
       audit: credentials?.audit,
-      meta: { tombstones: await this.#sealTombstones(this.#tombstones, sealed.key) },
+      meta: {
+        ...credentials?.meta,
+        tombstones: await this.#sealTombstones(this.#tombstones, sealed.key),
+      },
     });
 
     this.#key = sealed.key;
