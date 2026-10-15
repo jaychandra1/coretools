@@ -175,6 +175,30 @@ test("credential manager: spaces can be reordered by arrows and by dragging", as
   await expect.poll(order).toEqual(["All", "Alpha", "Beta"]);
 });
 
+test("credential manager: logins can be put in your own order", async ({ page }) => {
+  await createVault(page);
+  await openTab(page, "Credential-Manager");
+  for (const name of ["E2E Alpha", "E2E Bravo", "E2E Charlie"]) {
+    await page.getByRole("button", { name: "+ Add credential" }).click();
+    await page.getByPlaceholder("AWS Production").fill(name);
+    await page.getByRole("button", { name: "Add credential" }).last().click();
+    await expect(page.getByText(name)).toBeVisible();
+  }
+  const order = () => page.locator(".platform-name").allTextContents();
+  expect(await order()).toEqual(["E2E Alpha", "E2E Bravo", "E2E Charlie"]); // A–Z until reordered
+
+  await page.getByRole("button", { name: "Reorder" }).click();
+  await page.getByRole("button", { name: "Move E2E Charlie up" }).click();
+  await expect.poll(order).toEqual(["E2E Alpha", "E2E Charlie", "E2E Bravo"]);
+
+  const row = (name: string) => page.getByRole("row").filter({ hasText: name });
+  await row("E2E Alpha").dragTo(row("E2E Bravo"));
+  await expect.poll(order).toEqual(["E2E Charlie", "E2E Bravo", "E2E Alpha"]);
+
+  await page.getByRole("button", { name: "Sort A–Z" }).click();
+  await expect.poll(order).toEqual(["E2E Alpha", "E2E Bravo", "E2E Charlie"]);
+});
+
 test("JSON-Studio doesn't keep a recovery copy of credentials", async ({ page }) => {
   await openTab(page, "JSON-Studio");
   await expect(page.locator("main")).toContainText(/local only/, { timeout: 30_000 });

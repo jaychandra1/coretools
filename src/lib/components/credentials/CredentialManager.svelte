@@ -21,6 +21,7 @@
     type CredentialFilter,
   } from "../../core/credentials/search";
   import { displayUrl } from "../../core/credentials/url";
+  import { moveOnto, sortByOrder } from "../../core/credentials/order";
   import {
     canonicalSpace,
     inSpace,
@@ -72,11 +73,17 @@
   const source = $derived(
     showTrash ? credentialStore.trash : inSpace(credentialStore.active, activeSpace),
   );
+  // The user's own order (Reorder; A–Z until set): one list for the whole
+  // vault, trash included, so a login restored from the trash keeps its place.
+  const fullOrder = $derived(
+    sortByOrder(credentialStore.items, credentialStore.credentialOrder).map((c) => c.id),
+  );
+  const rank = $derived(new Map(fullOrder.map((id, i) => [id, i])));
   const list = $derived(
     filterCredentials(source, filter, nowMinute).toSorted((a, b) =>
       showTrash
         ? (b.deletedAt ?? 0) - (a.deletedAt ?? 0)
-        : a.platform.localeCompare(b.platform, undefined, { sensitivity: "base" }),
+        : (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0),
     ),
   );
   const options = $derived({ ...facets(credentialStore.active), spaces });
@@ -86,6 +93,57 @@
       filter.owner !== "" ||
       filter.created !== "any",
   );
+
+  // ---- your own order (Reorder) ---------------------------------------------------
+  // Paused while searching or filtering, like the Authenticator: moving rows
+  // between hidden ones would surprise.
+
+  let reordering = $state(false);
+  const rowsMovable = $derived(reordering && !showTrash && !filtered);
+  let draggedRow = $state<string | null>(null);
+  let dropRow = $state<string | null>(null);
+
+  async function saveRowOrder(ids: string[]) {
+    try {
+      await credentialStore.setCredentialOrder(ids);
+    } catch (e) {
+      failed(e, "Couldn't save the order");
+    }
+  }
+
+  /** Swap with the neighbour shown above (-1) or below (+1). */
+  function moveRow(id: string, delta: number) {
+    const neighbour = list[list.findIndex((c) => c.id === id) + delta];
+    if (neighbour) void saveRowOrder(moveOnto(fullOrder, id, neighbour.id));
+  }
+
+  async function sortAToZ() {
+    await saveRowOrder([]);
+    showToast("Sorted A–Z");
+  }
+
+  function onRowDragStart(event: DragEvent, id: string) {
+    draggedRow = id;
+    if (event.dataTransfer) {
+      // Some engines refuse to start a drag without data.
+      event.dataTransfer.setData("text/plain", id);
+      event.dataTransfer.effectAllowed = "move";
+    }
+  }
+
+  function onRowDragOver(event: DragEvent, id: string) {
+    if (!draggedRow || draggedRow === id) return;
+    event.preventDefault(); // required for the drop event to fire
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    dropRow = id;
+  }
+
+  function onRowDrop(event: DragEvent, id: string) {
+    event.preventDefault();
+    const dragged = draggedRow;
+    draggedRow = dropRow = null;
+    if (dragged && dragged !== id) void saveRowOrder(moveOnto(fullOrder, dragged, id));
+  }
 
   function onGlobalKeydown(event: KeyboardEvent) {
     if (event.key !== "/" || event.ctrlKey || event.metaKey || event.altKey) return;
@@ -189,6 +247,7 @@
   $effect(() => {
     if (authStore.locked) {
       for (const id of Object.keys(revealed)) hide(id);
+      reordering = false;
       dialog = null;
       editing = null;
       promptResolve?.(null);
@@ -547,6 +606,8 @@
       <circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
     {:else if name === "cloud"}
       <path d="M17.5 19H8a5 5 0 1 1 1.6-9.7A6 6 0 0 1 21 12.5 4.5 4.5 0 0 1 17.5 19z" />
+    {:else if name === "grip"}
+      <circle cx="9" cy="6" r="1" /><circle cx="15" cy="6" r="1" /><circle cx="9" cy="12" r="1" /><circle cx="15" cy="12" r="1" /><circle cx="9" cy="18" r="1" /><circle cx="15" cy="18" r="1" />
     {:else if name === "up"}
       <path d="m6 15 6-6 6 6" />
     {:else if name === "down"}
@@ -699,6 +760,16 @@
         </div>
         <button class="space-new" onclick={openNewSpace}>+ New space</button>
         <div class="spaces-end">
+          <button
+            class="ghost reorder-toggle"
+            class:active={reordering}
+            aria-pressed={reordering}
+            onclick={() => (reordering = !reordering)}
+            disabled={credentialStore.active.length < 2}
+            title="Put your logins in your own order"
+          >
+            {@render icon("grip")} Reorder
+          </button>
           {#if everyLoginFiled}
             <label class="all-switch" title="Every login is in a space, so the All tab is optional">
               <input
@@ -714,6 +785,23 @@
             {@render iconButton("more", "Manage spaces", openManageSpaces)}
           {/if}
         </div>
+      </div>
+    {/if}
+
+    {#if reordering && !showTrash}
+      <div class="reorder-bar" role="status">
+        <span>
+          {#if filtered}
+            Clear the search and filters to reorder.
+          {:else}
+            Drag logins by the handle, or use the arrows, to put them in your
+            order. It's kept on this computer.
+          {/if}
+        </span>
+        <button class="ghost" onclick={sortAToZ} disabled={credentialStore.credentialOrder.length === 0}>
+          Sort A–Z
+        </button>
+        <button class="primary" onclick={() => (reordering = false)}>Done</button>
       </div>
     {/if}
 
@@ -757,9 +845,25 @@
           <span role="columnheader">Password</span>
           <span role="columnheader" class="actions-head">Actions</span>
         </div>
-        {#each list as c (c.id)}
-          <div class="tr" role="row">
+        {#each list as c, i (c.id)}
+          <div
+            class="tr"
+            role="row"
+            tabindex="-1"
+            class:movable={rowsMovable}
+            class:dragging={draggedRow === c.id}
+            class:drop-row={dropRow === c.id}
+            draggable={rowsMovable}
+            ondragstart={(e) => onRowDragStart(e, c.id)}
+            ondragover={(e) => onRowDragOver(e, c.id)}
+            ondragleave={() => dropRow === c.id && (dropRow = null)}
+            ondrop={(e) => onRowDrop(e, c.id)}
+            ondragend={() => (draggedRow = dropRow = null)}
+          >
             <div class="td platform" role="cell">
+              {#if rowsMovable}
+                <span class="grip" title="Drag to reorder" aria-hidden="true">{@render icon("grip")}</span>
+              {/if}
               <span class="avatar" style="background: hsl({hue(c.platform)}, 55%, 42%)" aria-hidden="true">
                 {c.platform.trim().charAt(0).toUpperCase() || "?"}
               </span>
@@ -800,6 +904,9 @@
               {#if showTrash}
                 {@render iconButton("restore", "Restore", () => restore(c))}
                 {@render iconButton("trash", "Delete permanently", () => (confirmPurge = [c]), "danger")}
+              {:else if rowsMovable}
+                {@render iconButton("up", `Move ${c.platform} up`, () => moveRow(c.id, -1), "", i === 0)}
+                {@render iconButton("down", `Move ${c.platform} down`, () => moveRow(c.id, 1), "", i === list.length - 1)}
               {:else}
                 {@render iconButton(revealed[c.id] !== undefined ? "eye-off" : "eye", revealed[c.id] !== undefined ? "Hide password" : "Show password", () => toggleReveal(c))}
                 {@render iconButton("user", "Copy username", () => copyPlain(c.username, "Username"), "", !c.username)}
@@ -1399,6 +1506,57 @@
   .space-note {
     font-size: 12px;
     color: var(--text-muted);
+  }
+
+  /* ---- your own order ---- */
+  .reorder-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex: none;
+    font-size: 12.5px;
+    padding: 5px 10px;
+    border-radius: 8px;
+  }
+  .reorder-toggle :global(svg) {
+    width: 13px;
+    height: 13px;
+  }
+  .reorder-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 14px;
+    margin-bottom: 12px;
+    border-radius: 10px;
+    font-size: 12.5px;
+    background: var(--accent-soft);
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .reorder-bar span {
+    flex: 1;
+  }
+  .reorder-bar button {
+    font-size: 12px;
+    padding: 5px 12px;
+    border-radius: 7px;
+  }
+  .tr.movable {
+    cursor: grab;
+  }
+  .tr.dragging {
+    opacity: 0.45;
+  }
+  .tr.drop-row {
+    box-shadow: inset 0 2px 0 var(--accent);
+    background: var(--accent-soft);
+  }
+  .grip {
+    flex: none;
+    display: inline-grid;
+    place-items: center;
+    color: var(--text-muted);
+    margin-right: -4px;
   }
 
   /* ---- table / cards ---- */

@@ -268,25 +268,36 @@ describe("vault + Credential Manager", () => {
     expect(m.credentialStore.audit.map((e) => e.action)).toEqual(["updated", "updated", "created"]);
   });
 
-  it("keeps the tab order sealed, through a lock, a restart and a password change", async () => {
-    await setUp();
+  it("keeps the tab and login orders sealed, through a lock, a restart and a password change", async () => {
+    const created = await setUp();
+    const second = await m.credentialStore.add({ ...LOGIN, platform: "Zulu", username: "z" });
     await m.credentialStore.setSpaceOrder(["Personal", " Dev  team ", "personal", ""]);
     expect(m.credentialStore.spaceOrder).toEqual(["Personal", "Dev team"]);
+    await m.credentialStore.setCredentialOrder([second.id, created.id, second.id, "gone"]);
+    expect(m.credentialStore.credentialOrder).toEqual([second.id, created.id]); // deduped, unknown ids dropped
     const stored = await m.db.loadSpaceOrder();
     expect(stored?.sealed).toBeDefined();
     expect(JSON.stringify(stored)).not.toMatch(/Personal|Dev team/);
+    const storedLogins = await m.db.loadCredentialOrder();
+    expect(JSON.stringify(storedLogins)).not.toContain(created.id);
 
     m.authStore.lock();
     expect(m.credentialStore.spaceOrder).toEqual([]);
+    expect(m.credentialStore.credentialOrder).toEqual([]);
     await m.authStore.unlock(STRONG);
     expect(m.credentialStore.spaceOrder).toEqual(["Personal", "Dev team"]);
+    expect(m.credentialStore.credentialOrder).toEqual([second.id, created.id]);
 
-    await m.authStore.setPassword(STRONG_2); // a new data key: the order is re-sealed with it
+    await m.authStore.setPassword(STRONG_2); // a new data key: both orders are re-sealed with it
     m.authStore.dispose();
     m = await load();
     await m.credentialStore.init();
     await m.authStore.unlock(STRONG_2);
     expect(m.credentialStore.spaceOrder).toEqual(["Personal", "Dev team"]);
+    expect(m.credentialStore.credentialOrder).toEqual([second.id, created.id]);
+
+    await m.credentialStore.setCredentialOrder([]); // "Sort A–Z"
+    expect(m.credentialStore.credentialOrder).toEqual([]);
   });
 
   it("opens logins saved before spaces existed as having no space", async () => {

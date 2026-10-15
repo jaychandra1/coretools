@@ -71,7 +71,7 @@
           checked={updates.pref === "on"}
           onchange={(e) => updates.setPref(e.currentTarget.checked ? "on" : "off")}
         />
-        Check for new versions every few hours
+        Check for new versions about once an hour
       </label>
       <p class="muted small">
         Reads one public file from the CoreTools release page. Nothing about

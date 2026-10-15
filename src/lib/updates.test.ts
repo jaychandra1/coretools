@@ -86,7 +86,7 @@ describe("update notifications", () => {
     storage.set("coretools.updates.latest", JSON.stringify(release("1.2.2")));
     const updates = started({
       "coretools.updates": "on",
-      "coretools.updates.checkedAt": String(NOW - HOUR),
+      "coretools.updates.checkedAt": String(NOW - CHECK_EVERY_MS / 2),
     });
     await vi.advanceTimersByTimeAsync(0);
     expect(bridge.check).not.toHaveBeenCalled();
@@ -100,7 +100,7 @@ describe("update notifications", () => {
     );
     const updates = started({
       "coretools.updates": "on",
-      "coretools.updates.checkedAt": String(NOW - HOUR),
+      "coretools.updates.checkedAt": String(NOW - CHECK_EVERY_MS / 2),
     });
     expect(updates.available).toBeNull();
   });
@@ -119,7 +119,7 @@ describe("update notifications", () => {
     expect(restarted.banner?.version).toBe("1.2.3");
   });
 
-  it("retries a failed check after an hour, not on every tick", async () => {
+  it("retries a failed check after a while, not on every tick", async () => {
     bridge.check.mockRejectedValue("update_network");
     started({ "coretools.updates": "on" });
     await vi.advanceTimersByTimeAsync(0);

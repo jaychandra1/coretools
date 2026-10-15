@@ -9,6 +9,7 @@
  */
 
 import type { CredentialFields } from "./types";
+import { moveTo } from "./order";
 
 export const SPACE_NAME_MAX = 40;
 
@@ -71,11 +72,7 @@ export function orderSpaces(names: readonly string[], order: readonly string[]):
 
 /** `list` with `name` moved to `index` (clamped); unchanged if it isn't there. */
 export function moveSpace(list: readonly string[], name: string, index: number): string[] {
-  const from = list.indexOf(name);
-  if (from < 0) return [...list];
-  const rest = list.filter((_, i) => i !== from);
-  rest.splice(Math.max(0, Math.min(index, rest.length)), 0, name);
-  return rest;
+  return moveTo(list, name, index);
 }
 
 /** The saved order after renaming `from` to `to` (merging if `to` is listed), or removing it (`to` = null). */

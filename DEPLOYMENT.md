@@ -477,7 +477,7 @@ backup.
 Installed copies learn about new releases through **opt-in update
 notifications** (desktop): on first run the app asks once; when on, it reads
 `coretools/releases/latest.json` from the public release repository when the
-app opens and every few hours while it's open (through Rust, one fixed URL,
+app opens and about once an hour while it's open (through Rust, one fixed URL,
 nothing about the user sent) and shows a banner and an "Update x.y.z" pill
 with a link to the release page. It never
 downloads or installs anything itself — automatic installs wait for OS code

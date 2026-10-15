@@ -142,7 +142,7 @@
     <div class="update-ask" role="status">
       <span>
         Get notified when a new version of CoreTools is out? It checks the public
-        release page every few hours — nothing about you or your data is sent.
+        release page about once an hour — nothing about you or your data is sent.
       </span>
       <button class="primary" onclick={() => updates.setPref("on")}>Turn on</button>
       <button onclick={() => updates.setPref("off")}>Not now</button>

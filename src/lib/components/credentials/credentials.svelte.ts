@@ -27,12 +27,16 @@ import {
   deleteCredentials,
   loadAuditHead,
   loadAuditRecords,
+  CREDENTIAL_ORDER_KEY,
+  loadCredentialOrder,
   loadCredentials,
   loadSpaceOrder,
   replaceAuditRecords,
+  saveCredentialOrder,
   saveCredentials,
   saveSpaceOrder,
   SPACE_ORDER_KEY,
+  type StoredSealedList,
 } from "../../core/authenticator/db";
 import {
   credentialKey,
@@ -128,6 +132,8 @@ export class CredentialStore {
    * per device — backups carry each login's space, not the arrangement.
    */
   spaceOrder = $state<string[]>([]);
+  /** The user's own login order (credential ids), while unlocked. Sealed, per device. */
+  credentialOrder = $state<string[]>([]);
 
   #initPromise: Promise<void> | null = null;
   #trustedUntil = 0;
@@ -197,6 +203,7 @@ export class CredentialStore {
         this.activeSpace = "";
         this.pendingSpaces = [];
         this.spaceOrder = [];
+        this.credentialOrder = [];
       },
     };
   }
@@ -239,16 +246,20 @@ export class CredentialStore {
       view.forEach((c, i) => (c.meta = stored[i].meta));
     }
     this.items = view;
-    this.spaceOrder = await this.#openSpaceOrder(crypto);
+    this.spaceOrder = cleanOrder(await this.#openList(loadSpaceOrder, crypto));
+    this.credentialOrder = [...new Set(await this.#openList(loadCredentialOrder, crypto))];
   }
 
-  /** The saved tab order; a blob sealed under an older key reads as none. */
-  async #openSpaceOrder(crypto: VaultCrypto): Promise<string[]> {
-    const stored = await loadSpaceOrder();
+  /** A saved order; one sealed under an older key reads as none. */
+  async #openList(
+    load: () => Promise<StoredSealedList | undefined>,
+    crypto: VaultCrypto,
+  ): Promise<string[]> {
+    const stored = await load();
     if (!stored) return [];
     try {
       const list: unknown = JSON.parse(await crypto.decrypt(stored.sealed));
-      return Array.isArray(list) ? cleanOrder(list.filter((n): n is string => typeof n === "string")) : [];
+      return Array.isArray(list) ? list.filter((n): n is string => typeof n === "string") : [];
     } catch {
       return [];
     }
@@ -257,6 +268,7 @@ export class CredentialStore {
   #close(): void {
     this.items = this.items.map((c) => (c.meta ? { ...snapshot(c), ...BLANK_FIELDS } : c));
     this.spaceOrder = [];
+    this.credentialOrder = [];
     this.audit = [];
     this.auditStatus = null;
     this.#trustedUntil = 0;
@@ -311,10 +323,14 @@ export class CredentialStore {
     const head = chain.records.length
       ? { sealed: await sealHead(chain.head, chainCrypto(to)) }
       : null;
-    // The tab order moves to the new key too.
-    const meta = this.spaceOrder.length
-      ? { [SPACE_ORDER_KEY]: { sealed: await to.encrypt(JSON.stringify(this.spaceOrder)) } }
-      : undefined;
+    // The saved orders (tabs, logins) move to the new key too.
+    const meta: Record<string, StoredSealedList> = {};
+    if (this.spaceOrder.length) {
+      meta[SPACE_ORDER_KEY] = { sealed: await to.encrypt(JSON.stringify(this.spaceOrder)) };
+    }
+    if (this.credentialOrder.length) {
+      meta[CREDENTIAL_ORDER_KEY] = { sealed: await to.encrypt(JSON.stringify(this.credentialOrder)) };
+    }
     return { stored, view, audit: { records: chain.records, head }, meta };
   }
 
@@ -554,6 +570,19 @@ export class CredentialStore {
     const sealed = await authStore.vaultCrypto().encrypt(JSON.stringify(next));
     await saveSpaceOrder({ sealed });
     this.spaceOrder = next;
+  }
+
+  /**
+   * Save the user's own login order ([] = back to A–Z). Ids no longer in the
+   * vault are dropped. A view setting: not audited, not backed up.
+   */
+  async setCredentialOrder(ids: readonly string[]): Promise<void> {
+    this.#requireVault();
+    const known = new Set(this.items.map((c) => c.id));
+    const next = [...new Set(ids)].filter((id) => known.has(id));
+    const sealed = await authStore.vaultCrypto().encrypt(JSON.stringify(next));
+    await saveCredentialOrder({ sealed });
+    this.credentialOrder = next;
   }
 
   /** Ids of every login (trash included) filed under `space`. */

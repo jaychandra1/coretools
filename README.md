@@ -48,7 +48,7 @@ Everything runs locally, and there is **no telemetry.** Two network features
 exist, both opt-in and desktop only: the **Google Drive backup** for the
 Authenticator and Credential Manager, which does nothing until you connect an
 account and only ever uploads data encrypted on your device first; and
-**update notifications**, which read one public release file every few hours
+**update notifications**, which read one public release file about once an hour
 if you allow it. The header badge reads **Offline**
 in every tool, and **Online** only while that backup is connected or running.
 The three text tools keep everything in memory and write nothing to disk unless

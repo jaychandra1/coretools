@@ -15,6 +15,22 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+### Added
+
+- **Put your logins in your own order.** *Reorder* (next to the space tabs)
+  lets you drag logins by their handle or move them with the arrows; every
+  view — All, each space — shows them in that order. *Sort A–Z* goes back to
+  alphabetical. New logins are added at the end. The order is encrypted with
+  your vault and kept on this computer. Reordering pauses while a search or
+  filter is active.
+
+### Changed
+
+- **Update notifications check about once an hour** (was every 6 hours), and
+  also when you switch back to the app, so a new version shows up soon after
+  it's published. Each check reads one small public file; nothing about you
+  is sent.
+
 ## [1.2.4] — 2026-10-15
 
 ### Fixed

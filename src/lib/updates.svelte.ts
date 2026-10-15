@@ -2,8 +2,8 @@
  * Opt-in update notifications (audit F-02) — desktop only.
  *
  * Off until the user says yes (asked once). When on, the app asks the public
- * release index — through Rust, one fixed URL — when it opens and every few
- * hours while it stays open, and a newer release shows as a banner (until
+ * release index — through Rust, one fixed URL — when it opens and about once
+ * an hour while it stays open (also when its window comes back into view), and a newer release shows as a banner (until
  * "Later" for that version) and a header pill, both linking to the release
  * page. Nothing is downloaded or installed automatically. The preference,
  * the last check time and the newest release seen are kept in localStorage:
@@ -20,12 +20,16 @@ const LATEST_KEY = "coretools.updates.latest";
 /** The version whose banner was dismissed with "Later". */
 const DISMISSED_KEY = "coretools.updates.dismissed";
 
-/** How old the last successful check may get before the next one. */
-export const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
+/**
+ * How old the last successful check may get before the next one. Releases
+ * can land minutes apart, and one request an hour for a ~1 KB public file
+ * is nothing.
+ */
+export const CHECK_EVERY_MS = 60 * 60 * 1000;
 /** After a failed check (offline, GitHub down), wait this long to retry. */
-export const RETRY_AFTER_MS = 60 * 60 * 1000;
+export const RETRY_AFTER_MS = 30 * 60 * 1000;
 /** How often an open app looks whether a check is due (cheap: no request). */
-export const TICK_MS = 15 * 60 * 1000;
+export const TICK_MS = 5 * 60 * 1000;
 
 /** Same rule as the Rust side (updates.rs): only links into the public release repo. */
 const RELEASE_PREFIX = "https://github.com/jaychandra1/artifacts/releases/";
@@ -122,7 +126,10 @@ export class UpdateController {
         if (document.visibilityState === "visible") this.tick();
       });
     }
-    if (typeof window !== "undefined") window.addEventListener("online", () => this.tick());
+    if (typeof window !== "undefined") {
+      window.addEventListener("online", () => this.tick());
+      window.addEventListener("focus", () => this.tick());
+    }
   }
 
   /** Check when one is due: on, and the last success (or failure) is old enough. */

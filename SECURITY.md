@@ -26,8 +26,8 @@ be audited rather than taken on faith.
     device** first. Details in [§8](#google-drive-backup-optional-desktop-only).
   - **Update notifications.** Off until you say yes (asked once). When on, the
     app reads one fixed public file — `coretools/releases/latest.json` in
-    the public release repository — when the app opens and every few hours
-    while it's open (at most every 6 hours). The request carries
+    the public release repository — when the app opens and about once an
+    hour while it's open. The request carries
     nothing about you or your data; the app only shows "update available"
     (a banner until you choose *Later* for that version, and a header pill)
     with a link to the release page and never downloads or installs anything.

@@ -281,18 +281,29 @@ async function setMeta(key: string, value: unknown): Promise<void> {
 
 /** Meta key of the Credential Manager's space-tab order (sealed: it names spaces). */
 export const SPACE_ORDER_KEY = "credentialSpaceOrder";
+/** Meta key of the user's own login order (credential ids; sealed the same way). */
+export const CREDENTIAL_ORDER_KEY = "credentialOrder";
 
-export interface StoredSpaceOrder {
-  /** JSON array of space names, encrypted under the vault key. */
+/** A JSON array of strings, encrypted under the vault key. */
+export interface StoredSealedList {
   sealed: EncryptedBlob;
 }
+export type StoredSpaceOrder = StoredSealedList;
 
-export function loadSpaceOrder(): Promise<StoredSpaceOrder | undefined> {
-  return getMeta<StoredSpaceOrder>(SPACE_ORDER_KEY);
+export function loadSpaceOrder(): Promise<StoredSealedList | undefined> {
+  return getMeta<StoredSealedList>(SPACE_ORDER_KEY);
 }
 
-export function saveSpaceOrder(value: StoredSpaceOrder): Promise<void> {
+export function saveSpaceOrder(value: StoredSealedList): Promise<void> {
   return setMeta(SPACE_ORDER_KEY, value);
+}
+
+export function loadCredentialOrder(): Promise<StoredSealedList | undefined> {
+  return getMeta<StoredSealedList>(CREDENTIAL_ORDER_KEY);
+}
+
+export function saveCredentialOrder(value: StoredSealedList): Promise<void> {
+  return setMeta(CREDENTIAL_ORDER_KEY, value);
 }
 
 export function loadVaultConfig(): Promise<VaultConfig | undefined> {
