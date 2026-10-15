@@ -15,6 +15,8 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+## [1.2.5] — 2026-10-15
+
 ### Added
 
 - **Put your logins in your own order.** *Reorder* (next to the space tabs)
