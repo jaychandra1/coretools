@@ -15,6 +15,8 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+## [1.2.4] — 2026-10-15
+
 ### Fixed
 
 - **Installing an update no longer risks your saved data.** Installing a
