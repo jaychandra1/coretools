@@ -15,6 +15,8 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+## [1.2.3] — 2026-10-15
+
 ### Added
 
 - **Hide the All tab in the Credential Manager.** Once every login is in a

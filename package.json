@@ -1,6 +1,6 @@
 {
   "name": "coretools",
-  "version": "1.2.1",
+  "version": "1.2.3",
   "private": true,
   "type": "module",
   "description": "Lightweight, fully offline desktop toolkit: file diff & merge + Kubernetes YAML optimizer.",
