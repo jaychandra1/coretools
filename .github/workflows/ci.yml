@@ -66,6 +66,12 @@ jobs:
       - name: Version strings in sync
         run: node scripts/sync-version.mjs --check
 
+      # The Windows installer template must be exactly Tauri's template for
+      # the pinned CLI plus our patches (they keep updates from deleting the
+      # vault). A CLI bump fails here until it is regenerated.
+      - name: Installer template is upstream + CoreTools patches
+        run: node scripts/installer-template.mjs
+
   e2e:
     # The production web build in a real browser (audit F-17): Argon2id in
     # WebAssembly, IndexedDB, lock/unlock, sealed metadata, the audit chain.
@@ -194,15 +200,38 @@ jobs:
           echo "rust=false" >> "$GITHUB_OUTPUT"
           echo "No Rust-related changes since ${base:0:12} — Windows compile check skipped (job passes)." | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # The installer decides whether an update keeps the user's vault, so
+      # any change to it (template, hooks, generator, Tauri CLI version) is
+      # built for real below. Runs when that can't be determined, too.
+      - name: Installer-related changes?
+        id: installer
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -uo pipefail
+          build() { echo "installer=true" >> "$GITHUB_OUTPUT"; echo "Installer build runs: $1" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; }
+          case "$EVENT" in
+            pull_request) base="$PR_BASE" ;;
+            push) base="$PUSH_BEFORE" ;;
+            *) build "'$EVENT' run" ;;
+          esac
+          if [ -z "$base" ] || [ -z "${base//0/}" ] || ! git fetch --no-tags --depth=1 origin "$base"; then build "no base commit to compare with"; fi
+          if git diff --name-only "$base" HEAD | grep -Eq '^(src-tauri/installer/|scripts/installer-template\.mjs$)'; then build "installer files changed"; fi
+          if git diff "$base" HEAD -- package-lock.json | grep -q '@tauri-apps/cli'; then build "Tauri CLI version changed"; fi
+          echo "installer=false" >> "$GITHUB_OUTPUT"
+
       - name: Set up Rust
-        if: steps.changes.outputs.rust == 'true'
+        if: steps.changes.outputs.rust == 'true' || steps.installer.outputs.installer == 'true'
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned master
         with:
           toolchain: stable
           components: clippy
 
       - name: Cache Rust build
-        if: steps.changes.outputs.rust == 'true'
+        if: steps.changes.outputs.rust == 'true' || steps.installer.outputs.installer == 'true'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: "./src-tauri -> target"
@@ -249,9 +278,11 @@ jobs:
           function Test-SignIn {
             [bool]((cmdkey "/list:$target") -match "Target:.*$([regex]::Escape($target))")
           }
-          function Invoke-Hook([int]$update, [int]$deleteAppData) {
-            $exe = Join-Path $env:RUNNER_TEMP "hook-$update-$deleteAppData.exe"
-            & $makensis /V2 "/DOUT=$exe" "/DUPDATE=$update" "/DDELETE_APP_DATA=$deleteAppData" hooks.test.nsi
+          function Invoke-Hook([int]$update, [int]$deleteAppData, [switch]$Confirm) {
+            $exe = Join-Path $env:RUNNER_TEMP "hook-$update-$deleteAppData-$([int][bool]$Confirm).exe"
+            $flags = @("/DOUT=$exe", "/DUPDATE=$update", "/DDELETE_APP_DATA=$deleteAppData")
+            if ($Confirm) { $flags += "/DWITH_CONFIRM" }
+            & $makensis /V2 @flags hooks.test.nsi
             if ($LASTEXITCODE -ne 0) { throw "makensis failed ($LASTEXITCODE)" }
             Start-Process -FilePath $exe -Wait
           }
@@ -261,9 +292,43 @@ jobs:
           if (-not (Test-SignIn)) { throw 'An update removed the Google sign-in' }
           Invoke-Hook 0 0
           if (-not (Test-SignIn)) { throw 'A plain uninstall removed the Google sign-in' }
+          # The confirmation's default (and silent) answer is No: the data stays.
+          Invoke-Hook 0 1 -Confirm
+          if (-not (Test-SignIn)) { throw 'Unconfirmed "Delete the application data" removed the Google sign-in' }
           Invoke-Hook 0 1
           if (Test-SignIn) { throw '"Delete the application data" left the Google sign-in behind' }
-          Write-Host 'Uninstaller hook: sign-in kept on update and plain uninstall, removed with app data.'
+          Write-Host 'Uninstaller hook: sign-in kept on update, plain uninstall and unconfirmed deletion; removed with app data.'
+
+      # Build the real NSIS installer (debug binary: the installer script is
+      # what's under test) and check it was made from our patched template.
+      - name: Set up Node (installer build)
+        if: steps.installer.outputs.installer == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Build the Windows installer
+        if: steps.installer.outputs.installer == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run tauri build -- --debug --bundles nsis
+
+      - name: The installer runs the previous version's uninstaller as an update
+        if: steps.installer.outputs.installer == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = Get-ChildItem src-tauri/target -Recurse -Filter installer.nsi | Select-Object -First 1
+          if (-not $script) { throw 'No generated installer.nsi under src-tauri/target' }
+          if (-not (Select-String -Path $script.FullName -SimpleMatch 'StrCpy $R1 "$R1 /UPDATE /P"' -Quiet)) {
+            throw "$($script.FullName) wasn't generated from src-tauri/installer/installer.nsi"
+          }
+          $setup = Get-ChildItem src-tauri/target -Recurse -Filter '*-setup.exe' | Select-Object -First 1
+          if (-not $setup) { throw 'No installer was built' }
+          Write-Host "Built $($setup.Name) from the patched template."
 
   promote-web:
     # Vercel deploys the `production` branch, not `master` (vercel.json

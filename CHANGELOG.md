@@ -15,6 +15,19 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Installing an update no longer risks your saved data.** Installing a
+  newer version over an older one ran the old version's uninstaller with its
+  "Delete the application data" checkbox, which erased your Authenticator
+  accounts and saved logins if ticked. The installer now asks you to close
+  CoreTools, then removes the old version as an update: your data, settings
+  and shortcuts are always kept, and no such choice is shown. This protects
+  the update *from* any earlier version.
+- **Uninstalling asks before erasing your data.** In a real uninstall,
+  ticking "Delete the application data" now shows what it permanently
+  erases, with *No* as the default.
+
 ## [1.2.3] — 2026-10-15
 
 ### Added

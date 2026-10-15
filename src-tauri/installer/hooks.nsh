@@ -1,5 +1,25 @@
 ; NSIS hooks for the Windows installer (tauri.conf.json → bundle.windows.nsis.installerHooks).
-; Tauri inserts each macro into its own installer.nsi template.
+; Tauri inserts each macro into the installer template (installer/installer.nsi).
+
+; Deleting the vault is permanent: confirm it, defaulting to No.
+;
+; "Delete the application data" erases the Authenticator accounts, saved logins
+; and settings on this PC (and, below, the Google sign-in). Updates never get
+; here — the installer runs the previous uninstaller with /UPDATE /P (see
+; scripts/installer-template.mjs) — so this is a real uninstall. People still
+; tick the box thinking it tidies up, so say plainly what it erases and make
+; No the default. Silent uninstalls never show the box; /SD keeps data anyway.
+!macro NSIS_HOOK_PREUNINSTALL
+  ${If} $DeleteAppDataCheckboxState = 1
+  ${AndIf} $UpdateMode <> 1
+    MessageBox MB_YESNO|MB_ICONEXCLAMATION|MB_DEFBUTTON2 \
+      "Also delete your CoreTools data on this computer?$\n$\nThis permanently erases your Authenticator accounts, saved logins and settings here, and signs this PC out of Google Drive backup. Backups already in Google Drive or saved to files are not affected.$\n$\nUpdating to a newer version? Choose No - updates never need this." \
+      /SD IDNO IDYES coretools_delete_data_confirmed
+    StrCpy $DeleteAppDataCheckboxState 0
+    DetailPrint "Kept your CoreTools data on this computer."
+    coretools_delete_data_confirmed:
+  ${EndIf}
+!macroend
 
 ; Forget the Google Drive sign-in together with the rest of the app's data.
 ;

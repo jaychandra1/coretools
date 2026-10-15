@@ -450,9 +450,16 @@ wrapped key); both layouts restore.
 - The keychain belongs to the OS user, not the install, so the sign-in
   outlives a plain uninstall (a reinstall shows the account as connected).
   The Windows uninstaller deletes it when "Delete the application data" is
-  ticked — the same choice that deletes the local vault — and never during an
-  update (`src-tauri/installer/hooks.nsh`, tested in CI). That removes only
-  the local copy; *Disconnect* also revokes the token at Google.
+  ticked and confirmed — the same choice that deletes the local vault — and
+  never during an update (`src-tauri/installer/hooks.nsh`, tested in CI).
+  That removes only the local copy; *Disconnect* also revokes the token at
+  Google.
+- **Updates can't erase the vault.** Installing a newer version runs the old
+  uninstaller as an update (`/UPDATE /P`: app data kept, no window), so the
+  "Delete the application data" choice only exists in a real uninstall from
+  Windows Settings, which asks for confirmation (default *No*) before
+  erasing the vault (`src-tauri/installer/installer.nsi`, generated from
+  Tauri's template by `scripts/installer-template.mjs` and checked in CI).
 
 **Versions, devices and conflicts.**
 - Every backup is a new immutable version, and a change in one module uploads
