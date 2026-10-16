@@ -149,15 +149,41 @@
     </div>
   {/if}
 
-  {#if updates.banner}
-    {@const update = updates.banner}
+  {#if updates.available && (updates.banner || updates.installing || updates.installError)}
+    {@const update = updates.available}
     <div class="update-ask update-ready" class:security={update.security} role="status">
-      <span>
-        <strong>{update.security ? "Security update: " : ""}CoreTools {update.version} is available</strong>
-        — you have {__APP_VERSION__}.{#if update.notice}{" "}{update.notice}{/if}
-      </span>
-      <button class="primary" onclick={() => updates.openRelease()}>Download</button>
-      <button onclick={() => updates.dismiss()}>Later</button>
+      {#if updates.installing}
+        <span>
+          {#if updates.installing.phase === "installing"}
+            <strong>Installing CoreTools {update.version}…</strong> CoreTools restarts when it's done; your data is kept.
+          {:else}
+            <strong>Downloading CoreTools {update.version}…</strong>
+            {updates.installing.percent === null ? "" : `${updates.installing.percent}%`}
+          {/if}
+        </span>
+        <span
+          class="update-progress"
+          role="progressbar"
+          aria-label="Update progress"
+          aria-valuemin="0"
+          aria-valuemax="100"
+          aria-valuenow={updates.installing.percent ?? undefined}
+        >
+          <span style="width: {updates.installing.percent ?? 15}%"></span>
+        </span>
+      {:else if updates.installError}
+        <span>{updates.installError}</span>
+        <button class="primary" onclick={() => updates.download()}>Download installer</button>
+        <button onclick={() => updates.update()}>Try again</button>
+      {:else}
+        <span>
+          <strong>{update.security ? "Security update: " : ""}CoreTools {update.version} is available</strong>
+          — you have {__APP_VERSION__}.{#if update.notice}{" "}{update.notice}{/if}
+          <button class="link" onclick={() => updates.openRelease()}>What's new</button>
+        </span>
+        <button class="primary" onclick={() => updates.update()}>Update now</button>
+        <button onclick={() => updates.dismiss()}>Later</button>
+      {/if}
     </div>
   {/if}
 
@@ -273,6 +299,30 @@
   .update-ready.security {
     border-color: color-mix(in srgb, var(--removed-fg) 40%, transparent);
     background: var(--removed-bg);
+  }
+  .update-ready .link {
+    border: none;
+    background: none;
+    padding: 0;
+    margin-left: 4px;
+    font: inherit;
+    color: var(--accent);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .update-progress {
+    flex: 0 0 180px;
+    height: 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    overflow: hidden;
+  }
+  .update-progress span {
+    display: block;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--accent);
+    transition: width 0.2s ease;
   }
   .loading {
     padding: 40px;

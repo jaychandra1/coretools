@@ -11,7 +11,7 @@
  */
 
 import { getPlatform } from "./platform";
-import type { UpdateInfo } from "./platform/types";
+import type { UpdateInfo, UpdateProgress } from "./platform/types";
 
 const PREF_KEY = "coretools.updates";
 const CHECKED_KEY = "coretools.updates.checkedAt";
@@ -31,8 +31,9 @@ export const RETRY_AFTER_MS = 30 * 60 * 1000;
 /** How often an open app looks whether a check is due (cheap: no request). */
 export const TICK_MS = 5 * 60 * 1000;
 
-/** Same rule as the Rust side (updates.rs): only links into the public release repo. */
+/** Same rules as the Rust side (updates.rs): only links into the public release repo. */
 const RELEASE_PREFIX = "https://github.com/jaychandra1/artifacts/releases/";
+const DOWNLOAD_PREFIX = "https://github.com/jaychandra1/artifacts/releases/download/";
 
 export type UpdatePref = "on" | "off" | null;
 
@@ -74,7 +75,11 @@ function restoreLatest(): UpdateInfo | null {
       typeof info.releaseUrl === "string" &&
       info.releaseUrl.startsWith(RELEASE_PREFIX)
     ) {
-      return info;
+      const downloadUrl =
+        typeof info.downloadUrl === "string" && info.downloadUrl.startsWith(DOWNLOAD_PREFIX)
+          ? info.downloadUrl
+          : null;
+      return { ...info, downloadUrl };
     }
   } catch {
     // Unreadable: the next check fills it in again.
@@ -94,6 +99,10 @@ export class UpdateController {
   /** Result line of the last manual check. */
   message = $state("");
   lastCheckedAt = $state<number | null>(null);
+  /** An in-app update in progress: downloading (percent when known), then installing. */
+  installing = $state<{ phase: "downloading" | "installing"; percent: number | null } | null>(null);
+  /** Why the last "Update now" didn't finish ("" = it didn't fail). */
+  installError = $state("");
 
   /** Show the banner: a newer release the user hasn't put off. */
   get banner(): UpdateInfo | null {
@@ -185,6 +194,52 @@ export class UpdateController {
     write(LATEST_KEY, newer ? JSON.stringify(newer) : null);
   }
 
+  /**
+   * "Update now": download this platform's build, verify its signature,
+   * install it in place (the vault is kept) and restart — all in the app.
+   * Builds without an updater, or releases without a signed update for this
+   * platform, fall back to downloading the installer.
+   */
+  async update(): Promise<void> {
+    const bridge = getPlatform().updates;
+    if (!bridge || !this.available || this.installing) return;
+    this.installError = "";
+    this.installing = { phase: "downloading", percent: null };
+    try {
+      await bridge.install((progress: UpdateProgress) => {
+        this.installing =
+          progress.phase === "installing"
+            ? { phase: "installing", percent: 100 }
+            : {
+                phase: "downloading",
+                percent: progress.total
+                  ? Math.min(100, Math.round((progress.downloaded / progress.total) * 100))
+                  : null,
+              };
+      });
+      // Success restarts the app (on Windows the installer closes it first).
+    } catch (e) {
+      this.installing = null;
+      const code = typeof e === "string" ? e : "update_failed";
+      void getPlatform().diagnostics?.record("updates", code);
+      if (code === "update_unavailable" || code === "update_none") {
+        await this.download();
+      } else if (code === "update_network") {
+        this.installError = "Couldn't download the update. Check your connection and try again.";
+      } else {
+        this.installError = "The update couldn't be installed. Download the installer instead.";
+      }
+    }
+  }
+
+  /** This platform's installer straight from the release (its page if none is listed). */
+  async download(): Promise<void> {
+    if (this.available) {
+      await getPlatform().openExternal(this.available.downloadUrl ?? this.available.releaseUrl);
+    }
+  }
+
+  /** The release page: what's new in it. */
   async openRelease(): Promise<void> {
     if (this.available) await getPlatform().openExternal(this.available.releaseUrl);
   }

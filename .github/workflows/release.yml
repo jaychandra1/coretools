@@ -58,6 +58,12 @@ name: Release
 # environment (`tauri build --no-bundle`), then bundles and signs in a
 # separate step (`tauri bundle`) — so npm scripts and crate build scripts
 # never see the signing secrets.
+#
+# In-app updates switch on once the updater key exists (TAURI_SIGNING_PRIVATE_KEY
+# secret + TAURI_UPDATER_PUBKEY variable, DEPLOYMENT.md "In-app updates"): the
+# public key is compiled in, every platform bundles in its own step with the
+# private key (writing a minisign .sig beside each update file), and the
+# publish job adds updater.json — the manifest installed copies poll.
 
 on:
   push:
@@ -82,6 +88,7 @@ jobs:
       sign-windows: ${{ steps.signing.outputs.windows }}
       sign-macos: ${{ steps.signing.outputs.macos }}
       code-signed: ${{ steps.signing.outputs.platforms }}
+      updater: ${{ steps.updater.outputs.enabled }}
     steps:
       - name: Release ref is a v* tag or master
         run: |
@@ -160,6 +167,27 @@ jobs:
           platforms=$(IFS=,; echo "${signed[*]:-}")
           echo "platforms=${platforms}" >> "$GITHUB_OUTPUT"
 
+      # In-app updates: the build signs its update files with the updater's
+      # private key (minisign) and compiles in the matching public key, which
+      # installed copies verify every update against. Both or neither: half a
+      # setup would publish updates no installed copy can verify.
+      - name: In-app update signing
+        id: updater
+        env:
+          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          HAS_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY != '' }}
+        run: |
+          if [ "$HAS_KEY" = "true" ] && [ "$HAS_PUBKEY" = "true" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "- In-app updates: **signed** — installed copies update themselves" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$HAS_KEY" = "false" ] && [ "$HAS_PUBKEY" = "false" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "- In-app updates: off (no updater key) — the app downloads installers instead (DEPLOYMENT.md, In-app updates)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::In-app update signing is half-configured: set both the TAURI_SIGNING_PRIVATE_KEY secret and the TAURI_UPDATER_PUBKEY variable, or neither (DEPLOYMENT.md, In-app updates)."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -233,10 +261,16 @@ jobs:
             args: ""
             glob: "src-tauri/target/release/bundle/nsis/*-setup.exe"
             out: CoreTools-Windows-Setup.exe
+            # In-app updates install the setup itself (as an update: /UPDATE).
+            updater_glob: "src-tauri/target/release/bundle/nsis/*-setup.exe"
+            updater_out: CoreTools-Windows-Setup.exe
           - platform: macos-latest
             args: "--target universal-apple-darwin"
             glob: "src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg"
             out: CoreTools-macOS.dmg
+            # In-app updates replace the .app from this archive.
+            updater_glob: "src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz"
+            updater_out: CoreTools-macOS.app.tar.gz
           # Only the AppImage is published, so skip the .deb/.rpm bundles.
           # --verbose makes Tauri print linuxdeploy's own output, which is
           # otherwise reduced to "failed to run linuxdeploy".
@@ -244,6 +278,8 @@ jobs:
             args: "--bundles appimage --verbose"
             glob: "src-tauri/target/release/bundle/appimage/*.AppImage"
             out: CoreTools-Linux.AppImage
+            updater_glob: "src-tauri/target/release/bundle/appimage/*.AppImage"
+            updater_out: CoreTools-Linux.AppImage
 
     runs-on: ${{ matrix.platform }}
 
@@ -253,6 +289,8 @@ jobs:
       # "GPG-sign the AppImage" when it is set at all — even to "false" — and
       # then aborts for want of a key (the v1.2.0 Linux release failure).
       CODE_SIGN: ${{ (matrix.platform == 'windows-latest' && needs.quality.outputs.sign-windows == 'true') || (matrix.platform == 'macos-latest' && needs.quality.outputs.sign-macos == 'true') }}
+      # In-app updates are signed (decided by the quality job).
+      UPDATER: ${{ needs.quality.outputs.updater }}
 
     steps:
       - name: Checkout
@@ -315,6 +353,26 @@ jobs:
       # as not configured. On a code-signed platform this step only compiles
       # (--no-bundle); bundling + signing follow in their own step, the only
       # one that holds signing credentials.
+      # In-app updates: the public key is compiled in, and the bundle step
+      # writes a signature beside each update file. Both live in config files
+      # passed with --config, so tauri.conf.json — and local builds — carry
+      # no updater key.
+      - name: Updater configuration
+        if: env.UPDATER == 'true'
+        shell: bash
+        env:
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const dir = process.env.RUNNER_TEMP;
+            const pubkey = process.argv[1].trim();
+            fs.writeFileSync(path.join(dir, "tauri.updater.json"), JSON.stringify({ plugins: { updater: { pubkey } } }));
+            fs.writeFileSync(path.join(dir, "tauri.updater-bundle.json"), JSON.stringify({ bundle: { createUpdaterArtifacts: true } }));
+          ' "$PUBKEY"
+
       - name: Build the desktop app
         shell: bash
         env:
@@ -327,10 +385,33 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
           set -eo pipefail
+          cfg() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
           args=()
           if [ -n "$TAURI_ARGS" ]; then read -r -a args <<< "$TAURI_ARGS"; fi
-          if [ "$CODE_SIGN" = "true" ]; then args+=(--no-bundle); fi
+          if [ "$UPDATER" = "true" ]; then args+=(--config "$(cfg "$RUNNER_TEMP/tauri.updater.json")"); fi
+          # Bundling waits for its own step whenever it needs a secret.
+          if [ "$CODE_SIGN" = "true" ] || [ "$UPDATER" = "true" ]; then args+=(--no-bundle); fi
           npm run tauri build -- "${args[@]}"
+
+      # Unsigned platforms with in-app updates bundle here — the only step
+      # holding the updater's private key (TAURI_SIGNING_PRIVATE_KEY makes
+      # `tauri bundle` write a .sig beside each update file).
+      - name: Bundle with update signatures
+        if: env.UPDATER == 'true' && env.CODE_SIGN != 'true'
+        shell: bash
+        env:
+          TAURI_ARGS: ${{ matrix.args }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -eo pipefail
+          cfg() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+          args=()
+          if [ -n "$TAURI_ARGS" ]; then read -r -a args <<< "$TAURI_ARGS"; fi
+          npm run tauri bundle -- "${args[@]}" \
+            --config "$(cfg "$RUNNER_TEMP/tauri.updater.json")" \
+            --config "$(cfg "$RUNNER_TEMP/tauri.updater-bundle.json")"
 
       # Windows signing: Azure Artifact Signing (formerly Trusted Signing) via
       # artifact-signing-cli, which runs signtool with Microsoft's signing
@@ -381,7 +462,15 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-        run: npm run tauri bundle -- --config "$(cygpath -w "$RUNNER_TEMP/tauri.windows-signing.json")"
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -eo pipefail
+          extra=()
+          if [ "$UPDATER" = "true" ]; then
+            extra=(--config "$(cygpath -w "$RUNNER_TEMP/tauri.updater.json")" --config "$(cygpath -w "$RUNNER_TEMP/tauri.updater-bundle.json")")
+          fi
+          npm run tauri bundle -- --config "$(cygpath -w "$RUNNER_TEMP/tauri.windows-signing.json")" "${extra[@]}"
 
       # macOS signing: Tauri imports APPLE_CERTIFICATE (base64 .p12) into a
       # temporary keychain, signs with the Developer ID identity, notarizes
@@ -400,11 +489,16 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           TAURI_ARGS: ${{ matrix.args }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -eo pipefail
           if [ -n "$SIGNING_IDENTITY" ]; then export APPLE_SIGNING_IDENTITY="$SIGNING_IDENTITY"; fi
           unset SIGNING_IDENTITY
           read -r -a args <<< "$TAURI_ARGS"
+          if [ "$UPDATER" = "true" ]; then
+            args+=(--config "$RUNNER_TEMP/tauri.updater.json" --config "$RUNNER_TEMP/tauri.updater-bundle.json")
+          fi
           npm run tauri bundle -- "${args[@]}"
 
       - name: Collect the installer under its stable asset name
@@ -415,6 +509,13 @@ jobs:
           src=$(ls ${{ matrix.glob }} | head -n1)
           echo "Found installer: $src"
           cp "$src" "staging/${{ matrix.out }}"
+          if [ "$UPDATER" = "true" ]; then
+            update=$(ls ${{ matrix.updater_glob }} | head -n1)
+            test -f "$update.sig" || { echo "::error::No update signature beside $update"; exit 1; }
+            [ "${{ matrix.updater_out }}" = "${{ matrix.out }}" ] || cp "$update" "staging/${{ matrix.updater_out }}"
+            cp "$update.sig" "staging/${{ matrix.updater_out }}.sig"
+            echo "Update file: $update (+ signature)"
+          fi
 
       # A signed platform must really be signed before anything is uploaded.
       - name: Verify the Authenticode signature (Windows)
@@ -443,7 +544,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.out }}
-          path: staging/${{ matrix.out }}
+          # The installer, plus (with in-app updates) the update file and its signature.
+          path: staging/
           if-no-files-found: error
           retention-days: 30
 
@@ -560,6 +662,23 @@ jobs:
           for f in CoreTools-Windows-Setup.exe CoreTools-macOS.dmg CoreTools-Linux.AppImage CoreTools-sbom.cdx.json; do
             test -f "incoming/$f" || { echo "::error::Missing $f — refusing to publish a partial release"; exit 1; }
           done
+
+      # In-app updates: the manifest installed copies poll (published with the
+      # release, so the stable coretools-latest link always serves the newest).
+      # Its signatures are verified against the key compiled into the app, so
+      # it needs no other protection. Nothing is written without the updater key.
+      - name: Updater manifest
+        env:
+          VERSION: ${{ needs.quality.outputs.version }}
+          UPDATER: ${{ needs.quality.outputs.updater }}
+        run: |
+          set -euo pipefail
+          node scripts/changelog.mjs notes "$VERSION" > "$RUNNER_TEMP/notes.md"
+          extra=()
+          if [ "$UPDATER" = "true" ]; then extra=(--require); fi
+          node scripts/updater-manifest.mjs --dir incoming --version "$VERSION" \
+            --base-url "https://github.com/jaychandra1/artifacts/releases/download/coretools-v${VERSION}" \
+            --notes-file "$RUNNER_TEMP/notes.md" "${extra[@]}"
 
       # The SBOM is listed too, so the signature below covers it.
       - name: Generate SHA-256 checksums

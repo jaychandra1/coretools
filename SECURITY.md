@@ -29,8 +29,16 @@ be audited rather than taken on faith.
     the public release repository — when the app opens and about once an
     hour while it's open. The request carries
     nothing about you or your data; the app only shows "update available"
-    (a banner until you choose *Later* for that version, and a header pill)
-    with a link to the release page and never downloads or installs anything.
+    (a banner until you choose *Later* for that version, and a header pill).
+  - **In-app updates.** Only when you click *Update now*: Tauri's updater
+    fetches `updater.json` from the release repository, downloads this
+    platform's file from the versioned release, and installs it only if its
+    minisign signature verifies against the public key compiled into the
+    app. The private key lives only in this repository's Actions secrets, so
+    someone who could replace files in the public artifacts repository still
+    can't get an update installed. On Windows it installs as an update
+    (`/UPDATE`), which keeps the vault. Builds without the key (local builds)
+    have no updater and download the installer for the user to run instead.
 
   Every other tool — Diff-Checker, YML-Validator, Grammar-Polisher,
   JSON-Studio — has no network path whatsoever.

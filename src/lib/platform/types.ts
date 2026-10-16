@@ -123,11 +123,25 @@ export interface UpdateInfo {
   releaseUrl: string;
   notice: string | null;
   security: boolean;
+  /** This platform's installer, straight from the release; null when not listed. */
+  downloadUrl: string | null;
 }
+
+/** Progress of an in-app update, as it downloads and then installs. */
+export type UpdateProgress =
+  | { phase: "downloading"; downloaded: number; total: number | null }
+  | { phase: "installing" };
 
 export interface UpdateBridge {
   /** Rejects with "update_network" / "update_invalid". */
   check(): Promise<UpdateInfo>;
+  /**
+   * Download, verify (signature) and install the newest release, then
+   * restart. Rejects with "update_unavailable" (this build has no updater),
+   * "update_none" (no signed update for this platform), "update_network" or
+   * "update_failed".
+   */
+  install(onProgress: (progress: UpdateProgress) => void): Promise<void>;
 }
 
 export interface DiagnosticsBridge {

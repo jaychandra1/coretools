@@ -15,6 +15,15 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+### Added
+
+- **Update now, inside the app.** When a new version is out, *Update now*
+  downloads it, checks its signature, installs it and restarts CoreTools —
+  with progress in the banner, and your data kept. Only updates signed by
+  the CoreTools release process install. Until updates are signed (and for
+  copies installed before this version) the button downloads the installer
+  for your system directly, instead of opening the release page.
+
 ## [1.2.5] — 2026-10-15
 
 ### Added

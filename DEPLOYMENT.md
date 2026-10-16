@@ -478,18 +478,57 @@ Installed copies learn about new releases through **opt-in update
 notifications** (desktop): on first run the app asks once; when on, it reads
 `coretools/releases/latest.json` from the public release repository when the
 app opens and about once an hour while it's open (through Rust, one fixed URL,
-nothing about the user sent) and shows a banner and an "Update x.y.z" pill
-with a link to the release page. It never
-downloads or installs anything itself — automatic installs wait for OS code
-signing (§3). To flag a release as a **security** update or show a one-line
-notice, add `"security": true` / `"notice": "…"` to that version's
-`latest.json`; the app renders them.
+nothing about the user sent) and shows a banner and an "Update x.y.z" pill.
+To flag a release as a **security** update or show a one-line notice, add
+`"security": true` / `"notice": "…"` to that version's `latest.json`; the
+app renders them.
+
+**Update now** installs the update inside the app: Tauri's updater downloads
+this platform's file from the versioned release, verifies its signature
+against the public key compiled into the app, installs it — on Windows as an
+update (`/UPDATE`, so the vault is kept) — and restarts CoreTools. Nothing
+happens until the user clicks. Without a signed update (updater key not set
+up, or a build without the key) the button downloads this platform's
+installer straight from the release instead.
+
+### In-app updates: one-time key setup (free)
+
+The updater key is a minisign key pair, separate from OS code signing (§3)
+and free. Its private half signs every update file in CI; its public half is
+compiled into the app, which installs only files that verify against it.
+
+1. Generate it on your machine (it asks for a password; keep both safe):
+
+   ```bash
+   npx tauri signer generate -w ~/.tauri/coretools-updater.key
+   ```
+
+2. In `jaychandra1/coretools` → Settings → Secrets and variables → Actions:
+   - **Secret** `TAURI_SIGNING_PRIVATE_KEY` — the contents of
+     `~/.tauri/coretools-updater.key`.
+   - **Secret** `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — its password.
+   - **Variable** (Variables tab) `TAURI_UPDATER_PUBKEY` — the contents of
+     `~/.tauri/coretools-updater.key.pub`.
+3. Release as usual. The release gate refuses a half setup; the summary says
+   "In-app updates: signed". Each release then also carries the update files'
+   signatures (`*.sig`), `CoreTools-macOS.app.tar.gz`, and `updater.json` —
+   the manifest installed copies poll at
+   `https://github.com/jaychandra1/artifacts/releases/download/coretools-latest/updater.json`.
+
+The first release built with the key is the first that can update itself;
+copies installed before it keep downloading the installer, once. **Back up the
+private key and password offline.** Losing the key means installed copies
+can't verify later updates and must reinstall by hand once from a build with
+a new key; leaking it means rotate it the same way and treat it like a
+release-pipeline compromise (`docs/runbooks/release-pipeline-compromise.md`).
+Local builds have no updater key, so they never update themselves.
 
 - The app shows its version in the header (click it for *About &
   diagnostics*); each release lists changes in `CHANGELOG.md` and on its
   `coretools-v<version>` release in `jaychandra1/artifacts`.
-- Users update by downloading the new installer over the old one; vault and
-  JSON-Studio data live in the webview profile and survive reinstalls. **No
+- Users update with **Update now**, or by downloading the new installer over
+  the old one; vault and JSON-Studio data live in the webview profile and
+  survive both. **No
   downgrade past 1.2:** older versions can't open an upgraded vault.
 - **Updates never delete the vault.** Installing over an older version runs
   that version's uninstaller; Tauri's stock installer opens it with its

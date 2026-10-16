@@ -62,7 +62,18 @@
             CoreTools {updates.available.version}
           </strong>
           {#if updates.available.notice}<p>{updates.available.notice}</p>{/if}
-          <button class="primary" onclick={() => updates.openRelease()}>Open the download page</button>
+          {#if updates.installing}
+            <p role="status">
+              {updates.installing.phase === "installing"
+                ? "Installing — CoreTools restarts when it's done."
+                : `Downloading…${updates.installing.percent === null ? "" : ` ${updates.installing.percent}%`}`}
+            </p>
+          {:else}
+            {#if updates.installError}<p role="alert">{updates.installError}</p>{/if}
+            <button class="primary" onclick={() => updates.update()}>Update now</button>
+            <button onclick={() => updates.download()}>Download installer</button>
+            <button onclick={() => updates.openRelease()}>What's new</button>
+          {/if}
         </div>
       {/if}
       <label class="inline">

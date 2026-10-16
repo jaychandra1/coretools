@@ -206,8 +206,14 @@ fn open_external_url(url: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let context = tauri::generate_context!();
+    // In-app updates only where the release workflow compiled in a public key.
+    let updater_enabled = updates::updater_configured(context.config());
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    if updater_enabled {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+    builder
         .setup(|app| {
             diagnostics::init(app);
             // Answer the QR scanner's camera request ourselves instead of
@@ -220,6 +226,7 @@ pub fn run() {
         .manage(AuthorizedPaths::default())
         .manage(cloud::CloudState::default())
         .manage(secure_clipboard::SecureClipboard::default())
+        .manage(updates::UpdaterEnabled(updater_enabled))
         .invoke_handler(tauri::generate_handler![
             pick_open_path,
             pick_save_path,
@@ -244,9 +251,10 @@ pub fn run() {
             secure_clipboard::clipboard_copy_secret,
             secure_clipboard::clipboard_clear_if,
             updates::check_for_update,
+            updates::install_update,
             diagnostics::diagnostics_record,
             diagnostics::diagnostics_report
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running CoreTools");
 }

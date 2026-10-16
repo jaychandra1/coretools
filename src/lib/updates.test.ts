@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { bridge, openExternal, record } = vi.hoisted(() => ({
-  bridge: { check: vi.fn() },
+  bridge: { check: vi.fn(), install: vi.fn() },
   openExternal: vi.fn(),
   record: vi.fn(),
 }));
@@ -35,6 +35,7 @@ function release(version: string, extra: Record<string, unknown> = {}) {
     releaseUrl: `https://github.com/jaychandra1/artifacts/releases/tag/coretools-v${version}`,
     notice: null,
     security: false,
+    downloadUrl: `https://github.com/jaychandra1/artifacts/releases/download/coretools-v${version}/CoreTools-Windows-Setup.exe`,
     ...extra,
   };
 }
@@ -51,6 +52,8 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   storage.clear();
   bridge.check.mockReset();
+  bridge.install.mockReset();
+  openExternal.mockReset();
   record.mockReset();
 });
 
@@ -143,6 +146,78 @@ describe("update notifications", () => {
     updates.setPref("off");
     expect(updates.available).toBeNull();
     expect(storage.has("coretools.updates.latest")).toBe(false);
+  });
+
+  it("drops a remembered download link outside the release downloads", () => {
+    storage.set(
+      "coretools.updates.latest",
+      JSON.stringify(release("1.2.2", { downloadUrl: "https://evil.example/setup.exe" })),
+    );
+    const updates = started({
+      "coretools.updates": "on",
+      "coretools.updates.checkedAt": String(NOW - CHECK_EVERY_MS / 2),
+    });
+    expect(updates.available?.version).toBe("1.2.2");
+    expect(updates.available?.downloadUrl).toBeNull();
+  });
+
+  it("updates in the app, reporting the download and then the install", async () => {
+    bridge.check.mockResolvedValue(release("1.2.2"));
+    const seen: unknown[] = [];
+    bridge.install.mockImplementation(async (onProgress: (p: unknown) => void) => {
+      onProgress({ phase: "downloading", downloaded: 0, total: null });
+      seen.push(updates.installing);
+      onProgress({ phase: "downloading", downloaded: 512, total: 2048 });
+      seen.push(updates.installing);
+      onProgress({ phase: "installing" });
+      seen.push(updates.installing);
+    });
+    const updates = started({ "coretools.updates": "on" });
+    await vi.advanceTimersByTimeAsync(0);
+    await updates.update();
+    expect(seen).toEqual([
+      { phase: "downloading", percent: null },
+      { phase: "downloading", percent: 25 },
+      { phase: "installing", percent: 100 },
+    ]);
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it("downloads the installer instead when this build or release has no signed update", async () => {
+    bridge.check.mockResolvedValue(release("1.2.2"));
+    const updates = started({ "coretools.updates": "on" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    bridge.install.mockRejectedValue("update_unavailable");
+    await updates.update();
+    expect(openExternal).toHaveBeenLastCalledWith(
+      "https://github.com/jaychandra1/artifacts/releases/download/coretools-v1.2.2/CoreTools-Windows-Setup.exe",
+    );
+    expect(updates.installing).toBeNull();
+    expect(updates.installError).toBe("");
+
+    // A release that lists no installer for this platform: its page.
+    updates.available = release("1.2.2", { downloadUrl: null });
+    bridge.install.mockRejectedValue("update_none");
+    await updates.update();
+    expect(openExternal).toHaveBeenLastCalledWith(
+      "https://github.com/jaychandra1/artifacts/releases/tag/coretools-v1.2.2",
+    );
+  });
+
+  it("explains a failed update and leaves the download to the user", async () => {
+    bridge.check.mockResolvedValue(release("1.2.2"));
+    const updates = started({ "coretools.updates": "on" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    bridge.install.mockRejectedValue("update_network");
+    await updates.update();
+    expect(updates.installError).toMatch(/connection/);
+    bridge.install.mockRejectedValue("update_failed");
+    await updates.update();
+    expect(updates.installError).toMatch(/Download the installer/);
+    expect(openExternal).not.toHaveBeenCalled();
+    expect(record).toHaveBeenCalledWith("updates", "update_failed");
   });
 
   it("shows nothing for a release that isn't newer than this build", async () => {

@@ -8,6 +8,7 @@ import type {
   SecureClipboardBridge,
   UpdateBridge,
   UpdateInfo,
+  UpdateProgress,
 } from "./types";
 import type { RemoteBackup } from "../core/authenticator/cloud-sync";
 
@@ -136,6 +137,12 @@ const tauriUpdates: UpdateBridge = {
   async check(): Promise<UpdateInfo> {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<UpdateInfo>("check_for_update");
+  },
+  async install(onProgress: (progress: UpdateProgress) => void): Promise<void> {
+    const { invoke, Channel } = await import("@tauri-apps/api/core");
+    const channel = new Channel<UpdateProgress>();
+    channel.onmessage = onProgress;
+    await invoke("install_update", { onProgress: channel });
   },
 };
 
