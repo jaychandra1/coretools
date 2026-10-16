@@ -15,6 +15,8 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+## [1.2.6] — 2026-10-16
+
 ### Added
 
 - **Update now, inside the app.** When a new version is out, *Update now*
