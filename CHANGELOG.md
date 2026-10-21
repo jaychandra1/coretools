@@ -15,6 +15,8 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-10-21
+
 ### Security
 
 - **Updates can't be swapped for an older build.** The in-app updater now
