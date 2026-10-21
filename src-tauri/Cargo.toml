@@ -37,7 +37,7 @@ serde_json = "1"
 # TLS-inspecting corporate proxies the OS trusts work (audit L11).
 # keyring's platform features are target-gated: each OS only compiles its
 # own store.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 sha2 = "0.10"
 base64 = "0.22"
