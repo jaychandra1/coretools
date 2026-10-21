@@ -63,6 +63,10 @@ changing anything when `## [Unreleased]` is empty.
 - **Disconnecting Google is reported honestly**: when Google doesn't confirm
   the access was removed (or the keychain can't be read), CoreTools says so
   and points to where to remove it, instead of reporting success.
+- **The updater no longer unpacks zip archives.** CoreTools' updates are
+  the installer and the AppImage themselves, so the support for Tauri v1's
+  zipped update bundles — and the `zip` library with three known
+  vulnerabilities (RUSTSEC-2026-0367, -0368, -0369) — is gone.
 - **Every downloadable file is covered by the signed checksums.** A
   release's `SHA256SUMS.txt` — signed by the release workflow — now also
   lists the in-app update files and their signatures, not just the

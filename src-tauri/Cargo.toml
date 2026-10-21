@@ -20,7 +20,11 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 # In-app updates: download, verify (minisign) and install a signed release
 # (src/updates.rs). Registered only in builds with an updater public key.
-tauri-plugin-updater = "2"
+# Without the default `zip` feature: it only unpacks Tauri v1's zipped
+# (Windows) and gzipped (Linux) update bundles, and releases publish the
+# NSIS installer and the AppImage themselves (macOS's .app.tar.gz needs no
+# feature). It also pulled in `zip` 4, with RUSTSEC-2026-0367/0368/0369.
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "system-proxy"] }
 # Reads an update signature's trusted comment with the same parser the
 # updater verifies it with (src/updates.rs, audit N1). MUST match the
 # version tauri-plugin-updater uses (2.14 → 0.3), so only one copy builds.
