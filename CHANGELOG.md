@@ -15,6 +15,8 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-10-21
+
 The first published release with the changes below: 1.3.0 was tagged but
 never published (its build stopped on a code-formatting check).
 
