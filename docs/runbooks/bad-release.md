@@ -41,8 +41,7 @@ that far.
 - Your own smoke test of the published installers fails.
 - The release canary (Actions → Release canary) fails. (A `v*` tag whose
   release never published keeps it red without anything being wrong with
-  what is published — v1.2.6 is one; see DEPLOYMENT.md → "Release canary"
-  for the two ways out.)
+  what is published; see DEPLOYMENT.md → "Release canary" for the ways out.)
 
 ## Immediate actions
 

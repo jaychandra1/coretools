@@ -15,11 +15,6 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
-## [1.3.1] — 2026-10-21
-
-The first published release with the changes below: 1.3.0 was tagged but
-never published (its build stopped on a code-formatting check).
-
 ### Security
 
 - **Updates can't be swapped for an older build.** The in-app updater now
@@ -74,6 +69,12 @@ never published (its build stopped on a code-formatting check).
 
 ### Added
 
+- **Update now, inside the app.** When a new version is out, *Update now*
+  downloads it, checks its signature, installs it and restarts CoreTools —
+  with progress in the banner, and your data kept. Only updates signed by
+  the CoreTools release process install. Until updates are signed (and for
+  copies installed before this version) the button downloads the installer
+  for your system directly, instead of opening the release page.
 - **Undo for a deleted 2FA account**, and **local snapshots**: before a
   password change or a restore, CoreTools keeps a copy of the vault (the
   last five) that Settings can roll back to.
@@ -145,21 +146,6 @@ never published (its build stopped on a code-formatting check).
   - Backup-merge and record-sealing rules are shared, tested modules.
   - Drag-to-reorder is one implementation for space tabs, logins and 2FA
     accounts.
-
-## [1.3.0] — 2026-10-21
-
-Tagged but never published; everything in it ships in 1.3.1.
-
-## [1.2.6] — 2026-10-16
-
-### Added
-
-- **Update now, inside the app.** When a new version is out, *Update now*
-  downloads it, checks its signature, installs it and restarts CoreTools —
-  with progress in the banner, and your data kept. Only updates signed by
-  the CoreTools release process install. Until updates are signed (and for
-  copies installed before this version) the button downloads the installer
-  for your system directly, instead of opening the release page.
 
 ## [1.2.5] — 2026-10-15
 

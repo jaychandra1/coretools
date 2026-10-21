@@ -440,16 +440,18 @@ last edited its schedule — when:
 It runs on GitHub, so it can't tell you GitHub itself is down: keep a free
 external uptime monitor on the site as well ("Manual steps").
 
-**A tag that never published keeps it red.** `v1.2.6` is tagged, but no
-`coretools-v1.2.6` release was ever published, so the canary fails from its
-first run — correctly: the newest tag isn't what people download. Two ways
-out, both fine:
+**A tag that never published keeps it red** — correctly: the newest tag
+isn't what people download. Ways out:
 
-- **Ship 1.2.7** (merge *Generate Cargo.lock* first, then Actions →
-  Prepare release). Once it is published, the canary only looks at the
-  newest tag and goes green.
-- **Ignore 1.2.6** until then:
-  `gh variable set RELEASE_CANARY_IGNORE_VERSIONS -R jaychandra1/coretools --body 1.2.6`
+- **Ship the next version** (with `src-tauri/Cargo.lock` committed). Once it
+  is published, the canary only looks at the newest tag and goes green.
+- **A tag that was never published and never will be** (nothing in the
+  artifacts repo under `coretools-v<version>`): delete it, on GitHub and
+  locally — `git push origin :refs/tags/v<version>` and
+  `git tag -d v<version>`. Never delete or move a tag whose release was
+  published.
+- **Ignore a version** meanwhile:
+  `gh variable set RELEASE_CANARY_IGNORE_VERSIONS -R jaychandra1/coretools --body <version>`
   (comma-separated for several). Delete the variable once a newer version
   is out, so it can't hide a later problem.
 
@@ -993,9 +995,6 @@ order of value:
       are a major version behind and run on Node 20, which reached end of
       life), and keep merging them — on a private Free repository nothing
       merges them automatically (see "Dependabot auto-merge").
-- [ ] **Clear the unpublished `v1.2.6` tag from the release canary** —
-      ship 1.2.7, or set `RELEASE_CANARY_IGNORE_VERSIONS` to `1.2.6` until
-      then ("Release canary").
 - [ ] Optional: set `RELEASE_ROLLOUT` (e.g. `25`) to stage every release by
       default, and widen each with *Promote or roll back latest*.
 
