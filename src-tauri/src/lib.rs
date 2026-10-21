@@ -45,7 +45,10 @@ pub(crate) async fn confirm(
             .message(message)
             .title(title)
             .kind(MessageDialogKind::Info)
-            .buttons(MessageDialogButtons::OkCancelCustom(ok_label, "Cancel".to_string()))
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                ok_label,
+                "Cancel".to_string(),
+            ))
             .blocking_show()
     })
     .await

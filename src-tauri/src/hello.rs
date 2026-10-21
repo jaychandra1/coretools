@@ -71,8 +71,7 @@ mod imp {
             for _ in 0..50 {
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 unsafe {
-                    if let Ok(hwnd) =
-                        FindWindowW(w!("Credential Dialog Xaml Host"), PCWSTR::null())
+                    if let Ok(hwnd) = FindWindowW(w!("Credential Dialog Xaml Host"), PCWSTR::null())
                     {
                         if !hwnd.is_invalid() {
                             let _ = SetForegroundWindow(hwnd);

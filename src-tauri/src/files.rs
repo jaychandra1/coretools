@@ -216,7 +216,9 @@ fn read_granted(grant: &Grant) -> Result<String, String> {
 
 fn check_write_size(len: usize) -> Result<(), String> {
     if len > MAX_WRITE_BYTES {
-        Err(format!("Refusing to write {len} bytes (limit {MAX_WRITE_BYTES} bytes)."))
+        Err(format!(
+            "Refusing to write {len} bytes (limit {MAX_WRITE_BYTES} bytes)."
+        ))
     } else {
         Ok(())
     }
@@ -331,7 +333,10 @@ fn busy(_error: &std::io::Error) -> bool {
 /// user picked the link itself, not where it points.
 fn write_in_place(target: &Path, contents: &[u8]) -> std::io::Result<()> {
     if fs::symlink_metadata(target).is_ok_and(|meta| meta.file_type().is_symlink()) {
-        return Err(std::io::Error::new(ErrorKind::PermissionDenied, "the file is a link"));
+        return Err(std::io::Error::new(
+            ErrorKind::PermissionDenied,
+            "the file is a link",
+        ));
     }
     let mut file = OpenOptions::new()
         .write(true)

@@ -216,10 +216,16 @@ mod tests {
     #[test]
     fn grants_the_camera_only_to_the_armed_app_origin() {
         assert!(camera_allowed(true, "http://tauri.localhost/"));
-        assert!(camera_allowed(true, "https://tauri.localhost/#/authenticator"));
+        assert!(camera_allowed(
+            true,
+            "https://tauri.localhost/#/authenticator"
+        ));
         assert!(!camera_allowed(false, "http://tauri.localhost/"));
         assert!(!camera_allowed(true, "https://evil.example/"));
-        assert!(!camera_allowed(true, "http://tauri.localhost.evil.example/"));
+        assert!(!camera_allowed(
+            true,
+            "http://tauri.localhost.evil.example/"
+        ));
         assert!(!camera_allowed(true, "not a uri"));
         assert!(!camera_allowed(true, ""));
     }

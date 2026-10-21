@@ -208,8 +208,18 @@ mod tests {
         assert!(!is_app_origin("http", Some("localhost"), Some(1420), false));
         assert!(!is_app_origin("http", Some("localhost"), Some(8080), true));
         assert!(!is_app_origin("https", Some("evil.example"), None, true));
-        assert!(!is_app_origin("http", Some("tauri.localhost.evil.example"), None, false));
-        assert!(!is_app_origin("http", Some("tauri.localhost"), Some(8080), false));
+        assert!(!is_app_origin(
+            "http",
+            Some("tauri.localhost.evil.example"),
+            None,
+            false
+        ));
+        assert!(!is_app_origin(
+            "http",
+            Some("tauri.localhost"),
+            Some(8080),
+            false
+        ));
         assert!(!is_app_origin("file", None, None, true));
         assert!(!is_app_origin("data", None, None, true));
     }
@@ -247,7 +257,9 @@ mod tests {
     #[test]
     fn opens_only_this_projects_github_pages_without_asking() {
         assert!(trusted("https://github.com/jaychandra1/artifacts/releases"));
-        assert!(trusted("https://github.com/jaychandra1/artifacts/releases/tag/x"));
+        assert!(trusted(
+            "https://github.com/jaychandra1/artifacts/releases/tag/x"
+        ));
     }
 
     #[test]

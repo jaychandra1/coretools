@@ -15,7 +15,8 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
-## [1.3.0] — 2026-10-21
+The first published release with the changes below: 1.3.0 was tagged but
+never published (its build stopped on a code-formatting check).
 
 ### Security
 
@@ -142,6 +143,10 @@ changing anything when `## [Unreleased]` is empty.
   - Backup-merge and record-sealing rules are shared, tested modules.
   - Drag-to-reorder is one implementation for space tabs, logins and 2FA
     accounts.
+
+## [1.3.0] — 2026-10-21
+
+Tagged but never published; everything in it ships in 1.3.1.
 
 ## [1.2.6] — 2026-10-16
 
