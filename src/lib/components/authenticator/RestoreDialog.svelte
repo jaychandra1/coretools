@@ -165,8 +165,9 @@
       file = await cloudBackup.fetchBackup(selected.id);
       // The current vault key opens this device's own recent backups without
       // retyping the password — but only when Windows Hello will still gate
-      // the restore. Without Hello, the password IS the device check.
-      if (authStore.helloSupported && authStore.encrypted) {
+      // the restore (verifyUserPresence: Hello turned on for this vault).
+      // Without it, the password IS the device check.
+      if (authStore.helloSupported && authStore.helloEnabled) {
         try {
           payload = await cloudBackup.decryptBackup(file);
           usedPassword = undefined;

@@ -204,7 +204,11 @@ export class CredentialStore {
     return {
       ready: () => this.init(),
       count: () => this.items.length,
-      open: (crypto) => this.#open(crypto),
+      // Read from disk, not memory: another window may have written since.
+      open: async (crypto) => {
+        await this.init();
+        await this.#open(crypto, await loadCredentials());
+      },
       close: () => this.#close(),
       exportPlain: (crypto) => this.#exportPlain(crypto),
       reseal: (from, to) => this.#reseal(from, to),
@@ -212,6 +216,10 @@ export class CredentialStore {
         this.#restoreRecords(items, mode, crypto, tombstones),
       adopt: (snap) => {
         this.items = snap.view;
+        if (snap.damaged) {
+          this.#damaged = snap.damaged;
+          this.unreadable = snap.damaged.length;
+        }
         // Log restored items only now that they are actually persisted.
         const restored = snap.view.filter((c) => this.#pendingRestored.has(c.id));
         this.#pendingRestored.clear();
@@ -308,6 +316,9 @@ export class CredentialStore {
     if (legacy.length) await this.#upgrade(legacy, crypto, epoch);
     const spaceOrder = cleanOrder(await this.#openList(SPACE_ORDER_KEY, crypto));
     const credentialOrder = [...new Set(await this.#openList(CREDENTIAL_ORDER_KEY, crypto))];
+    // Locked or read again meanwhile: what was decrypted here no longer
+    // applies (and must not reappear in a locked vault). The caller retries.
+    if (authStore.epoch !== epoch) return;
     this.items = view;
     this.#damaged = damaged;
     this.unreadable = damaged.length;
@@ -428,7 +439,13 @@ export class CredentialStore {
     if (this.credentialOrder.length) {
       meta[CREDENTIAL_ORDER_KEY] = await sealList(this.credentialOrder, to, CREDENTIAL_ORDER_KEY);
     }
-    return { stored, view, audit: { records: chain.records, head }, meta };
+    // Logins that couldn't be decrypted stay as they are (D-2, NEW-5).
+    return {
+      stored: [...stored, ...this.#damaged],
+      view,
+      audit: { records: chain.records, head },
+      meta,
+    };
   }
 
   async #restoreRecords(
@@ -477,9 +494,12 @@ export class CredentialStore {
       ...view.slice(plan.kept.length).map((c) => c.id),
       ...replaced.keys(),
     ]);
+    // Logins that couldn't be decrypted survive a merge, not a replace (NEW-5).
+    const damaged = mode === "merge" ? this.#damaged : [];
     return {
-      stored,
+      stored: [...stored, ...damaged],
       view,
+      damaged,
       added: plan.added.length,
       updated: plan.updated.length,
       skipped: plan.skipped,
@@ -516,6 +536,9 @@ export class CredentialStore {
         credentialId: r.credentialId ?? "",
         platform: r.platform ?? "",
       }));
+    // Nothing proves these weren't planted (deleting a sealed log and its
+    // head looks just like a pre-1.2 one): the log says where they came from.
+    legacy.push({ id: globalThis.crypto.randomUUID(), at: Date.now(), action: "log-imported", credentialId: "", platform: "" });
     const chain = await sealEvents(legacy, null, chainCrypto(crypto));
     const sealed = await sealHead(chain.head, chainCrypto(crypto));
     authStore.assertCurrent(epoch);
@@ -542,7 +565,8 @@ export class CredentialStore {
           if (stored) head = await openHead(stored.sealed, vault);
           const chain = await sealEvents(records, head, vault);
           const sealed = await sealHead(chain.head, vault);
-          await appendAuditRecords(chain.records, { sealed });
+          // Refused if the head moved since it was read (another window appended).
+          await appendAuditRecords(chain.records, { sealed }, stored);
           break;
         } catch (e) {
           if (!(e instanceof StaleVaultError) || attempt >= AUDIT_ATTEMPTS) throw e;

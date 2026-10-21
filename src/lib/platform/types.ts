@@ -60,8 +60,14 @@ export interface CloudBridge {
   connect(): Promise<CloudAccount>;
   /** Abort a connect() that is waiting for the browser. */
   cancelConnect(): Promise<void>;
-  /** Forget the credential locally and revoke it at Google (best effort). */
-  disconnect(): Promise<void>;
+  /**
+   * Forget the credential locally and revoke it at Google (best effort).
+   * `revoked` is false when Google didn't confirm the revocation (offline,
+   * unreachable, or the keychain couldn't be read): the grant may still be
+   * live, so tell the user to remove CoreTools' access in their Google
+   * Account (https://myaccount.google.com/connections).
+   */
+  disconnect(): Promise<{ revoked: boolean }>;
   list(): Promise<RemoteBackup[]>;
   upload(file: {
     name: string;

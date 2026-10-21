@@ -83,9 +83,11 @@ const tauriCloud: CloudBridge = {
     await invoke("cloud_cancel_connect");
   },
 
-  async disconnect(): Promise<void> {
+  async disconnect(): Promise<{ revoked: boolean }> {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("cloud_disconnect");
+    // Rust answers whether Google confirmed revoking the grant (N6).
+    const revoked = await invoke<boolean>("cloud_disconnect");
+    return { revoked: revoked === true };
   },
 
   async list(): Promise<RemoteBackup[]> {
@@ -177,10 +179,12 @@ export const tauriPlatform: Platform = {
     await invoke("qr_camera_armed", { armed });
   },
 
-  // Dialogs are opened in RUST (`pick_open_path` / `pick_save_path`), which
-  // canonicalizes and remembers the chosen path; the read/write commands only
-  // accept a remembered path, once. This keeps the security guarantee out of
-  // the webview: script injection cannot fabricate paths.
+  // Dialogs are opened in RUST (`pick_open_path` / `pick_save_path`); each
+  // path they return is a grant for one read (open) or one write (save) of
+  // exactly that string, used up by the read/write command, which also
+  // refuses the path if it no longer resolves where it did when picked.
+  // The security guarantee stays out of the webview: script injection
+  // cannot fabricate, reuse or swap paths.
   async openTextFile(): Promise<LoadedFile | null> {
     const { invoke } = await import("@tauri-apps/api/core");
 

@@ -643,8 +643,9 @@ export class CloudBackupController {
     const bridge = this.#bridge;
     if (!bridge) return;
     this.activity = "disconnecting";
+    let revoked = true;
     try {
-      await bridge.disconnect();
+      ({ revoked } = await bridge.disconnect());
     } catch (e) {
       this.notice = { kind: "error", text: describeCloudError(e).message };
       return;
@@ -656,10 +657,16 @@ export class CloudBackupController {
       accountHash: null,
       series: { authenticator: { ...EMPTY_SERIES }, credmanager: { ...EMPTY_SERIES } },
     });
-    this.notice = {
-      kind: "success",
-      text: "Google account disconnected. Existing backups stay in your Google Drive until you delete them.",
-    };
+    this.notice = revoked
+      ? {
+          kind: "success",
+          text: "Google account disconnected. Existing backups stay in your Google Drive until you delete them.",
+        }
+      : {
+          // Forgotten here, but Google didn't confirm: the user removes the access there.
+          kind: "warning",
+          text: "Disconnected on this device, but Google couldn't confirm the access was removed. Remove CoreTools under Third-party connections at myaccount.google.com. Your backups stay in Google Drive.",
+        };
   }
 
   #resetConnection(): void {

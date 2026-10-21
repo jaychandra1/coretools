@@ -40,6 +40,7 @@
     "copied-password": { text: "Password copied", tone: "access" },
     "restored-from-backup": { text: "Restored from backup", tone: "ok" },
     "log-reset": { text: "Log restarted after tampering was found", tone: "bad" },
+    "log-imported": { text: "Older entries below imported from an unprotected log — not verifiable", tone: "warn" },
   };
 
   const ACCESS: AuditAction[] = ["revealed", "copied-password"];

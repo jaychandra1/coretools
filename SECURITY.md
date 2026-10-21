@@ -122,16 +122,22 @@ exists, and can't make Windows open a UNC or device path (which would send
 the user's network credentials to that server). After a grant matches, the
 path must still resolve to where it pointed when the user picked it.
 Writes go to a temporary file that replaces the target, so a crash never
-leaves a half-written file. The webview holds no dialog capability of its
-own (`capabilities/default.json` grants only `core:default`).
+leaves a half-written file — except in a folder that accepts no new files,
+where the file is overwritten in place. On macOS and Linux the temporary
+file is readable by its owner only and takes over the replaced file's
+permissions, so a save never widens who can read a file. The webview holds
+no dialog capability of its own (`capabilities/default.json` grants only
+`core:default`).
 
 The webview also can't leave the app: a navigation guard refuses every
 navigation to another origin, the CSP forbids form submissions
 (`form-action 'none'`), and links open in the system browser only through
-`open_external_url` — directly for a short allow-list (the project's GitHub
-and site, Google account pages), otherwise only after the user confirms a
-native dialog naming the site, at most ten per minute. Only one copy of the
-desktop app runs at a time; a second launch focuses the first.
+`open_external_url` — directly only for the project's own GitHub pages
+without a query string or fragment, otherwise only after the user confirms
+a native dialog that shows the link (its first 200 characters), at most ten
+per minute. A confirmation covers that exact link for the session, not its
+site. Only one copy of the desktop app runs at a time; a second launch
+focuses the first.
 
 | Command | Purpose | Guards |
 | --- | --- | --- |
@@ -139,8 +145,8 @@ desktop app runs at a time; a second launch focuses the first.
 | `pick_save_path(defaultName)` | Native save-dialog | The suggested name is reduced to a plain file name (no folders, ≤ 120 characters, known extensions only); the target becomes a grant for one write |
 | `read_text_file(path)` | Read a user-selected file | Exact match with an unused read grant before any filesystem access; still resolves to the picked file; regular files only; read capped at 50 MiB while reading; UTF-8 only |
 | `write_text_file(path, contents)` | Write to a user-selected path | Unused write grant; refuses writes above 100 MiB; temporary file renamed over the target |
-| `write_binary_file` (raw body, `x-path` header) | Binary counterpart (e.g. .xlsx exports) | Same grant rules; the bytes travel as the raw IPC body, not as JSON |
-| `open_external_url(url)` | Open a saved login page or help link in the system browser | `http`/`https` with a host and no embedded credentials (≤ 2048 chars); allow-listed hosts open directly, others only after a native confirmation naming the host (once per host per session); at most 10 per minute |
+| `write_binary_file` (raw body, `x-path` header) | Binary counterpart (e.g. .xlsx exports) | Same grant rules; the bytes travel as the raw IPC body (as a JSON byte array only where Tauri falls back to postMessage IPC), size-checked before they are copied |
+| `open_external_url(url)` | Open a saved login page or help link in the system browser | `http`/`https` with a host and no embedded credentials (≤ 2048 chars); only the project's GitHub pages without query or fragment open directly, anything else only after a native confirmation showing the link (once per exact link per session); at most 10 per minute |
 | `qr_camera_armed(armed)` | The QR scanner is (not) using the camera | The camera is granted only to the app's own page and only while armed |
 | `hello_available()` | Report whether Windows Hello is set up | Read-only capability probe; Windows-only (`false` elsewhere) |
 | `hello_create_key(challenge)` | Create/replace the app's Hello key and sign the enrollment challenge | OS shows the Hello verification prompt; challenge limited to 128 bytes; never sees secrets or passwords |
@@ -151,7 +157,7 @@ desktop app runs at a time; a second launch focuses the first.
 | `cloud_status()` | Connected account email + computer name | Reads the OS keychain only; no network |
 | `cloud_connect()` | Google sign-in | System browser + loopback redirect + PKCE (S256) + CSRF state; 5-minute timeout; refuses if Drive access was unticked; refresh token stored in the OS keychain, never returned to the webview |
 | `cloud_cancel_connect()` | Abort a waiting sign-in | Sets a flag the listener polls |
-| `cloud_disconnect()` | Revoke + forget the credential | Revokes at Google first (5 s timeout), then always deletes the keychain entry; reports whether the revoke succeeded |
+| `cloud_disconnect()` | Revoke + forget the credential | Revokes at Google first (5 s timeout), then always deletes the keychain entry; reports whether the revoke succeeded (an unreadable keychain counts as not revoked) |
 | `cloud_list()` | List backup versions | App-data folder only (`drive.appdata` scope); follows result pages; each response size-capped while reading |
 | `cloud_upload(name, content, deviceId, deviceLabel, records)` | Upload one encrypted backup version | Name must match `coretools-authenticator-*.json` or `coretools-credmanager-*.json` (charset-restricted); content ≤ 5 MiB; labels sanitized and byte-capped; the record count is stored with the file (shrink protection); always written to the connected account's app-data folder |
 | `cloud_download(id)` | Fetch one version | Id charset-restricted; response ≤ 5 MiB; UTF-8 only |

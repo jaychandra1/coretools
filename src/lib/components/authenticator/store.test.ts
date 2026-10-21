@@ -727,16 +727,44 @@ describe("robustness (data audit)", () => {
     expect(records.filter((r) => r.sealed).length).toBeGreaterThan(0); // history kept
   });
 
+  it("marks a plaintext log sealed on upgrade as unverifiable, even a planted one", async () => {
+    await setUp();
+    // Someone deletes the sealed log and its head, and plants a plaintext event.
+    const db = await new Promise<IDBDatabase>((resolve) => {
+      const request = indexedDB.open("coretools-authenticator");
+      request.onsuccess = () => resolve(request.result);
+    });
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(["audit", "meta"], "readwrite");
+      tx.objectStore("audit").clear();
+      tx.objectStore("meta").delete("auditHead");
+      tx.oncomplete = () => resolve();
+    });
+    db.close();
+    await rawPut("audit", { id: "forged", at: 1, action: "created", credentialId: "x", platform: "Forged" });
+    m.authStore.dispose();
+    m.db.unwatchExternalChanges();
+    m = await load();
+    await m.credentialStore.init();
+    await m.authStore.unlock(STRONG);
+    await vi.waitFor(async () => expect((await m.db.loadAuditRecords()).every((r) => r.sealed)).toBe(true));
+    await m.credentialStore.loadAudit();
+    // Newest first: the import marker sits above everything it can't vouch for.
+    expect(m.credentialStore.audit.map((e) => e.action)).toEqual(["log-imported", "created"]);
+  });
+
   it("lets the sealed copy of the security settings win over planted values", async () => {
     await setUp();
-    await m.authStore.updateSettings({ credentialsRevealAuth: true, autoLockMinutes: 5 });
+    // Looser than the defaults, so only the sealed copy can bring these back
+    // (the fallback for a missing one would give the defaults).
+    await m.authStore.updateSettings({ credentialsRevealAuth: false, autoLockMinutes: 30, clipboardClear: false });
     const stored = await m.db.loadSettings();
-    await rawPut("meta", { ...stored, credentialsRevealAuth: false, autoLockMinutes: 0 }, "settings");
+    await rawPut("meta", { ...stored, autoLockMinutes: 0 }, "settings");
     m.authStore.dispose();
     m = await load();
-    expect(m.authStore.settings.credentialsRevealAuth).toBe(false); // plaintext, while locked
+    expect(m.authStore.settings.autoLockMinutes).toBe(0); // plaintext, while locked
     await m.authStore.unlock(STRONG);
-    expect(m.authStore.settings).toMatchObject({ credentialsRevealAuth: true, autoLockMinutes: 5 });
+    expect(m.authStore.settings).toMatchObject({ credentialsRevealAuth: false, autoLockMinutes: 30, clipboardClear: false });
   });
 
   it("doesn't let planted settings win by deleting or swapping the sealed copy (N3)", async () => {
@@ -776,5 +804,206 @@ describe("robustness (data audit)", () => {
     await m.authStore.confirmUser(prompt);
     await m.authStore.confirmUser(prompt);
     expect(asked).toBe(3);
+  });
+});
+
+describe("locking, wiping and other windows while work is in flight", () => {
+  async function setUp() {
+    m = await load();
+    await m.authStore.addAccounts([ACCOUNT]);
+    await m.authStore.setPassword(STRONG);
+    await m.credentialStore.init();
+    return m.credentialStore.add(LOGIN);
+  }
+
+  /** Hold the Credential Manager's part of an in-place reload until released. */
+  function holdReloadHook() {
+    let release!: () => void;
+    const held = { reached: false, release: () => release() };
+    const wait = new Promise<void>((resolve) => (release = resolve));
+    const hooks = m.credentialStore.vaultHooks();
+    m.authStore.registerCredentials({
+      ...hooks,
+      reload: async (crypto) => {
+        held.reached = true;
+        await wait;
+        return hooks.reload(crypto);
+      },
+    });
+    return held;
+  }
+
+  it("keeps a vault locked during a reload locked: nothing decrypted comes back", async () => {
+    await setUp();
+    const id = m.authStore.entries[0].id;
+    const held = holdReloadHook();
+    await otherWindowWrites();
+    await vi.waitFor(() => expect(held.reached).toBe(true));
+    m.authStore.lock("auto"); // the idle timer fires meanwhile
+    held.release();
+    await m.authStore.beginWrite();
+    expect(m.authStore.locked).toBe(true);
+    expect(m.authStore.secretOf(id)).toBeNull();
+    expect(m.authStore.entries[0].issuer).toBe("");
+    expect(m.credentialStore.items[0].platform).toBe("");
+  });
+
+  it("refuses a password change when the vault locks during it", async () => {
+    m = await load();
+    await m.authStore.setPassword(STRONG); // logins only, no 2FA accounts
+    await m.credentialStore.init();
+    await m.credentialStore.add(LOGIN);
+    const release = holdKeyDerivation();
+    const change = m.authStore.setPassword(STRONG_2);
+    await vi.waitFor(() => expect(kdfGate.reached).toBe(true));
+    m.authStore.lock();
+    release();
+    await expect(change).rejects.toThrow(/nothing was saved/);
+    await m.authStore.unlock(STRONG); // nothing was re-keyed
+    expect(m.credentialStore.items[0].platform).toBe(LOGIN.platform);
+    expect(m.credentialStore.unreadable).toBe(0);
+  });
+
+  it("never writes plaintext deletion records when the vault locks mid-delete", async () => {
+    await setUp();
+    const id = m.authStore.entries[0].id;
+    const subtle = globalThis.crypto.subtle;
+    const digest = subtle.digest.bind(subtle);
+    let armed = true;
+    const spy = vi.spyOn(subtle, "digest").mockImplementation(async (...args: Parameters<SubtleCrypto["digest"]>) => {
+      if (armed) {
+        armed = false;
+        m.authStore.lock();
+      }
+      return digest(...args);
+    });
+    try {
+      await expect(m.authStore.remove(id)).rejects.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+    const stored = (await rawGet("meta", "tombstones")) as { plain?: unknown } | undefined;
+    expect(stored?.plain).toBeUndefined();
+    expect(await m.db.loadEntries()).toHaveLength(1);
+  });
+
+  it("unlocks with the logins on disk, even when another window adds one mid-unlock", async () => {
+    await setUp();
+    const x = await m.credentialStore.add({ ...LOGIN, platform: "Other window", username: "x" });
+    const xRaw = (await m.db.loadCredentials()).find((c) => c.id === x.id)!;
+    await otherWindowWrites(async () => {
+      const db = await new Promise<IDBDatabase>((resolve) => {
+        const request = indexedDB.open("coretools-authenticator");
+        request.onsuccess = () => resolve(request.result);
+      });
+      await new Promise<void>((resolve) => {
+        const tx = db.transaction("credentials", "readwrite");
+        tx.objectStore("credentials").delete(x.id);
+        tx.oncomplete = () => resolve();
+      });
+      db.close();
+    });
+    await vi.waitFor(() => expect(m.credentialStore.items).toHaveLength(1));
+    await m.authStore.beginWrite();
+    m.authStore.lock();
+
+    // Hold the first decryption of a login during the unlock.
+    const hooks = m.credentialStore.vaultHooks();
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => (release = resolve));
+    let reached = false;
+    let first = true;
+    m.authStore.registerCredentials({
+      ...hooks,
+      open: async (crypto) => {
+        if (!first) return hooks.open(crypto);
+        first = false;
+        return hooks.open({
+          ...crypto,
+          open: async (blob, binding) => {
+            reached = true;
+            await wait;
+            return crypto.open(blob, binding);
+          },
+        });
+      },
+    });
+    const unlocking = m.authStore.unlock(STRONG);
+    await vi.waitFor(() => expect(reached).toBe(true));
+    await otherWindowWrites(() => rawPut("credentials", xRaw)); // another window adds X now
+    await vi.waitFor(() => expect(m.credentialStore.items).toHaveLength(2));
+    release();
+    await unlocking;
+    expect(m.credentialStore.items.map((c) => c.platform).sort()).toEqual([LOGIN.platform, "Other window"]);
+    await m.authStore.setPassword(STRONG_2);
+    expect(await m.db.loadCredentials()).toHaveLength(2); // X survives the re-key
+  });
+
+  it("doesn't bring a wiped vault back from a reload that was running", async () => {
+    await setUp();
+    const held = holdReloadHook();
+    await otherWindowWrites();
+    await vi.waitFor(() => expect(held.reached).toBe(true));
+    const wiping = m.authStore.wipe(); // waits for the reload
+    held.release();
+    await wiping;
+    await m.authStore.beginWrite();
+    expect(m.authStore.vault).toBeNull();
+    expect(m.authStore.entries).toHaveLength(0);
+    expect(await m.db.loadEntries()).toHaveLength(0);
+  });
+
+  async function withDamagedLogin(): Promise<string> {
+    await setUp();
+    const second = await m.credentialStore.add({ ...LOGIN, platform: "Zulu", username: "z" });
+    const raw = (await m.db.loadCredentials()).find((c) => c.id === second.id)!;
+    await rawPut("credentials", { ...raw, meta: { ...raw.meta!, ct: "AAAA" } });
+    m.authStore.dispose();
+    m.db.unwatchExternalChanges();
+    m = await load();
+    await m.credentialStore.init();
+    await m.authStore.unlock(STRONG);
+    expect(m.credentialStore.unreadable).toBe(1);
+    return second.id;
+  }
+
+  it("keeps a login that couldn't be decrypted through a password change (NEW-5)", async () => {
+    const damaged = await withDamagedLogin();
+    await m.authStore.setPassword(STRONG_2);
+    expect((await m.db.loadCredentials()).map((c) => c.id)).toContain(damaged);
+    expect(m.credentialStore.unreadable).toBe(1);
+  });
+
+  it("keeps it through a merge restore, not through a replace (NEW-5)", async () => {
+    const damaged = await withDamagedLogin();
+    const { content } = await m.authStore.sealCloudBackup({ id: "dev-a", label: "PC-A" }, "credmanager");
+    const payload = (await m.authStore.openCloudBackupWithVaultKey(m.cloud.parseCloudBackup(content)))!;
+    await m.authStore.restoreFromBackup(m.cloud.restoreParts([payload], "credmanager"), "merge");
+    expect((await m.db.loadCredentials()).map((c) => c.id)).toContain(damaged);
+    await m.authStore.restoreFromBackup(m.cloud.restoreParts([payload], "credmanager"), "replace");
+    expect((await m.db.loadCredentials()).map((c) => c.id)).not.toContain(damaged);
+    expect(m.credentialStore.unreadable).toBe(0);
+  });
+
+  it("ignores plaintext deletion records planted in an encrypted vault", async () => {
+    await setUp();
+    await rawPut("meta", { plain: { entries: [{ k: "a".repeat(64), at: Date.now() }], credentials: [] } }, "tombstones");
+    m.authStore.dispose();
+    m.db.unwatchExternalChanges();
+    m = await load();
+    await m.credentialStore.init();
+    await m.authStore.unlock(STRONG);
+    const { content } = await m.authStore.sealCloudBackup({ id: "dev-a", label: "PC-A" }, "authenticator");
+    const payload = await m.authStore.openCloudBackupWithVaultKey(m.cloud.parseCloudBackup(content));
+    expect(payload!.tombstones).toHaveLength(0);
+  });
+
+  it("refuses an audit append whose chain head moved since it was read", async () => {
+    await setUp();
+    const head = await m.db.loadAuditHead();
+    const records = await m.db.loadAuditRecords();
+    // Another window appended: the head on disk is no longer the one read.
+    await rawPut("meta", { sealed: { ...head!.sealed, ct: "moved" } }, "auditHead");
+    await expect(m.db.appendAuditRecords(records.slice(0, 1), head!, head)).rejects.toThrow(/changed in another window/);
   });
 });

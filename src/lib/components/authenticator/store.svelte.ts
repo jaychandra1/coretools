@@ -448,16 +448,27 @@ export class AuthStore {
   }
 
   async #reload(): Promise<void> {
-    this.#epoch++;
+    const epoch = ++this.#epoch;
     try {
       const key = this.locked ? null : this.#key;
       const state = await loadVaultState();
-      if (key && (await opens(key, state.vault))) {
+      const opensWithKey = key !== null && (await opens(key, state.vault));
+      // Locked, wiped or rolled back while reading: read again from there.
+      if (epoch !== this.#epoch) {
+        this.#reloadAgain = true;
+        return;
+      }
+      if (key && opensWithKey) {
         try {
-          await this.#reopen(key, state);
+          if (await this.#reopen(key, state, epoch)) return;
+          this.#reloadAgain = true; // locked meanwhile: read again, locked
           return;
         } catch (e) {
           noteFailure("vault", "reopen after external change failed", e);
+          if (epoch !== this.#epoch) {
+            this.#reloadAgain = true;
+            return;
+          }
         }
       }
       const wasUnlocked = this.encrypted && !this.locked;
@@ -475,14 +486,31 @@ export class AuthStore {
     }
   }
 
-  /** The vault changed on disk but its key didn't: show the new state, still unlocked. */
-  async #reopen(key: CryptoKey, state: VaultState): Promise<void> {
+  /**
+   * The vault changed on disk but its key didn't: show the new state, still
+   * unlocked. False — nothing changed here — when the vault was locked (or
+   * replaced) while decrypting: secrets mustn't come back into a locked one.
+   */
+  async #reopen(key: CryptoKey, state: VaultState, epoch: number): Promise<boolean> {
     const opened = await this.#decrypt(key, state.entries, state.settings);
-    await this.#credentials?.reload(cryptoFor(key));
+    await this.#credentials?.reload(cryptoFor(key)); // skips its own state on the same condition
+    if (epoch !== this.#epoch || this.locked) return false;
     this.vault = state.vault ?? null;
     const { sealed: _sealed, ...plainSettings } = state.settings;
     this.settings = plainSettings;
     this.#enter(key, opened);
+    return true;
+  }
+
+  /**
+   * After a write that went through: whether memory can take it in. Not when
+   * the vault was locked or replaced while it ran — memory is read again from
+   * disk instead, so nothing decrypted comes back into a locked vault.
+   */
+  #stillCurrent(epoch: number): boolean {
+    if (epoch === this.#epoch) return true;
+    void this.#reloadAfterExternalChange();
+    return false;
   }
 
   /** Stop the shared clock (tests; the app never tears the store down). */
@@ -511,6 +539,9 @@ export class AuthStore {
   }
 
   lock(reason: "manual" | "auto" = "manual"): void {
+    // Whatever was in progress was prepared with the key just dropped: its
+    // write is refused (assertCurrent), and nothing it decrypted returns.
+    this.#epoch++;
     this.#key = null;
     this.#secrets.clear();
     this.#tombstones = { ...EMPTY_TOMBSTONES };
@@ -979,23 +1010,19 @@ export class AuthStore {
     }
 
     // Disk first; memory only once the write succeeded (L3).
-    const previous = this.#secrets;
-    this.#secrets = new Map([...previous, ...secrets]);
-    try {
-      await this.#saveEntries(created, epoch);
-    } catch (e) {
-      this.#secrets = previous;
-      throw e;
-    }
+    await this.#saveEntries(created, epoch);
+    this.#emit("change");
+    if (!this.#stillCurrent(epoch)) return;
+    for (const [id, secret] of secrets) this.#secrets.set(id, secret);
     this.entries.push(...created);
     // Re-adding something deleted earlier: it's no longer deleted.
     const revived = new Set(await Promise.all(created.map((e) => this.#entryTombstoneKey(e))));
     if (this.#tombstones.entries.some((t) => revived.has(t.k))) {
-      this.#tombstones = {
+      const tombstones = {
         ...this.#tombstones,
         entries: withoutKeys(this.#tombstones.entries, revived),
       };
-      await this.#saveTombstones(epoch);
+      await this.#saveTombstones(epoch, tombstones);
     }
     if (!this.vault) {
       // Record the (implicit) "no password" choice; the warning banner stays.
@@ -1004,7 +1031,6 @@ export class AuthStore {
       this.vault = { encrypted: false };
     }
     this.#requestPersistence();
-    this.#emit("change");
   }
 
   async rename(id: string, issuer: string, account: string): Promise<void> {
@@ -1013,10 +1039,11 @@ export class AuthStore {
     if (!entry) return;
     const next = { ...($state.snapshot(entry) as StoredEntry), issuer: issuer.trim(), account: account.trim() };
     await this.#saveEntries([next], epoch); // disk first (L3)
+    this.#emit("change");
+    if (!this.#stillCurrent(epoch)) return;
     entry.issuer = next.issuer;
     entry.account = next.account;
     entry.meta = next.meta;
-    this.#emit("change");
   }
 
   /**
@@ -1038,10 +1065,11 @@ export class AuthStore {
     const sealed = await sealTombstones(tombstones, this.#key);
     this.assertCurrent(epoch);
     await deleteWithTombstones({ entries: [id] }, sealed);
+    this.#emit("change");
+    if (!this.#stillCurrent(epoch)) return null;
     this.entries = this.entries.filter((e) => e.id !== id);
     this.#secrets.delete(id);
     this.#tombstones = tombstones;
-    this.#emit("change");
     return { stored, secret, tombstoneKey: k };
   }
 
@@ -1060,19 +1088,21 @@ export class AuthStore {
       entries: withoutKeys(this.#tombstones.entries, new Set([removed.tombstoneKey])),
     };
     const sealed = await sealTombstones(tombstones, this.#key);
+    const key = this.#key;
+    const names =
+      stored.meta && key
+        ? (JSON.parse(
+            await openField(key, stored.meta, { kind: "entry", id: stored.id, field: "meta" }),
+          ) as { issuer: string; account: string })
+        : null;
     this.assertCurrent(epoch);
     await restoreEntryWithTombstones(stored, sealed);
+    this.#emit("change");
+    if (!this.#stillCurrent(epoch)) return;
     this.#tombstones = tombstones;
     this.#secrets.set(stored.id, removed.secret);
-    let view: StoredEntry = stored;
-    if (stored.meta && this.#key) {
-      const names = JSON.parse(
-        await openField(this.#key, stored.meta, { kind: "entry", id: view.id, field: "meta" }),
-      ) as { issuer: string; account: string };
-      view = { ...stored, ...names };
-    }
+    const view: StoredEntry = names ? { ...stored, ...names } : stored;
     this.entries = [...this.entries, view].sort((a, b) => a.index - b.index);
-    this.#emit("change");
   }
 
   async togglePin(id: string): Promise<void> {
@@ -1081,9 +1111,10 @@ export class AuthStore {
     if (!entry) return;
     const next = { ...($state.snapshot(entry) as StoredEntry), pinned: !entry.pinned };
     await this.#saveEntries([next], epoch);
+    this.#emit("change");
+    if (!this.#stillCurrent(epoch)) return;
     entry.pinned = next.pinned;
     entry.meta = next.meta;
-    this.#emit("change");
   }
 
   async incrementCounter(id: string): Promise<void> {
@@ -1092,9 +1123,10 @@ export class AuthStore {
     if (!entry || entry.type !== "hotp") return;
     const next = { ...($state.snapshot(entry) as StoredEntry), counter: entry.counter + 1 };
     await this.#saveEntries([next], epoch);
+    this.#emit("change");
+    if (!this.#stillCurrent(epoch)) return;
     entry.counter = next.counter;
     entry.meta = next.meta;
-    this.#emit("change");
   }
 
   /**
@@ -1110,8 +1142,9 @@ export class AuthStore {
       index: next.get(entry.id) ?? entry.index,
     }));
     await this.#saveEntries(reordered, epoch);
-    this.entries = reordered.sort((a, b) => a.index - b.index);
     this.#emit("change");
+    if (!this.#stillCurrent(epoch)) return;
+    this.entries = reordered.sort((a, b) => a.index - b.index);
   }
 
   /** Entries + plaintext secrets for export/backup. Requires unlocked. */
@@ -1144,11 +1177,14 @@ export class AuthStore {
     }
   }
 
-  async #saveTombstones(epoch: number): Promise<void> {
-    if (this.encrypted && !this.#key) throw new Error("Unlock first");
-    const sealed = await sealTombstones(this.#tombstones, this.#key);
+  /** Persist `tombstones`, disk first; memory takes them while still current. */
+  async #saveTombstones(epoch: number, tombstones: TombstoneSet): Promise<void> {
+    const key = this.#key;
+    if (this.encrypted && !key) throw new Error("Unlock first");
+    const sealed = await sealTombstones(tombstones, key);
     this.assertCurrent(epoch);
     await saveTombstones(sealed);
+    if (this.#stillCurrent(epoch)) this.#tombstones = tombstones;
   }
 
   /**
@@ -1168,18 +1204,17 @@ export class AuthStore {
     const sealed = await sealTombstones(tombstones, this.#key);
     this.assertCurrent(epoch);
     await deleteWithTombstones({ credentials: ids }, sealed);
-    this.#tombstones = tombstones;
+    if (this.#stillCurrent(epoch)) this.#tombstones = tombstones;
   }
 
   /** Credentials saved again under an identity deleted earlier are no longer deleted. */
   async forgetCredentialDeletions(identities: string[], epoch = this.#epoch): Promise<void> {
     const keys = new Set(await Promise.all(identities.map(tombstoneKey)));
     if (!this.#tombstones.credentials.some((t) => keys.has(t.k))) return;
-    this.#tombstones = {
+    await this.#saveTombstones(epoch, {
       ...this.#tombstones,
       credentials: withoutKeys(this.#tombstones.credentials, keys),
-    };
-    await this.#saveTombstones(epoch);
+    });
   }
 
   // ---- settings -----------------------------------------------------------------------
@@ -1219,7 +1254,7 @@ export class AuthStore {
       this.assertCurrent(epoch);
       await saveSettings(stored);
     }
-    this.settings = next;
+    if (this.#stillCurrent(epoch)) this.settings = next;
   }
 
   // ---- password -------------------------------------------------------------------
@@ -1236,13 +1271,15 @@ export class AuthStore {
     const policy = assessPassword(password);
     if (!policy.ok) throw new Error(policy.message || "Choose a stronger password");
     const epoch = await this.beginWrite();
+    // The key now (null: setting the first password). A lock from here on
+    // stops this before it writes anything (lock() moves the epoch).
+    const oldKey = this.#key;
     await this.#requireCollections();
     await this.#credentials?.ready();
     if (this.encrypted) await this.#snapshot("password-change");
 
     const hadHello = this.helloEnabled;
     const sealed = await sealVault(password, this.entries, this.#secrets);
-    const oldKey = this.#key;
     let credentials: CredentialSnapshot | undefined;
     if (this.#credentials && oldKey) {
       credentials = await this.#credentials.reseal(cryptoFor(oldKey), cryptoFor(sealed.key));
@@ -1262,17 +1299,19 @@ export class AuthStore {
       meta,
     });
 
-    this.#key = sealed.key;
-    this.vault = vault;
-    this.entries = sealed.view;
-    if (credentials) this.#credentials?.adopt(credentials);
-    this.weakPassword = false;
     // A new password means a new data key: any Hello-wrapped copy of the old
     // key is useless now, so Hello must be re-enabled. Only after the write
     // succeeded (L2 of the data audit).
     if (hadHello) await this.#deleteHelloKey();
-    this.touch();
-    this.#requestPersistence();
+    if (this.#stillCurrent(epoch)) {
+      this.#key = sealed.key;
+      this.vault = vault;
+      this.entries = sealed.view;
+      if (credentials) this.#credentials?.adopt(credentials);
+      this.weakPassword = false;
+      this.touch();
+      this.#requestPersistence();
+    }
     this.#emit("password");
   }
 
@@ -1324,10 +1363,12 @@ export class AuthStore {
       meta: { tombstones: { plain: this.#tombstones }, settings },
     });
 
-    this.#key = null;
-    this.vault = vault;
-    this.entries = plain;
-    this.weakPassword = false;
+    if (this.#stillCurrent(epoch)) {
+      this.#key = null;
+      this.vault = vault;
+      this.entries = plain;
+      this.weakPassword = false;
+    }
     // No password → no data key → nothing for Hello to unwrap.
     if (hadHello) await this.#deleteHelloKey();
     this.#emit("password");
@@ -1524,9 +1565,10 @@ export class AuthStore {
 
   /**
    * Device-authentication gate before restoring secrets. Returns true after
-   * a successful Windows Hello verification, false when this device has no
-   * OS verifier (the caller then requires the password instead). Rejects if
-   * the user cancels or fails verification.
+   * a successful Windows Hello verification, false when Hello isn't turned
+   * on for this vault or this device has no OS verifier (the caller then
+   * requires the password instead). Rejects if the user cancels or fails
+   * verification.
    */
   async verifyUserPresence(): Promise<boolean> {
     const hello = getPlatform().hello;
@@ -1609,6 +1651,8 @@ export class AuthStore {
         : localCredentialTombstones;
 
     let credentialResult: Awaited<ReturnType<typeof restoreCredentials>>;
+    /** Memory takes the result in (false: locked or replaced while writing). */
+    let current: boolean;
     if (this.encrypted) {
       const key = this.#key;
       const vault = this.vault;
@@ -1628,10 +1672,13 @@ export class AuthStore {
         credentials: credentialResult?.stored,
         meta: { tombstones: sealedTombstones },
       });
-      all.forEach((entry, i) => (entry.meta = stored[i].meta));
-      this.entries = all;
-      this.#secrets = secrets;
-      this.#tombstones = tombstones;
+      current = this.#stillCurrent(epoch);
+      if (current) {
+        all.forEach((entry, i) => (entry.meta = stored[i].meta));
+        this.entries = all;
+        this.#secrets = secrets;
+        this.#tombstones = tombstones;
+      }
     } else {
       const sealed = await sealVault(password ?? "", all, secrets);
       credentialResult = await restoreCredentials(cryptoFor(sealed.key));
@@ -1648,20 +1695,24 @@ export class AuthStore {
         credentials: credentialResult?.stored,
         meta,
       });
-      this.#key = sealed.key;
-      this.vault = sealed.vault;
-      this.entries = sealed.view;
-      this.#secrets = secrets;
-      this.#tombstones = tombstones;
-      this.weakPassword = !assessPassword(password ?? "").ok;
+      current = this.#stillCurrent(epoch);
+      if (current) {
+        this.#key = sealed.key;
+        this.vault = sealed.vault;
+        this.entries = sealed.view;
+        this.#secrets = secrets;
+        this.#tombstones = tombstones;
+        this.weakPassword = !assessPassword(password ?? "").ok;
+      }
       this.#emit("password");
     }
-    this.#damaged = damaged;
-    this.unreadableEntries = damaged.length;
-    if (credentialResult) this.#credentials?.adopt(credentialResult);
-
-    this.touch();
-    this.#requestPersistence();
+    if (current) {
+      this.#damaged = damaged;
+      this.unreadableEntries = damaged.length;
+      if (credentialResult) this.#credentials?.adopt(credentialResult);
+      this.touch();
+      this.#requestPersistence();
+    }
     if (touchEntries) this.#emit("change");
     if (credentialResult) this.#emit("credentials");
     return {
@@ -1680,6 +1731,7 @@ export class AuthStore {
 
   /** Danger zone: delete everything, including the vault config and snapshots. */
   async wipe(): Promise<void> {
+    await this.beginWrite(); // never under a reload still applying what it read
     const hadHello = this.helloEnabled;
     await wipeAll();
     this.#epoch++; // whatever was in progress was prepared from the vault just deleted

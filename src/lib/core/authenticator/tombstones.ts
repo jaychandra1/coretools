@@ -75,15 +75,17 @@ function validList(value: unknown): Tombstone[] {
 
 /**
  * The deletion records as stored: sealed under the vault key when a password
- * is set, plain otherwise. Throws when sealed ones can't be decrypted.
+ * is set, plain otherwise. Throws when sealed ones can't be decrypted. With a
+ * key, plain ones are ignored: an encrypted vault always seals them, so plain
+ * ones there were planted.
  */
 export async function openTombstones(
   stored: StoredTombstones | undefined,
   key: CryptoKey | null,
 ): Promise<TombstoneSet> {
   let set: unknown = {};
-  if (stored?.sealed && key) {
-    set = JSON.parse(await openField(key, stored.sealed, BINDING));
+  if (key) {
+    if (stored?.sealed) set = JSON.parse(await openField(key, stored.sealed, BINDING));
   } else if (stored?.plain) {
     set = stored.plain;
   }

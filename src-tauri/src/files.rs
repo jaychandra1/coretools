@@ -16,9 +16,10 @@
 //! writes go through a temporary file renamed over the target.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Duration;
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine as _;
@@ -42,6 +43,11 @@ const PATH_HEADER: &str = "x-path";
 
 /// Longest suggested name handed to the save dialog, in characters.
 const MAX_DEFAULT_NAME_CHARS: usize = 120;
+
+/// Replacing the target is tried this often, this far apart, while Windows
+/// reports it busy (audit N4).
+const RENAME_ATTEMPTS: u32 = 5;
+const RENAME_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 /// Suggested extensions kept as they are; any other gets ".txt" appended.
 /// The last five are what JSON Studio's code generator saves.
@@ -76,22 +82,29 @@ struct Grant {
     op: FileOp,
 }
 
+impl Grant {
+    /// Whether this is the grant for exactly `issued` and `op`. A plain
+    /// string comparison: nothing here touches the filesystem.
+    fn is(&self, issued: &str, op: FileOp) -> bool {
+        self.op == op && self.issued == issued
+    }
+}
+
 #[derive(Default)]
 struct Grants(Vec<Grant>);
 
 impl Grants {
     fn issue(&mut self, grant: Grant) {
-        self.0.retain(|g| g.op != grant.op || g.issued != grant.issued);
+        self.0.retain(|g| !g.is(&grant.issued, grant.op));
         if self.0.len() >= MAX_GRANTS {
             self.0.remove(0);
         }
         self.0.push(grant);
     }
 
-    /// Remove and return the grant for exactly `issued` and `op`. A plain
-    /// string comparison: nothing here touches the filesystem.
+    /// Remove and return the grant for exactly `issued` and `op`.
     fn consume(&mut self, issued: &str, op: FileOp) -> Option<Grant> {
-        let index = self.0.iter().position(|g| g.op == op && g.issued == issued)?;
+        let index = self.0.iter().position(|g| g.is(issued, op))?;
         Some(self.0.remove(index))
     }
 }
@@ -150,7 +163,8 @@ fn clean_default_name(name: &str) -> String {
         .filter(|c| !c.is_control() && !FORBIDDEN_NAME_CHARS.contains(c))
         .collect();
     // Windows drops trailing dots and spaces from names.
-    let cleaned = cleaned.trim().trim_end_matches(|c: char| c == '.' || c.is_whitespace());
+    let cleaned = cleaned.trim();
+    let cleaned = cleaned.trim_end_matches(|c: char| c == '.' || c.is_whitespace());
     let (stem, extension) = match cleaned.rsplit_once('.') {
         Some((stem, ext)) if SAVE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()) => {
             (stem, Some(ext))
@@ -212,21 +226,41 @@ fn check_write_size(len: usize) -> Result<(), String> {
 /// then rename it over the target (audit L4): a crash or a full disk leaves
 /// the previous file intact instead of a truncated one. `rename` replaces
 /// an existing file on Windows too.
+///
+/// Audit N4: on Unix the temporary file starts readable by the owner only
+/// and takes over the permissions of the file it replaces, so saving never
+/// widens who can read a file. Where no file may be added to the folder
+/// (one the user can write files in but not create them in, or one macOS
+/// privacy controls guard), the target is overwritten in place instead.
 fn write_atomic(target: &Path, contents: &[u8]) -> Result<(), String> {
     let dir = target.parent().ok_or("Path has no parent directory.")?;
     let mut random = [0u8; 9];
     getrandom::getrandom(&mut random).map_err(|_| "Could not write file.".to_string())?;
     let temp = dir.join(format!(".coretools-{}.tmp", URL_SAFE_NO_PAD.encode(random)));
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temp)
-        .map_err(|e| format!("Could not write file: {e}"))?;
-    let result = fill_and_replace(file, &temp, target, contents);
-    if result.is_err() {
-        let _ = fs::remove_file(&temp);
-    }
+    let result = match create_temp(&temp) {
+        Ok(file) => {
+            let replaced = fill_and_replace(file, &temp, target, contents);
+            if replaced.is_err() {
+                let _ = fs::remove_file(&temp);
+            }
+            replaced
+        }
+        Err(e) if e.kind() == ErrorKind::PermissionDenied => write_in_place(target, contents),
+        Err(e) => Err(e),
+    };
     result.map_err(|e| format!("Could not write file: {e}"))
+}
+
+/// A new temporary file; on Unix readable and writable by the owner only.
+fn create_temp(temp: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(temp)
 }
 
 fn fill_and_replace(
@@ -237,10 +271,76 @@ fn fill_and_replace(
 ) -> std::io::Result<()> {
     file.write_all(contents)?;
     file.flush()?;
+    keep_permissions(&file, target)?;
     file.sync_all()?;
     // Closed before the rename: Windows can't rename a file that is open.
     drop(file);
-    fs::rename(temp, target)
+    rename_over(temp, target)
+}
+
+/// Give the new file the permissions of the one it replaces (Unix). A new
+/// file keeps the owner-only mode it was created with.
+#[cfg(unix)]
+fn keep_permissions(file: &File, target: &Path) -> std::io::Result<()> {
+    match fs::metadata(target) {
+        Ok(existing) => file.set_permissions(existing.permissions()),
+        Err(_) => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+fn keep_permissions(_file: &File, _target: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
+/// Rename `temp` over `target`. On Windows a virus scanner, the search
+/// indexer or a sync client (OneDrive) briefly holding the target open
+/// makes the rename fail, so it is retried a few times first (audit N4).
+fn rename_over(temp: &Path, target: &Path) -> std::io::Result<()> {
+    let mut attempt = 1;
+    loop {
+        match fs::rename(temp, target) {
+            Err(e) if attempt < RENAME_ATTEMPTS && busy(&e) => {
+                attempt += 1;
+                std::thread::sleep(RENAME_RETRY_DELAY);
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Whether a failed rename may work when retried: access denied, or a
+/// sharing or lock violation (Windows).
+#[cfg(windows)]
+fn busy(error: &std::io::Error) -> bool {
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    const ERROR_LOCK_VIOLATION: i32 = 33;
+    let code = error.raw_os_error();
+    error.kind() == ErrorKind::PermissionDenied
+        || code == Some(ERROR_SHARING_VIOLATION)
+        || code == Some(ERROR_LOCK_VIOLATION)
+}
+
+#[cfg(not(windows))]
+fn busy(_error: &std::io::Error) -> bool {
+    false
+}
+
+/// Overwrite the target in place — not crash-safe, so only for folders no
+/// temporary file can be created in (audit N4). Never through a link: the
+/// user picked the link itself, not where it points.
+fn write_in_place(target: &Path, contents: &[u8]) -> std::io::Result<()> {
+    if fs::symlink_metadata(target).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(std::io::Error::new(ErrorKind::PermissionDenied, "the file is a link"));
+    }
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(target)?;
+    file.write_all(contents)?;
+    file.flush()?;
+    file.sync_all()
 }
 
 fn write_granted(grant: &Grant, contents: &[u8]) -> Result<(), String> {
@@ -272,11 +372,13 @@ pub async fn pick_open_path(
             .await
             .map_err(|e| e.to_string())?;
 
-    let Some(file_path) = picked else { return Ok(None) };
+    let Some(file_path) = picked else {
+        return Ok(None);
+    };
     let path = file_path.into_path().map_err(|e| e.to_string())?;
     let resolve = path.clone();
     let canonical = blocking(move || {
-        fs::canonicalize(&resolve).map_err(|e| format!("Could not resolve the selected file: {e}"))
+        fs::canonicalize(resolve).map_err(|e| format!("Could not resolve the selected file: {e}"))
     })
     .await?;
 
@@ -301,13 +403,15 @@ pub async fn pick_save_path(
     let picked = tauri::async_runtime::spawn_blocking(move || {
         app.dialog()
             .file()
-            .set_file_name(&suggested)
+            .set_file_name(suggested)
             .blocking_save_file()
     })
     .await
     .map_err(|e| e.to_string())?;
 
-    let Some(file_path) = picked else { return Ok(None) };
+    let Some(file_path) = picked else {
+        return Ok(None);
+    };
     let path = file_path.into_path().map_err(|e| e.to_string())?;
     let resolve = path.clone();
     let canonical = blocking(move || canonical_for_write(&resolve)).await?;
@@ -348,6 +452,28 @@ pub async fn write_text_file(
     blocking(move || write_granted(&grant, contents.as_bytes())).await
 }
 
+/// The bytes of a `write_binary_file` request, size-capped. Normally the
+/// raw IPC body; where Tauri falls back to its postMessage IPC the same
+/// bytes arrive as a JSON array of numbers (audit N5), whose length is
+/// checked before anything is copied.
+fn request_bytes(body: &InvokeBody) -> Result<Vec<u8>, String> {
+    match body {
+        InvokeBody::Raw(bytes) => {
+            check_write_size(bytes.len())?;
+            Ok(bytes.clone())
+        }
+        InvokeBody::Json(serde_json::Value::Array(items)) => {
+            check_write_size(items.len())?;
+            items
+                .iter()
+                .map(|item| item.as_u64().and_then(|n| u8::try_from(n).ok()))
+                .collect::<Option<Vec<u8>>>()
+                .ok_or_else(|| BAD_REQUEST.to_string())
+        }
+        InvokeBody::Json(_) => Err(BAD_REQUEST.into()),
+    }
+}
+
 /// Binary counterpart of `write_text_file` (e.g. .xlsx exports). The bytes
 /// travel as the raw IPC body — a JSON number array was ~4× their size —
 /// and the destination in the `x-path` header (base64 of the UTF-8 path).
@@ -357,10 +483,7 @@ pub async fn write_binary_file(
     paths: State<'_, AuthorizedPaths>,
     request: Request<'_>,
 ) -> Result<(), String> {
-    let InvokeBody::Raw(contents) = request.body() else {
-        return Err(BAD_REQUEST.into());
-    };
-    check_write_size(contents.len())?;
+    let contents = request_bytes(request.body())?;
     let path = request
         .headers()
         .get(PATH_HEADER)
@@ -368,7 +491,6 @@ pub async fn write_binary_file(
         .and_then(decode_path_header)
         .ok_or_else(|| BAD_REQUEST.to_string())?;
     let grant = paths.consume(&path, FileOp::Write)?;
-    let contents = contents.clone();
     blocking(move || write_granted(&grant, &contents)).await
 }
 
@@ -389,10 +511,8 @@ mod tests {
     fn scratch_dir() -> PathBuf {
         let mut random = [0u8; 9];
         getrandom::getrandom(&mut random).unwrap();
-        let dir = std::env::temp_dir().join(format!(
-            "coretools-files-test-{}",
-            URL_SAFE_NO_PAD.encode(random)
-        ));
+        let name = format!("coretools-files-test-{}", URL_SAFE_NO_PAD.encode(random));
+        let dir = std::env::temp_dir().join(name);
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -418,8 +538,9 @@ mod tests {
 
     #[test]
     fn matches_the_issued_string_exactly() {
+        let issued = "C:\\Users\\me\\a.txt";
         let mut grants = Grants::default();
-        grants.issue(grant("C:\\Users\\me\\a.txt", FileOp::Read));
+        grants.issue(grant(issued, FileOp::Read));
         for other in [
             "c:\\users\\me\\a.txt",
             "C:/Users/me/a.txt",
@@ -428,7 +549,7 @@ mod tests {
         ] {
             assert!(grants.consume(other, FileOp::Read).is_none(), "{other}");
         }
-        assert!(grants.consume("C:\\Users\\me\\a.txt", FileOp::Read).is_some());
+        assert!(grants.consume(issued, FileOp::Read).is_some());
     }
 
     #[test]
@@ -440,8 +561,10 @@ mod tests {
             "\\\\.\\pipe\\x",
             "//attacker.example/share/x.txt",
         ] {
-            assert_eq!(paths.consume(path, FileOp::Read).err().as_deref(), Some(NOT_ISSUED));
-            assert_eq!(paths.consume(path, FileOp::Write).err().as_deref(), Some(NOT_ISSUED));
+            for op in [FileOp::Read, FileOp::Write] {
+                let refused = paths.consume(path, op).err();
+                assert_eq!(refused.as_deref(), Some(NOT_ISSUED), "{path}");
+            }
         }
     }
 
@@ -497,8 +620,9 @@ mod tests {
 
     #[test]
     fn reads_are_capped_while_reading() {
-        let data = vec![7u8; 100];
-        assert_eq!(read_at_most(&data[..], 100).unwrap().map(|b| b.len()), Some(100));
+        let data = [7u8; 100];
+        let all = read_at_most(&data[..], 100).unwrap();
+        assert_eq!(all.map(|bytes| bytes.len()), Some(100));
         assert_eq!(read_at_most(&data[..], 99).unwrap(), None);
         assert_eq!(read_at_most(&data[..0], 10).unwrap(), Some(Vec::new()));
     }
@@ -519,6 +643,26 @@ mod tests {
     fn refuses_oversized_writes() {
         assert!(check_write_size(MAX_WRITE_BYTES).is_ok());
         assert!(check_write_size(MAX_WRITE_BYTES + 1).is_err());
+    }
+
+    #[test]
+    fn takes_the_bytes_as_a_raw_body_or_a_json_array() {
+        let raw = InvokeBody::Raw(vec![1, 2, 255]);
+        assert_eq!(request_bytes(&raw).unwrap(), [1, 2, 255]);
+        // Tauri's postMessage IPC sends the same bytes as numbers (N5).
+        let json = InvokeBody::Json(serde_json::json!([1, 2, 255]));
+        assert_eq!(request_bytes(&json).unwrap(), [1, 2, 255]);
+        for bad in [
+            serde_json::json!([1, 256]),
+            serde_json::json!([1, -1]),
+            serde_json::json!([1.5]),
+            serde_json::json!(["1"]),
+            serde_json::json!({ "0": 1 }),
+            serde_json::json!(null),
+        ] {
+            let refused = request_bytes(&InvokeBody::Json(bad)).err();
+            assert_eq!(refused.as_deref(), Some(BAD_REQUEST));
+        }
     }
 
     #[test]
@@ -548,6 +692,61 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, vec![std::ffi::OsString::from("occupied")]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_save_keeps_the_files_permissions_and_a_new_file_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        let dir = scratch_dir();
+        let target = dir.join("out.txt");
+        write_atomic(&target, b"new").unwrap();
+        assert_eq!(mode(&target), 0o600);
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o640)).unwrap();
+        write_atomic(&target, b"replaced").unwrap();
+        assert_eq!(mode(&target), 0o640);
+        assert_eq!(fs::read(&target).unwrap(), b"replaced");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn saves_in_place_where_no_file_can_be_added() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch_dir();
+        let target = dir.join("out.txt");
+        fs::write(&target, "old").unwrap();
+        // The file may be written, but the folder takes no new files.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        let written = write_atomic(&target, b"new");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        written.unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retries_while_the_target_is_briefly_held_open() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = scratch_dir();
+        let target = dir.join("out.txt");
+        fs::write(&target, "old").unwrap();
+        // Held open without sharing, as a virus scanner might, for 50 ms.
+        let held = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&target)
+            .unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            drop(held);
+        });
+        write_atomic(&target, b"new").unwrap();
+        release.join().unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"new");
         fs::remove_dir_all(&dir).unwrap();
     }
 

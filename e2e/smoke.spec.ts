@@ -240,7 +240,7 @@ test("vault: exporting asks to confirm it's you", async ({ page }) => {
   await expect(page.getByRole("dialog", { name: "Export backup" })).toBeVisible({ timeout: 20_000 });
 });
 
-test("vault: a change in another tab locks this one instead of being overwritten", async ({ page, context }) => {
+test("vault: a change in another tab shows up here instead of being overwritten", async ({ page, context }) => {
   await createVault(page);
   await addAccount(page, "First Tab");
 
@@ -252,10 +252,13 @@ test("vault: a change in another tab locks this one instead of being overwritten
   await expect(other.getByText("First Tab")).toBeVisible({ timeout: 20_000 });
   await addAccount(other, "Second Tab");
 
-  // The first tab held a now-stale copy: it locks and reloads rather than writing over it.
-  await expect(page.getByText("The vault was changed in another window")).toBeVisible({ timeout: 10_000 });
-  await page.getByPlaceholder("Encryption password").fill(PASSWORD);
-  await page.getByRole("button", { name: "Unlock" }).click();
-  await expect(page.getByText("Second Tab")).toBeVisible({ timeout: 20_000 });
+  // Same key: the first tab reads the vault again and stays unlocked.
+  await expect(page.getByText("Second Tab")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText("First Tab")).toBeVisible();
+  await expect(page.getByText("Authenticator locked")).toHaveCount(0);
+
+  // And a change made here afterwards reaches the other tab, nothing lost.
+  await addAccount(page, "Third Tab");
+  await expect(other.getByText("Third Tab")).toBeVisible({ timeout: 10_000 });
+  await expect(other.getByText("Second Tab")).toBeVisible();
 });

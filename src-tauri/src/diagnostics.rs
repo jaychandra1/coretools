@@ -19,7 +19,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, TryLockError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::Manager;
@@ -119,14 +119,14 @@ fn timestamp(secs: u64) -> String {
 /// Append one line. Best effort: diagnostics must never break the app.
 pub fn record(source: &str, cause: &str) {
     // A panic elsewhere while holding the lock poisons it; logging goes on.
-    let guard = WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let guard = WRITE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     append(&guard, source, cause);
 }
 
 /// Write one line; `_guard` proves the caller holds WRITE_LOCK.
 fn append(_guard: &MutexGuard<'_, ()>, source: &str, cause: &str) {
     let Some(path) = LOG_PATH.get() else { return };
-    if fs::metadata(path).map(|m| m.len() > MAX_BYTES).unwrap_or(false) {
+    if fs::metadata(path).is_ok_and(|meta| meta.len() > MAX_BYTES) {
         let _ = fs::rename(path, path.with_extension("log.1"));
     }
     let secs = SystemTime::now()
@@ -172,35 +172,57 @@ pub fn install_panic_hook() {
     }));
 }
 
-/// The webview records UI-side failures (error tokens, never content).
-/// At most 30 lines a minute; drops are counted into one summary line.
-#[tauri::command]
-pub fn diagnostics_record(source: String, cause: String) -> Result<(), String> {
+/// Run log file I/O on the blocking pool, never on the main (UI) thread
+/// (audit M7).
+async fn blocking<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|_| "diagnostics_unavailable".to_string())
+}
+
+/// One UI line, rate-limited (see `diagnostics_record`).
+fn record_from_ui(source: &str, cause: &str) {
     let admitted = UI_BUDGET
         .lock()
         .ok()
         .and_then(|mut budget| budget.admit(Instant::now()));
     let Some(dropped) = admitted else {
-        return Ok(());
+        return;
     };
     if dropped > 0 {
-        record("ui", &format!("{dropped} more UI lines dropped (rate limit)"));
+        let summary = format!("{dropped} more UI lines dropped (rate limit)");
+        record("ui", &summary);
     }
-    record(&format!("ui:{}", clean(&source, 16)), &cause);
-    Ok(())
+    record(&format!("ui:{}", clean(source, 16)), cause);
 }
 
-/// The newest lines of the log, oldest first, for "Copy diagnostics".
+/// The webview records UI-side failures (error tokens, never content).
+/// At most 30 lines a minute; drops are counted into one summary line.
 #[tauri::command]
-pub fn diagnostics_report() -> Result<String, String> {
+pub async fn diagnostics_record(source: String, cause: String) -> Result<(), String> {
+    blocking(move || record_from_ui(&source, &cause)).await
+}
+
+/// The newest lines of the log, oldest first.
+fn report() -> String {
     let Some(path) = LOG_PATH.get() else {
-        return Ok(String::new());
+        return String::new();
     };
     let older = fs::read_to_string(path.with_extension("log.1")).unwrap_or_default();
     let newer = fs::read_to_string(path).unwrap_or_default();
     let lines: Vec<&str> = older.lines().chain(newer.lines()).collect();
     let start = lines.len().saturating_sub(REPORT_LINES);
-    Ok(lines[start..].join("\n"))
+    lines[start..].join("\n")
+}
+
+/// The newest lines of the log, oldest first, for "Copy diagnostics".
+#[tauri::command]
+pub async fn diagnostics_report() -> Result<String, String> {
+    blocking(report).await
 }
 
 #[cfg(test)]

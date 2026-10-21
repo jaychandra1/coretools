@@ -649,20 +649,32 @@ export function loadAuditHead(): Promise<StoredAuditHead | undefined> {
 /**
  * Append sealed events and move the chain head in ONE transaction, then drop
  * the oldest records beyond AUDIT_LIMIT (the chain stays verifiable from the
- * oldest record kept).
+ * oldest record kept). `previous` is the head the events extend: when the
+ * head on disk is no longer that one (another window appended meanwhile),
+ * nothing is written and StaleVaultError thrown — appending anyway would
+ * fork the chain into a false "tampered" report.
  */
 export function appendAuditRecords(
   records: StoredAuditEvent[],
   head: StoredAuditHead,
+  previous: StoredAuditHead | undefined,
 ): Promise<void> {
-  return vaultWrite(["audit", "meta"], (tx) => {
-    const store = tx.objectStore("audit");
-    for (const record of records) store.put(plain(record));
-    tx.objectStore("meta").put(plain(head), "auditHead");
-    const all = store.getAll() as IDBRequest<StoredAuditEvent[]>;
-    all.onsuccess = () => {
-      const sorted = all.result.sort((a, b) => (b.seq ?? -1) - (a.seq ?? -1));
-      for (const old of sorted.slice(AUDIT_LIMIT)) store.delete(old.id);
+  return vaultWrite(["audit", "meta"], (tx, fail) => {
+    const meta = tx.objectStore("meta");
+    const current = meta.get("auditHead") as IDBRequest<StoredAuditHead | undefined>;
+    current.onsuccess = () => {
+      if ((current.result?.sealed.ct ?? null) !== (previous?.sealed.ct ?? null)) {
+        fail(new StaleVaultError());
+        return;
+      }
+      const store = tx.objectStore("audit");
+      for (const record of records) store.put(plain(record));
+      meta.put(plain(head), "auditHead");
+      const all = store.getAll() as IDBRequest<StoredAuditEvent[]>;
+      all.onsuccess = () => {
+        const sorted = all.result.sort((a, b) => (b.seq ?? -1) - (a.seq ?? -1));
+        for (const old of sorted.slice(AUDIT_LIMIT)) store.delete(old.id);
+      };
     };
   });
 }

@@ -20,10 +20,11 @@ changing anything when `## [Unreleased]` is empty.
 - **Updates can't be swapped for an older build.** The in-app updater now
   installs only the build published for that exact version, after you
   confirm "Install and restart" in a dialog of the app itself.
-- **Links ask before leaving the app.** A link to a site that isn't one of
-  CoreTools' own or Google's account pages opens only after you confirm a
-  dialog that names the site (once per site per session), and the app's
-  window can no longer be pointed at another site.
+- **Links ask before leaving the app.** Only CoreTools' own GitHub pages
+  open without asking, and only without a query string. Every other link,
+  Google's sign-in page included, opens after you confirm a dialog showing
+  the link itself; your OK covers that exact link, not the whole site. The
+  app's window can no longer be pointed at another site.
 - **Files you pick are used only as you picked them.** A file chosen to open
   can't be written, and one chosen to save can't be read; saves are written
   safely (a crash never leaves half a file).
@@ -47,6 +48,19 @@ changing anything when `## [Unreleased]` is empty.
 - Encrypted fields are now bound to their record, the unsalted hash of each
   2FA secret is no longer stored, the camera works only while the QR scanner
   is open, and backup files are refused before they could exhaust memory.
+- **The update's version is read only from its signed part.** Before an
+  in-app update downloads, its signature must have minisign's exact layout,
+  and the version is taken only from the signed comment — an edited first
+  line can no longer pass an older build off as a newer one.
+- **The camera permission is never remembered.** WebView2 no longer saves
+  the QR scanner's camera answer in its profile, and one saved by an earlier
+  version is cleared at startup, so the camera is granted only while the
+  scanner is open (and an old "deny" can't break it for good).
+- **Saving keeps who can read a file** (macOS, Linux): a replaced file keeps
+  its permissions, and a new one is readable by you only.
+- **Disconnecting Google is reported honestly**: when Google doesn't confirm
+  the access was removed (or the keychain can't be read), CoreTools says so
+  and points to where to remove it, instead of reporting success.
 - **Every downloadable file is covered by the signed checksums.** A
   release's `SHA256SUMS.txt` — signed by the release workflow — now also
   lists the in-app update files and their signatures, not just the
@@ -103,9 +117,24 @@ changing anything when `## [Unreleased]` is empty.
   version it couldn't delete, an activity-log entry it couldn't write.
   As before, the log holds error types only, never content.
 - Undoing *Move to trash* now says so if the login couldn't be restored.
+- **Saving works in more places.** A folder that accepts no new files (or
+  one macOS privacy controls guard) gets the file overwritten in place
+  instead of an error; on Windows, a save no longer fails while a virus
+  scanner or OneDrive briefly holds the file; and .xlsx exports save where
+  the app falls back to its slower internal messaging.
+- Copying a secret, clearing the clipboard and reading or writing the
+  diagnostics log no longer run on the window's thread, and keychain access
+  no longer holds up the app's background work, so neither can freeze the
+  window. Links open through Windows' own `rundll32` by its full path.
 
 ### Changed
 
+- **No going back to an older version on the same data.** This version adds
+  local snapshots to the vault's database; an older CoreTools then can't
+  open it (it says so — nothing is lost). Keep an exported backup file if
+  you might need to reinstall an older version.
+- The Credential Manager's activity log now marks entries carried over from
+  a log kept before 1.2 as "not verifiable", rather than vouching for them.
 - Internal clean-up, no change in behaviour:
   - The Credential Manager screen is split into smaller components.
   - Backup-merge and record-sealing rules are shared, tested modules.

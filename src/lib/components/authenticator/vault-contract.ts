@@ -101,6 +101,8 @@ export interface CredentialSnapshot {
   audit?: { records: StoredAuditEvent[]; head: StoredAuditHead | null };
   /** Other sealed meta records re-keyed with it (e.g. the space-tab order). */
   meta?: Record<string, unknown>;
+  /** Records still set aside as unreadable afterwards (included in `stored`); absent = unchanged. */
+  damaged?: StoredCredential[];
 }
 
 /**

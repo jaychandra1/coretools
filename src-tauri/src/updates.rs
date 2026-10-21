@@ -312,7 +312,7 @@ pub async fn install_update(
     if !enabled.0 {
         return Err("update_unavailable".into());
     }
-    let updater = app.updater().map_err(|_| "update_unavailable".to_string())?;
+    let updater = app.updater().map_err(|_| "update_unavailable")?;
     let update = updater.check().await.map_err(|_| {
         crate::diagnostics::record("updates", "updater check failed");
         "update_network".to_string()
@@ -436,7 +436,7 @@ mod tests {
         let elsewhere = "https://evil.example/CoreTools-Windows-Setup.exe";
         let a_page = "https://github.com/jaychandra1/artifacts/releases/tag/x";
         let climbing = format!("{DOWNLOAD_PREFIX}../../../../evil/x/CoreTools-Linux.AppImage");
-        let assets = vec![
+        let assets = [
             asset("CoreTools-Windows-Setup.exe", elsewhere),
             asset("CoreTools-macOS.dmg", a_page),
             asset("CoreTools-Linux.AppImage", &climbing),
@@ -630,16 +630,17 @@ mod tests {
         let older = "trusted comment: timestamp:1\tfile:CoreTools_1.2.5_x64-setup.exe";
         let well_formed = sig_file(&[UNTRUSTED, "SIG", trusted, "GLOBAL"]);
         assert!(signed_for_version(&well_formed, "1.2.7"));
-        for bad in [
-            vec![UNTRUSTED, "SIG", trusted],
-            vec![UNTRUSTED, "SIG", trusted, "GLOBAL", trusted],
-            vec![UNTRUSTED, "SIG", older, trusted, "GLOBAL"],
-            vec![UNTRUSTED, UNTRUSTED, "SIG", trusted, "GLOBAL"],
-            vec![UNTRUSTED, "SIG", "GLOBAL", trusted],
-            vec!["comment: x", "SIG", trusted, "GLOBAL"],
-            vec![UNTRUSTED, "SIG", "trusted comment:", "GLOBAL"],
-        ] {
-            assert!(!signed_for_version(&sig_file(&bad), "1.2.7"), "{bad:?}");
+        let malformed: [&[&str]; 7] = [
+            &[UNTRUSTED, "SIG", trusted],
+            &[UNTRUSTED, "SIG", trusted, "GLOBAL", trusted],
+            &[UNTRUSTED, "SIG", older, trusted, "GLOBAL"],
+            &[UNTRUSTED, UNTRUSTED, "SIG", trusted, "GLOBAL"],
+            &[UNTRUSTED, "SIG", "GLOBAL", trusted],
+            &["comment: x", "SIG", trusted, "GLOBAL"],
+            &[UNTRUSTED, "SIG", "trusted comment:", "GLOBAL"],
+        ];
+        for bad in malformed {
+            assert!(!signed_for_version(&sig_file(bad), "1.2.7"), "{bad:?}");
         }
     }
 }

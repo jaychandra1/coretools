@@ -2,14 +2,17 @@
 //!
 //! `open_external_url` opens saved login pages and help links in the
 //! system browser. A compromised page could otherwise use it to smuggle
-//! data out in a URL (audit S-7 / M3), so beyond accepting only plain
+//! data out in a URL (audit S-7 / M3, N3), so beyond accepting only plain
 //! http(s) URLs:
 //!
-//! - a short list of the app's own and Google's account pages opens
-//!   directly;
-//! - any other host needs the user's OK in a native dialog drawn by this
-//!   process ("Open example.com in your browser?"), once per host and
-//!   session;
+//! - only this project's GitHub pages (the release notes and downloads)
+//!   open directly, and only without a query string or fragment, which
+//!   could carry data. Google's sign-in page is not among them: its OAuth
+//!   `state` parameter would be a ready-made channel;
+//! - any other link needs the user's OK in a native dialog drawn by this
+//!   process, which shows the link itself (its first 200 characters). The
+//!   OK covers that exact link for the session — not its site, so data
+//!   can't ride along in another URL on a site the user allowed once;
 //! - at most 10 links open per minute, so a page can't flood the browser
 //!   or stack up dialogs.
 //!
@@ -23,17 +26,12 @@ use std::time::{Duration, Instant};
 
 use reqwest::Url;
 
-/// Hosts opened without asking (https only).
-const TRUSTED_HOSTS: [&str; 4] = [
-    "coretools-chi.vercel.app",
-    "myaccount.google.com",
-    "support.google.com",
-    "accounts.google.com",
-];
 /// GitHub opens without asking only within this project's account.
 const GITHUB_HOST: &str = "github.com";
 const GITHUB_OWNER_PATH: &str = "/jaychandra1/";
 const MAX_URL_LEN: usize = 2048;
+/// Longest part of a link the confirmation dialog shows, in characters.
+const MAX_SHOWN_CHARS: usize = 200;
 const MAX_OPENS_PER_WINDOW: usize = 10;
 const OPEN_WINDOW: Duration = Duration::from_secs(60);
 /// The dev server's port (tauri.conf.json → build.devUrl); debug builds only.
@@ -91,12 +89,21 @@ impl OpenRate {
     }
 }
 
-/// Per-session link state: hosts the user confirmed, and the rate limit.
+/// Per-session link state: links the user confirmed, and the rate limit.
 #[derive(Default)]
 pub struct ExternalLinks {
-    confirmed_hosts: Mutex<HashSet<String>>,
+    confirmed_links: Mutex<HashSet<String>>,
     rate: Mutex<OpenRate>,
     asking: AtomicBool,
+}
+
+impl ExternalLinks {
+    /// Whether the user already confirmed exactly this link.
+    fn is_confirmed(&self, link: &str) -> bool {
+        self.confirmed_links
+            .lock()
+            .is_ok_and(|links| links.contains(link))
+    }
 }
 
 /// An absolute http(s) URL with a host and no embedded credentials (which
@@ -117,17 +124,26 @@ fn parse_external(url: &str) -> Result<Url, String> {
     }
 }
 
-/// Whether a URL is on the fixed allow-list (no confirmation needed).
+/// Whether a URL opens without asking: a page of this project's GitHub
+/// account, with no query or fragment that could carry data (audit N3).
 fn trusted_without_asking(url: &Url) -> bool {
-    if url.scheme() != "https" || url.port().is_some() {
-        return false;
-    }
-    match url.host_str() {
-        // The parser has already resolved dot segments, so this prefix
-        // can't be escaped with `/jaychandra1/../`.
-        Some(GITHUB_HOST) => url.path().starts_with(GITHUB_OWNER_PATH),
-        Some(host) => TRUSTED_HOSTS.contains(&host),
-        None => false,
+    // The parser has already resolved dot segments, so the owner prefix
+    // can't be escaped with `/jaychandra1/../`.
+    url.scheme() == "https"
+        && url.port().is_none()
+        && url.host_str() == Some(GITHUB_HOST)
+        && url.path().starts_with(GITHUB_OWNER_PATH)
+        && url.query().is_none()
+        && url.fragment().is_none()
+}
+
+/// The link as the confirmation dialog shows it: the parser's ASCII form
+/// (an international host in punycode), cut after 200 characters.
+fn shown_link(url: &Url) -> String {
+    let text = url.as_str();
+    match text.char_indices().nth(MAX_SHOWN_CHARS) {
+        Some((cut, _)) => format!("{}…", &text[..cut]),
+        None => text.to_string(),
     }
 }
 
@@ -152,26 +168,24 @@ pub async fn open_external_url(
         return Err("open_rate_limited".into());
     }
 
-    let host = parsed.host_str().unwrap_or_default().to_string();
-    let known = trusted_without_asking(&parsed)
-        || links
-            .confirmed_hosts
-            .lock()
-            .map(|hosts| hosts.contains(&host))
-            .unwrap_or(false);
+    // Confirmations are per exact link (audit N3): one for a site's login
+    // page doesn't let a query string or another path through unasked.
+    let link = parsed.as_str().to_string();
+    let known = trusted_without_asking(&parsed) || links.is_confirmed(&link);
     if !known {
         // One dialog at a time; a second request meanwhile is dropped.
         if links.asking.swap(true, Ordering::SeqCst) {
             return Err("canceled".into());
         }
-        let question = format!("Open {host} in your browser?");
+        let shown = shown_link(&parsed);
+        let question = format!("Open this link in your browser?\n\n{shown}");
         let confirmed = crate::confirm(&app, "Open link", question, "Open").await;
         links.asking.store(false, Ordering::SeqCst);
         if !confirmed {
             return Err("canceled".into());
         }
-        if let Ok(mut hosts) = links.confirmed_hosts.lock() {
-            hosts.insert(host);
+        if let Ok(mut confirmed_links) = links.confirmed_links.lock() {
+            confirmed_links.insert(link);
         }
     }
     crate::cloud::open_browser(parsed.as_str())
@@ -208,7 +222,8 @@ mod tests {
             ("http://localhost:1420/", true),
         ] {
             let url = Url::parse(url).unwrap();
-            assert!(is_app_origin(url.scheme(), url.host_str(), url.port(), dev), "{url}");
+            let own = is_app_origin(url.scheme(), url.host_str(), url.port(), dev);
+            assert!(own, "{url}");
         }
     }
 
@@ -230,12 +245,9 @@ mod tests {
     }
 
     #[test]
-    fn opens_the_fixed_allow_list_without_asking() {
+    fn opens_only_this_projects_github_pages_without_asking() {
         assert!(trusted("https://github.com/jaychandra1/artifacts/releases"));
-        assert!(trusted("https://coretools-chi.vercel.app/privacy.html"));
-        assert!(trusted("https://myaccount.google.com/connections"));
-        assert!(trusted("https://support.google.com/accounts/answer/1"));
-        assert!(trusted("https://accounts.google.com/"));
+        assert!(trusted("https://github.com/jaychandra1/artifacts/releases/tag/x"));
     }
 
     #[test]
@@ -247,12 +259,49 @@ mod tests {
             "http://github.com/jaychandra1/artifacts",
             "https://github.com:8443/jaychandra1/artifacts",
             "https://gist.github.com/jaychandra1/x",
+            // A query string or fragment could carry data out (audit N3).
+            "https://github.com/jaychandra1/artifacts?data=x",
+            "https://github.com/jaychandra1/artifacts?",
+            "https://github.com/jaychandra1/artifacts#data",
+            // Google's pages and the website ask too: OAuth's `state`
+            // would carry anything (audit N3).
+            "https://accounts.google.com/o/oauth2/v2/auth?state=data",
+            "https://accounts.google.com/",
+            "https://myaccount.google.com/connections",
+            "https://support.google.com/accounts/answer/1",
+            "https://coretools-chi.vercel.app/privacy.html",
             "https://accounts.google.com.evil.example/",
             "https://evil.example/?u=https://accounts.google.com/",
             "https://accounts.google.com@evil.example/",
         ] {
             assert!(!trusted(url), "{url}");
         }
+    }
+
+    #[test]
+    fn the_dialog_shows_the_link_itself() {
+        let short = Url::parse("https://example.com/a?b=c").unwrap();
+        assert_eq!(shown_link(&short), "https://example.com/a?b=c");
+        let long = Url::parse(&format!("https://example.com/?q={}", "a".repeat(500))).unwrap();
+        let shown = shown_link(&long);
+        assert_eq!(shown.chars().count(), MAX_SHOWN_CHARS + 1);
+        assert!(shown.starts_with("https://example.com/?q=aaa") && shown.ends_with('…'));
+        // An international host is shown in its ASCII form.
+        let international = Url::parse("https://exämple.com/").unwrap();
+        assert!(shown_link(&international).starts_with("https://xn--"));
+    }
+
+    #[test]
+    fn a_confirmation_covers_only_that_exact_link() {
+        let links = ExternalLinks::default();
+        links
+            .confirmed_links
+            .lock()
+            .unwrap()
+            .insert("https://example.com/login".to_string());
+        assert!(links.is_confirmed("https://example.com/login"));
+        assert!(!links.is_confirmed("https://example.com/login?next=data"));
+        assert!(!links.is_confirmed("https://example.com/other"));
     }
 
     #[test]

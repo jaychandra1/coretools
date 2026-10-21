@@ -197,7 +197,11 @@ impl From<DriveFile> for RemoteFile {
     fn from(file: DriveFile) -> Self {
         RemoteFile {
             size: file.size.and_then(|s| s.parse().ok()).unwrap_or(0),
-            device_id: file.app_properties.get("deviceId").cloned().unwrap_or_default(),
+            device_id: file
+                .app_properties
+                .get("deviceId")
+                .cloned()
+                .unwrap_or_default(),
             device_label: file
                 .app_properties
                 .get("deviceLabel")
@@ -276,7 +280,8 @@ pub(crate) async fn read_capped(
     mut response: reqwest::Response,
     cap: usize,
 ) -> Result<Vec<u8>, BodyError> {
-    if response.content_length().is_some_and(|length| length > cap as u64) {
+    let declared = response.content_length();
+    if declared.is_some_and(|length| length > cap as u64) {
         return Err(BodyError::TooLarge);
     }
     let mut body = Vec::new();
@@ -362,6 +367,13 @@ fn error_reasons(body: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Google's 403 `reason`s for a rate limit: retryable, not revoked access.
+const RATE_LIMIT_REASONS: [&str; 3] = [
+    "rateLimitExceeded",
+    "userRateLimitExceeded",
+    "dailyLimitExceeded",
+];
+
 /// Map an HTTP failure to a stable token. Google uses 403 for very different
 /// things (storage full, rate limits, missing scope, admin policy), so a 403
 /// is classified by the error's structured `reason`, never by a substring.
@@ -377,9 +389,7 @@ fn status_error(status: StatusCode, body: &str) -> String {
     match status.as_u16() {
         401 => "cloud_auth_revoked".into(),
         403 if has(&["storageQuotaExceeded"]) => "cloud_quota".into(),
-        403 if has(&["rateLimitExceeded", "userRateLimitExceeded", "dailyLimitExceeded"]) => {
-            "cloud_unavailable".into()
-        }
+        403 if has(&RATE_LIMIT_REASONS) => "cloud_unavailable".into(),
         403 if has(&["domainPolicy"]) => "cloud_domain_policy".into(),
         403 if has(&["insufficientPermissions", "insufficientScopes", "authError"]) => {
             "cloud_auth_revoked".into()
@@ -464,6 +474,19 @@ fn email_from_id_token(id_token: &str) -> Option<String> {
 
 // ---- keychain ------------------------------------------------------------------
 
+/// Run keychain work on the blocking pool: the OS store can block (Secret
+/// Service over D-Bus, a Keychain prompt), which must not stall an async
+/// worker (audit M7).
+async fn keychain<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|_| "cloud_keychain_unavailable".to_string())?
+}
+
 fn keyring_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
         .map_err(|_| "cloud_keychain_unavailable".to_string())
@@ -498,7 +521,8 @@ async fn access_token(state: &CloudState) -> Result<String, String> {
     if let Some(token) = state.cached_token() {
         return Ok(token);
     }
-    let credential = load_credential()?.ok_or("cloud_not_connected")?;
+    let stored = keychain(load_credential).await?;
+    let credential = stored.ok_or("cloud_not_connected")?;
     let client_id = client_id()?;
     let mut form = vec![
         ("client_id", client_id),
@@ -530,7 +554,8 @@ async fn access_token(state: &CloudState) -> Result<String, String> {
     let tokens: TokenResponse = read_json(response, MAX_SMALL_BODY_BYTES)
         .await
         .ok_or("cloud_unavailable")?;
-    state.set_token(tokens.access_token.clone(), tokens.expires_in.unwrap_or(3600));
+    let lifetime = tokens.expires_in.unwrap_or(3600);
+    state.set_token(tokens.access_token.clone(), lifetime);
     Ok(tokens.access_token)
 }
 
@@ -573,7 +598,11 @@ pub(crate) fn open_browser(url: &str) -> Result<(), String> {
     let spawned = {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("rundll32.exe")
+        // By full path: a bare name is looked up in the current directory
+        // and on PATH first.
+        let windows = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let rundll32 = std::path::PathBuf::from(windows).join("System32\\rundll32.exe");
+        std::process::Command::new(rundll32)
             .arg("url.dll,FileProtocolHandler")
             .arg(url)
             .creation_flags(CREATE_NO_WINDOW)
@@ -597,7 +626,7 @@ const PAGE_SUCCESS: &str =
 const PAGE_DENIED: &str =
     "<h1>Sign-in canceled</h1><p>CoreTools was not connected. You can close this tab.</p>";
 const PAGE_STALE: &str =
-    "<h1>This sign-in link has expired</h1><p>Start again from CoreTools.</p>";
+    "<h1>This sign-in link has expired</h1><p>Please start again from CoreTools.</p>";
 
 fn respond(stream: &mut TcpStream, status: u16, message: &str) {
     let reason = match status {
@@ -752,8 +781,8 @@ fn wait_for_code(
 
 async fn sign_in(state: &CloudState, client_id: &'static str) -> Result<CloudAccount, String> {
     // RFC 8252 §7.3: loopback IP literal on an ephemeral port picked by the OS.
-    let listener = TcpListener::bind(("127.0.0.1", 0))
-        .map_err(|e| format!("oauth_listen_failed: {e}"))?;
+    let bound = TcpListener::bind(("127.0.0.1", 0));
+    let listener = bound.map_err(|e| format!("oauth_listen_failed: {e}"))?;
     let port = listener
         .local_addr()
         .map_err(|e| format!("oauth_listen_failed: {e}"))?
@@ -785,11 +814,10 @@ async fn sign_in(state: &CloudState, client_id: &'static str) -> Result<CloudAcc
     open_browser(auth_url.as_str())?;
 
     let cancel = Arc::clone(&state.cancel);
-    let code = tauri::async_runtime::spawn_blocking(move || {
-        wait_for_code(listener, &csrf_state, &cancel)
-    })
-    .await
-    .map_err(|_| "oauth_canceled".to_string())??;
+    let wait = move || wait_for_code(listener, &csrf_state, &cancel);
+    let code = tauri::async_runtime::spawn_blocking(wait)
+        .await
+        .map_err(|_| "oauth_canceled".to_string())??;
 
     let mut form = vec![
         ("client_id", client_id),
@@ -828,10 +856,11 @@ async fn sign_in(state: &CloudState, client_id: &'static str) -> Result<CloudAcc
         .and_then(email_from_id_token)
         .unwrap_or_default();
 
-    store_credential(&StoredCredential {
+    let credential = StoredCredential {
         refresh_token,
         email: email.clone(),
-    })?;
+    };
+    keychain(move || store_credential(&credential)).await?;
     state.set_token(tokens.access_token, tokens.expires_in.unwrap_or(3600));
     Ok(CloudAccount {
         email,
@@ -853,7 +882,8 @@ pub async fn cloud_status() -> Result<Option<CloudAccount>, String> {
     if client_id().is_err() {
         return Ok(None);
     }
-    Ok(load_credential()?.map(|credential| CloudAccount {
+    let stored = keychain(load_credential).await?;
+    Ok(stored.map(|credential| CloudAccount {
         email: credential.email,
         device_name: device_name(),
     }))
@@ -908,20 +938,25 @@ async fn revoke_at_google(refresh_token: &str) -> bool {
 /// Revoke the grant at Google first (best effort, a few seconds at most),
 /// then forget the credential locally — always, whether or not revoking
 /// worked. Returns whether Google confirmed the revocation; when it
-/// didn't (offline, Google unreachable), the UI should tell the user to
-/// remove CoreTools' access at myaccount.google.com.
+/// didn't (offline, Google unreachable, or the keychain couldn't be read
+/// to find the grant — audit N6), the UI should tell the user to remove
+/// CoreTools' access at myaccount.google.com.
 #[tauri::command]
 pub async fn cloud_disconnect(state: tauri::State<'_, CloudState>) -> Result<bool, String> {
-    let credential = load_credential().ok().flatten();
-    let revoked = match &credential {
-        Some(credential) => revoke_at_google(&credential.refresh_token).await,
-        None => true, // nothing stored, nothing to revoke
+    let revoked = match keychain(load_credential).await {
+        Ok(Some(credential)) => revoke_at_google(&credential.refresh_token).await,
+        Ok(None) => true, // nothing stored, nothing to revoke
+        Err(_) => {
+            // The grant may well still be live at Google.
+            crate::diagnostics::record("cloud", "keychain unreadable while disconnecting");
+            false
+        }
     };
     if !revoked {
         crate::diagnostics::record("cloud", "revoke failed; local sign-in removed anyway");
     }
     state.clear_token();
-    delete_credential()?;
+    keychain(delete_credential).await?;
     Ok(revoked)
 }
 
@@ -1074,14 +1109,16 @@ mod tests {
     fn uninstaller_hook_deletes_this_keychain_entry() {
         let hooks = include_str!("../installer/hooks.nsh");
         let target = format!("w \"{KEYRING_USER}.{KEYRING_SERVICE}\"");
-        assert!(hooks.contains(&target), "installer/hooks.nsh must delete {target}");
+        let deletes = hooks.contains(&target);
+        assert!(deletes, "installer/hooks.nsh must delete {target}");
     }
 
     #[test]
     fn reads_email_from_id_token() {
         let payload = URL_SAFE_NO_PAD.encode(br#"{"email":"me@example.com","sub":"1"}"#);
         let token = format!("eyJhbGciOiJSUzI1NiJ9.{payload}.signature");
-        assert_eq!(email_from_id_token(&token).as_deref(), Some("me@example.com"));
+        let email = email_from_id_token(&token);
+        assert_eq!(email.as_deref(), Some("me@example.com"));
         assert_eq!(email_from_id_token("garbage"), None);
     }
 
@@ -1131,7 +1168,8 @@ mod tests {
         assert_eq!(token_lifetime(0), Duration::from_secs(1));
         assert_eq!(token_lifetime(u64::MAX), MAX_TOKEN_LIFETIME);
         // The cache must never overflow, whatever the server sent.
-        assert!(Instant::now().checked_add(token_lifetime(u64::MAX)).is_some());
+        let longest = token_lifetime(u64::MAX);
+        assert!(Instant::now().checked_add(longest).is_some());
         let state = CloudState::default();
         state.set_token("t".into(), u64::MAX);
         assert_eq!(state.cached_token().as_deref(), Some("t"));
@@ -1177,18 +1215,21 @@ mod tests {
 
     #[test]
     fn maps_http_status_to_tokens() {
-        assert_eq!(status_error(StatusCode::NOT_FOUND, ""), "cloud_not_found");
-        assert_eq!(status_error(StatusCode::UNAUTHORIZED, ""), "cloud_auth_revoked");
-        assert_eq!(status_error(StatusCode::TOO_MANY_REQUESTS, ""), "cloud_unavailable");
-        assert_eq!(status_error(StatusCode::SERVICE_UNAVAILABLE, ""), "cloud_unavailable");
-        assert_eq!(status_error(StatusCode::IM_A_TEAPOT, ""), "cloud_http_418");
+        for (status, token) in [
+            (StatusCode::NOT_FOUND, "cloud_not_found"),
+            (StatusCode::UNAUTHORIZED, "cloud_auth_revoked"),
+            (StatusCode::TOO_MANY_REQUESTS, "cloud_unavailable"),
+            (StatusCode::SERVICE_UNAVAILABLE, "cloud_unavailable"),
+            (StatusCode::IM_A_TEAPOT, "cloud_http_418"),
+        ] {
+            assert_eq!(status_error(status, ""), token, "{status}");
+        }
     }
 
     /// A Google API error body carrying one `reason`.
     fn google_error(reason: &str) -> String {
-        format!(
-            r#"{{"error":{{"code":403,"message":"x","errors":[{{"domain":"usageLimits","reason":"{reason}","message":"x"}}]}}}}"#
-        )
+        let error = format!(r#"{{"domain":"usageLimits","reason":"{reason}","message":"x"}}"#);
+        format!(r#"{{"error":{{"code":403,"message":"x","errors":[{error}]}}}}"#)
     }
 
     #[test]
@@ -1204,6 +1245,7 @@ mod tests {
         assert_eq!(forbidden("domainPolicy"), "cloud_domain_policy");
         // Unknown or unparseable 403s are reported as such, never as revoked.
         assert_eq!(forbidden("somethingNew"), "cloud_http_403");
-        assert_eq!(status_error(StatusCode::FORBIDDEN, "<html>Forbidden</html>"), "cloud_http_403");
+        let html = status_error(StatusCode::FORBIDDEN, "<html>Forbidden</html>");
+        assert_eq!(html, "cloud_http_403");
     }
 }

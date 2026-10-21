@@ -120,8 +120,7 @@ mod imp {
 
         let signature = result.Result().map_err(|e| e.to_string())?;
         let mut bytes = windows::core::Array::<u8>::new();
-        CryptographicBuffer::CopyToByteArray(&signature, &mut bytes)
-            .map_err(|e| e.to_string())?;
+        CryptographicBuffer::CopyToByteArray(&signature, &mut bytes).map_err(|e| e.to_string())?;
         Ok(bytes.to_vec())
     }
 
