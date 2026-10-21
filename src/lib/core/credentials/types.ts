@@ -64,7 +64,9 @@ export type AuditAction =
   | "purged"
   | "revealed"
   | "copied-password"
-  | "restored-from-backup";
+  | "restored-from-backup"
+  /** A password change found the log tampered and started a fresh chain (audit D-9). */
+  | "log-reset";
 
 /** One audit-log record as shown (decrypted). Never contains a secret. */
 export interface AuditEvent {

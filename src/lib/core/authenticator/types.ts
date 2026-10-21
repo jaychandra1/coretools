@@ -23,12 +23,35 @@ export interface OtpParams {
   counter: number;
 }
 
+/**
+ * Why `params` can't produce codes, or null when they can (audit S-10).
+ * Every way an account comes in — QR codes, otpauth links, backup files,
+ * restores — is checked against these limits: a crafted "digits=200000000"
+ * would otherwise build a 200 MB string every code period.
+ */
+export function otpParamsError(params: Pick<OtpParams, "digits" | "period" | "counter">): string | null {
+  if (!Number.isInteger(params.digits) || params.digits < 5 || params.digits > 10) {
+    return "Codes must have 5 to 10 digits";
+  }
+  if (!Number.isInteger(params.period) || params.period < 5 || params.period > 3600) {
+    return "The code period must be 5 to 3,600 seconds";
+  }
+  if (!Number.isSafeInteger(params.counter) || params.counter < 0) {
+    return "The counter must be a whole number";
+  }
+  return null;
+}
+
 /** A fully described account entry as used across the UI and storage. */
 export interface OtpEntry extends Omit<OtpParams, "secret"> {
   /** Stable internal id (crypto.randomUUID). */
   id: string;
-  /** SHA-256 hex of the secret — also the key in extension-format backups. */
-  hash: string;
+  /**
+   * Records before 1.3 stored an unsalted SHA-256 of the secret here, which
+   * let anyone holding leaked seeds confirm accounts in a stolen vault (audit
+   * L3). Nothing reads it; it is dropped the next time a record is written.
+   */
+  hash?: string;
   issuer: string;
   account: string;
   /** Display order; lower comes first. */

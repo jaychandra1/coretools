@@ -29,13 +29,13 @@
  *    the entry list, checked after decryption.
  */
 
-import type { AuthSettings } from "./db";
+import type { AuthSettings, VaultConfig } from "./db";
 import type { ExportableEntry } from "./backup";
 import type { BackupKind } from "./cloud-sync";
 import type { BackupCredential } from "../credentials/types";
 import { normalizeSpaceName } from "../credentials/spaces";
 import { isValidBase32, normalizeBase32 } from "./base32";
-import type { OtpAlgorithm, OtpType } from "./types";
+import { otpParamsError, type OtpAlgorithm, type OtpType } from "./types";
 import {
   decryptString,
   encryptString,
@@ -44,7 +44,7 @@ import {
   VERIFIER_PLAINTEXT,
   type EncryptedBlob,
 } from "./vault-crypto";
-import { deriveKeyBytes, parseKdf, type KdfParams } from "./kdf";
+import { deriveKeyBytes, LEGACY_PBKDF2_ITERATIONS, parseKdf, type KdfParams } from "./kdf";
 import { unwrapDataKey, WrongPasswordError } from "./vault-keys";
 
 /** Written before 1.2: PBKDF2, the data key is the KDF output. */
@@ -235,6 +235,17 @@ export interface BackupKeyHeader {
   wrappedKey?: EncryptedBlob;
 }
 
+/** What a backup of this vault needs to turn the password back into its data key. */
+export function backupKeyHeader(vault: VaultConfig): BackupKeyHeader {
+  if (vault.wrappedKey && vault.kdf && vault.salt) {
+    return { kdf: vault.kdf, salt: vault.salt, wrappedKey: vault.wrappedKey };
+  }
+  return {
+    kdf: { name: "PBKDF2-SHA256", iterations: vault.iterations ?? LEGACY_PBKDF2_ITERATIONS },
+    salt: vault.salt ?? "",
+  };
+}
+
 interface SealKey {
   /** The unlocked vault data key. */
   key: CryptoKey;
@@ -354,7 +365,11 @@ function isBlob(value: unknown): value is EncryptedBlob {
  * Parse and structurally validate a downloaded backup WITHOUT decrypting it.
  * Throws CloudBackupError("corrupt" | "unsupported").
  */
+/** Backups are at most 5 MiB when uploaded; anything far larger isn't one (L7). */
+const MAX_BACKUP_CHARS = 16 * 1024 * 1024;
+
 export function parseCloudBackup(text: string): CloudBackupFile {
+  if (text.length > MAX_BACKUP_CHARS) throw corrupt("too large to be a backup");
   let raw: Record<string, unknown>;
   try {
     raw = JSON.parse(text) as Record<string, unknown>;
@@ -471,7 +486,8 @@ function validEntry(value: unknown): ExportableEntry | null {
     !isCount(e.period, 1) ||
     !isCount(e.counter) ||
     !isCount(e.index) ||
-    typeof e.pinned !== "boolean"
+    typeof e.pinned !== "boolean" ||
+    otpParamsError({ digits: e.digits, period: e.period, counter: e.counter }) !== null
   ) {
     return null;
   }

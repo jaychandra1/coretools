@@ -39,6 +39,7 @@
     revealed: { text: "Password viewed", tone: "access" },
     "copied-password": { text: "Password copied", tone: "access" },
     "restored-from-backup": { text: "Restored from backup", tone: "ok" },
+    "log-reset": { text: "Log restarted after tampering was found", tone: "bad" },
   };
 
   const ACCESS: AuditAction[] = ["revealed", "copied-password"];
@@ -73,6 +74,11 @@
         {:else}
           ⚠ This log was altered outside CoreTools ({status.reason}). The entries below are the ones that could still be verified.
         {/if}
+      </p>
+    {/if}
+    {#if credentialStore.auditWriteFailed}
+      <p class="integrity bad" role="alert">
+        ⚠ Some recent activity couldn't be written to this log. Copy diagnostics from About for details.
       </p>
     {/if}
     <div class="tools">

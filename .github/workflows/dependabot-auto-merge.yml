@@ -1,22 +1,30 @@
 name: Dependabot auto-merge
 
 # Audit F-21: low-risk dependency updates merge themselves once every
-# required check (and review) passes, so patches don't pile up.
+# required check passes, so patches don't pile up.
 #
 # Eligible — every dependency in the pull request must qualify:
 #   - any ecosystem (npm, cargo, GitHub Actions): semver-patch updates;
 #   - GitHub Actions: semver-minor updates too.
 # Anything else (majors, npm/cargo minors, unknown update types) waits for a
-# human merge. This only *enables* auto-merge (squash): branch protection
-# still decides when — CI must pass, and with "Require review from Code
-# Owners" an owner must still approve. Dependabot's cooldown
-# (.github/dependabot.yml) keeps brand-new releases out for a few days first.
+# human merge. Dependabot's cooldown (.github/dependabot.yml) keeps
+# brand-new releases out for a week first.
 #
-# Note: the merge is performed through GITHUB_TOKEN, so the resulting push to
-# master starts no workflows — CI on master (and promote-web) run with the
-# next push, or run CI on master by hand (Actions → CI → Run workflow).
+# Auto-merge only waits for what branch protection REQUIRES. On a private
+# repository on GitHub Free there are no rulesets or required checks, and
+# `gh pr merge --auto` would then merge at once — before CI has run, let
+# alone passed. So this workflow enables auto-merge only when `master`
+# actually requires status checks (a ruleset or classic branch protection —
+# a public repository, or GitHub Pro). Otherwise it approves an eligible
+# pull request and leaves the merge to a human once CI is green
+# (DEPLOYMENT.md, "Dependabot auto-merge").
 #
-# Needs: Settings → General → "Allow auto-merge".
+# Note: a merge performed through GITHUB_TOKEN starts no workflows — CI on
+# master (and promote-web) run with the next push, or run CI on master by
+# hand (Actions → CI → Run workflow).
+#
+# Needs: Settings → General → "Allow auto-merge", and Settings → Actions →
+# General → "Allow GitHub Actions to create and approve pull requests".
 
 on: pull_request
 
@@ -27,12 +35,15 @@ jobs:
   auto-merge:
     name: Enable auto-merge for patch updates
     runs-on: ubuntu-latest
-    # Only Dependabot's own pull requests, and only on Dependabot's own pushes
-    # (fetch-metadata also verifies that every commit is Dependabot's).
+    # Only pull requests Dependabot opened (user.login, which can't be
+    # spoofed), and only runs Dependabot's own push started: github.actor is
+    # an extra restriction here, never the only one — a push by anyone else
+    # to the branch doesn't run this job. fetch-metadata also refuses unless
+    # the pull request's first commit is Dependabot's, signed by GitHub.
     if: github.event.pull_request.user.login == 'dependabot[bot]' && github.actor == 'dependabot[bot]'
     permissions:
       contents: write # required to merge
-      pull-requests: write # enable auto-merge on the pull request
+      pull-requests: write # enable auto-merge, or approve
     steps:
       - name: Dependabot metadata
         id: metadata
@@ -50,15 +61,48 @@ jobs:
               .updateType == "version-update:semver-patch"
               or (.packageEcosystem == "github_actions" and .updateType == "version-update:semver-minor"))')
           echo "eligible=${eligible}" >> "$GITHUB_OUTPUT"
-          if [ "$eligible" = "true" ]; then
-            echo "Eligible: auto-merge (squash) once checks and reviews pass." >> "$GITHUB_STEP_SUMMARY"
-          else
+          if [ "$eligible" != "true" ]; then
             echo "Not eligible for auto-merge (major, non-Actions minor, or unknown update) — merge by hand." >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - name: Enable auto-merge (squash)
+      # Required checks from a ruleset, or from classic branch protection.
+      # Either API answers "none" (or 403/404) when the plan has no such
+      # protection for a private repository — treated as unprotected.
+      - name: Does the base branch require status checks?
+        id: protection
         if: steps.policy.outputs.eligible == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -uo pipefail
+          rules=$(gh api "repos/${GITHUB_REPOSITORY}/rules/branches/${BASE}" \
+            --jq '[.[] | select(.type == "required_status_checks")] | length' 2>/dev/null || echo 0)
+          classic=$(gh api "repos/${GITHUB_REPOSITORY}/branches/${BASE}" \
+            --jq '(.protection.required_status_checks.contexts // []) | length' 2>/dev/null || echo 0)
+          if [ "${rules:-0}" -gt 0 ] || [ "${classic:-0}" -gt 0 ]; then
+            echo "required=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "required=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Enable auto-merge (squash)
+        if: steps.policy.outputs.eligible == 'true' && steps.protection.outputs.required == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --auto --squash "$PR_URL"
+        run: |
+          gh pr merge --auto --squash "$PR_URL"
+          echo "Eligible: auto-merge (squash) enabled — it merges once the required checks pass." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Approve and leave the merge to a human
+        if: steps.policy.outputs.eligible == 'true' && steps.protection.outputs.required != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          body="Eligible for auto-merge (patch update), but master requires no status checks on this plan, so auto-merge would merge before CI finishes. Merge by hand once CI is green."
+          if ! gh pr review --approve --body "$body" "$PR_URL"; then
+            echo "::warning::Could not approve (Settings → Actions → General → \"Allow GitHub Actions to create and approve pull requests\" is off?)."
+          fi
+          echo "Eligible, but not auto-merged: master has no required status checks. Merge by hand once CI is green." >> "$GITHUB_STEP_SUMMARY"

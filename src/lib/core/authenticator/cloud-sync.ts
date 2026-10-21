@@ -49,7 +49,11 @@ export const RETENTION = {
   hourlyForMs: 24 * 60 * 60 * 1000,
   dailyForMs: 31 * 24 * 60 * 60 * 1000,
   monthlyForMs: 366 * 24 * 60 * 60 * 1000,
-  /** A version this much smaller than the one before it counts as a shrink. */
+  /**
+   * A version with fewer than this share of the records (or, for files from
+   * before 1.3 that carry no count, of the bytes) of the one before it
+   * counts as a shrink.
+   */
   shrinkRatio: 0.5,
   maxVersions: 100,
 } as const;
@@ -80,6 +84,8 @@ export interface RemoteBackup {
   md5Checksum: string;
   deviceId: string;
   deviceLabel: string;
+  /** Records in the file, as told at upload; null for files from before 1.3. */
+  records?: number | null;
 }
 
 /** The subset of the platform bridge the backup routine needs. */
@@ -90,6 +96,7 @@ export interface BackupTransport {
     content: string;
     deviceId: string;
     deviceLabel: string;
+    records: number;
   }): Promise<RemoteBackup>;
   remove(id: string): Promise<void>;
 }
@@ -105,6 +112,13 @@ export function sortNewestFirst(list: RemoteBackup[]): RemoteBackup[] {
   return [...list].sort(
     (a, b) => Date.parse(b.createdTime) - Date.parse(a.createdTime) || b.name.localeCompare(a.name),
   );
+}
+
+function shrank(older: RemoteBackup, newer: RemoteBackup): boolean {
+  if (typeof older.records === "number" && typeof newer.records === "number") {
+    return older.records > 0 && newer.records < older.records * RETENTION.shrinkRatio;
+  }
+  return older.size > 0 && newer.size < older.size * RETENTION.shrinkRatio;
 }
 
 /** Ids of versions the tiered retention policy no longer keeps (see RETENTION). */
@@ -133,11 +147,16 @@ export function planPrune(list: RemoteBackup[], now = Date.now()): string[] {
     }
   });
 
-  // A mass deletion shrinks the backup: keep the last version from before it.
+  // A mass deletion shrinks the backup: keep the last version from before
+  // it. Counted in records where both versions carry a count — deletion
+  // records keep a file's size up, so bytes miss "deleted every account"
+  // (D-5). Protection ends with the yearly tier, so no version outlives the
+  // deletion records (tombstones.ts) that keep a merge from reviving data.
   for (let i = 0; i + 1 < sorted.length; i++) {
     const newer = sorted[i];
     const older = sorted[i + 1];
-    if (older.size > 0 && newer.size < older.size * RETENTION.shrinkRatio) {
+    if (now - Date.parse(older.createdTime) > RETENTION.monthlyForMs) continue;
+    if (shrank(older, newer)) {
       protectedIds.add(older.id);
       keep.add(older.id);
     }
@@ -172,7 +191,13 @@ export function detectConflict(
   const newest = sortNewestFirst(list)[0];
   if (!newest) return null;
   if (newest.id === lastSyncedRemoteId) return null;
-  if (newest.deviceId === deviceId) return null;
+  if (newest.deviceId === deviceId) {
+    // Our own upload — unless the one we last synced is also ours and older:
+    // then a copy of this profile on another machine, sharing its device id,
+    // wrote the newest version (L4).
+    const synced = list.find((file) => file.id === lastSyncedRemoteId);
+    return synced?.deviceId === deviceId ? newest : null;
+  }
   return newest;
 }
 
@@ -372,6 +397,8 @@ export type BackupOutcome =
       kind: "uploaded";
       file: RemoteBackup;
       pruned: string[];
+      /** Old versions that couldn't be deleted this pass (they are retried next time). */
+      pruneFailed: number;
       /** Versions remaining after this pass, newest first. */
       versions: RemoteBackup[];
     }
@@ -381,8 +408,12 @@ export interface BackupRequest {
   transport: BackupTransport;
   /** Which series this pass writes; other series are never touched. */
   series: BackupKind;
-  /** Produce the sealed backup file (called only once we know it's safe). */
-  seal: () => Promise<string>;
+  /**
+   * Produce the sealed backup file and how many records it holds (called
+   * only once we know it's safe). The count travels with the file so a
+   * mass deletion can be spotted without opening it (D-5).
+   */
+  seal: () => Promise<{ content: string; records: number }>;
   deviceId: string;
   deviceLabel: string;
   /** The version of THIS series that the device's data is based on. */
@@ -408,24 +439,31 @@ export async function performBackup(request: BackupRequest): Promise<BackupOutco
     if (conflict) return { kind: "conflict", remote: conflict };
   }
 
-  const content = await request.seal();
+  const { content, records } = await request.seal();
   const uploaded = await transport.upload({
     name: backupFileName(series, request.now ?? new Date(), request.deviceId),
     content,
     deviceId: request.deviceId,
     deviceLabel: request.deviceLabel,
+    records,
   });
 
-  if (uploaded.md5Checksum && uploaded.md5Checksum.toLowerCase() !== md5Hex(content)) {
+  // Old versions are deleted only once the provider's checksum proves the
+  // new one arrived intact; without a checksum nothing is pruned (L9).
+  const verified = !!uploaded.md5Checksum;
+  if (verified && uploaded.md5Checksum.toLowerCase() !== md5Hex(content)) {
+    // Best effort: if the damaged copy stays, restores skip it (it fails to open).
     await transport.remove(uploaded.id).catch(() => {});
     throw new CloudSyncError("cloud_integrity", "Uploaded backup failed checksum verification");
   }
 
   // Retention never deletes the version we just wrote.
   const others = remote.filter((file) => file.id !== uploaded.id);
-  const pruned = planPrune([uploaded, ...others], (request.now ?? new Date()).getTime()).filter(
-    (id) => id !== uploaded.id,
-  );
+  const pruned = verified
+    ? planPrune([uploaded, ...others], (request.now ?? new Date()).getTime()).filter(
+        (id) => id !== uploaded.id,
+      )
+    : [];
   const removed = new Set<string>();
   for (const id of pruned) {
     // Best effort: a failed prune only leaves an extra old version behind.
@@ -438,5 +476,5 @@ export async function performBackup(request: BackupRequest): Promise<BackupOutco
     uploaded,
     ...others.filter((file) => !removed.has(file.id)),
   ]);
-  return { kind: "uploaded", file: uploaded, pruned, versions };
+  return { kind: "uploaded", file: uploaded, pruned, pruneFailed: pruned.length - removed.size, versions };
 }

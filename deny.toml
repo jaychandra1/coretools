@@ -1,0 +1,39 @@
+# cargo-deny configuration — RustSec advisories for the desktop app's Rust
+# dependencies. .github/workflows/security.yml runs, from the repository root:
+#
+#   cargo deny --manifest-path src-tauri/Cargo.toml check advisories
+#
+# on every push to master, every pull request and weekly (new advisories
+# appear without any change of ours). Only the advisories check is
+# configured. Licenses and bans are not: a Tauri app pulls several hundred
+# crates per platform, and an allow-list written without running it against
+# the real lockfile would be guesswork. Add them once Cargo.lock is committed
+# and `cargo deny check licenses bans` can be tuned against it.
+
+[graph]
+# The platforms CoreTools ships for. Advisories for crates that only build
+# elsewhere (Android, iOS, BSD…) are noise.
+targets = [
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+]
+
+[advisories]
+# A vulnerability in any crate we compile fails the check — cargo-deny has
+# no switch for that, and it shouldn't: fix it (cargo update -p <crate>) or,
+# if it can't affect CoreTools, add it to `ignore` with a reason, and remove
+# the entry once a fixed version is out (cargo-deny warns about unused ones).
+#
+# Unmaintained / unsound crates fail only when they are OUR direct
+# dependencies. Tauri's Linux stack (the gtk-rs 0.18 bindings, glib, and
+# helpers such as proc-macro-error) carries RustSec "unmaintained" and
+# "unsound" notices that nothing in this repository can act on until
+# Tauri moves; failing CI on them would just teach everyone to ignore it.
+unmaintained = "workspace"
+unsound = "workspace"
+# A yanked version in the lockfile is worth a look, not a red build.
+yanked = "warn"
+# Entries: { id = "RUSTSEC-YYYY-NNNN", reason = "why it can't affect us" }
+ignore = []

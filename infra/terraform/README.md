@@ -17,7 +17,7 @@ settings are whatever was configured by hand (DEPLOYMENT.md).
 
 | Directory | Provider (pinned) | Manages | Credentials |
 | --- | --- | --- | --- |
-| [`github/`](github) | `integrations/github ~> 6.13` | `master` rulesets, `v*` tag ruleset, `release` environment + `v*` deployment policy; checks that the Actions secrets exist | `GITHUB_TOKEN` |
+| [`github/`](github) | `integrations/github ~> 6.13` | `master` rulesets, `v*` tag ruleset, `release` environment + `v*` deployment policy; checks that the Actions secrets (repository and `release` environment) and the updater variable exist | `GITHUB_TOKEN` |
 | [`google/`](google) | `hashicorp/google ~> 8.6` | Drive + Monitoring APIs, a lien blocking project deletion (F-24), an email channel, four Drive API alert policies, optional dev project (F-25) | gcloud ADC |
 | [`vercel/`](vercel) | `vercel/vercel ~> 5.21` | The Vercel project: production branch `production`, root directory, build/install/output commands | `VERCEL_API_TOKEN` |
 
@@ -32,9 +32,12 @@ build (with hashes for every platform); commit it.
   `windows_amd64`, `linux_amd64` or `darwin_arm64`). The 32-bit
   `windows_386` build on the maintainer's machine crashes while loading
   these providers (`exit status 0xc0000409`).
-- **GitHub Pro** (or Team/Enterprise) on the account that owns
-  `jaychandra1/coretools`: rulesets and environment deployment policies on a
-  *private* repository need it. See [Limits](#limits) for required reviewers.
+- **A public `jaychandra1/coretools`, or GitHub Pro** (or Team/Enterprise)
+  on the account that owns it: rulesets, environments, environment secrets
+  and deployment policies on a *private* repository need Pro; on a public
+  repository GitHub Free has them all, required reviewers included. Making
+  the repository public is the free route (DEPLOYMENT.md, "Manual steps").
+  See [Limits](#limits) for required reviewers.
 - **gcloud CLI** for Google, signed in as an Owner of the production project.
 - Optional: **gh CLI** for the import commands below (run them in Git Bash;
   the `--jq` filters don't survive PowerShell quoting).
@@ -66,9 +69,11 @@ example HCP Terraform's free tier; a GCS bucket needs a billing account).
 ## GitHub
 
 **Token.** A fine-grained personal access token, *Only select repositories →
-`jaychandra1/coretools`*, with **Administration: Read and write** and
-**Secrets: Read-only** (Metadata read is automatic), expiry 7 days. Revoke it
-when you're done.
+`jaychandra1/coretools`*, with **Administration: Read and write**,
+**Environments: Read and write**, **Secrets: Read-only** and **Variables:
+Read-only** (Metadata read is automatic), expiry 7 days. Revoke it when
+you're done. If a plan fails with 403 on one of the checks' data sources,
+add the permission the error names.
 
 ```powershell
 $env:GITHUB_TOKEN = "<token>"      # PowerShell
@@ -99,15 +104,25 @@ Without `GITHUB_TOKEN` the provider falls back to `gh auth token`.
   bypass actor on your plan, or you only tag by hand (`npm version` + `git
   push --follow-tags`), set it to `false`.
 - Environment `release`: only `v*` tags may deploy to it, admins can't
-  bypass it, and `release_reviewers` must approve each publish (but see
-  [Limits](#limits)). release.yml's third mode, *Run workflow on master* to
-  re-publish `package.json`'s version, is refused at the publish job unless
-  you set `release_branch_patterns = ["master"]`. Re-publishing from the tag
+  bypass it, and `release_reviewers` must approve each job that uses it —
+  release.yml's `sign-updates` (the only job that holds the updater's
+  private key) and `publish` (but see [Limits](#limits)). release.yml's
+  third mode, *Run workflow on master* to re-publish `package.json`'s
+  version, is refused at those jobs unless you set
+  `release_branch_patterns = ["master"]`. Re-publishing from the tag
   (`gh workflow run release.yml --ref vX.Y.Z`) works either way.
-- `secrets.tf` warns on plan if `ARTIFACTS_REPO_TOKEN`,
-  `CORETOOLS_GOOGLE_CLIENT_ID` or `CORETOOLS_GOOGLE_CLIENT_SECRET` is
-  missing, or if `ARTIFACTS_REPO_TOKEN` was last set more than 90 days ago.
-  It reads names and dates only; values never pass through Terraform.
+- `secrets.tf` warns on plan if a required secret is missing —
+  `ARTIFACTS_REPO_TOKEN`, `CORETOOLS_GOOGLE_CLIENT_ID`,
+  `CORETOOLS_GOOGLE_CLIENT_SECRET`, `TAURI_SIGNING_PRIVATE_KEY`,
+  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` — if `ARTIFACTS_REPO_TOKEN` was last
+  set more than 90 days ago, or if the `TAURI_UPDATER_PUBKEY` repository
+  variable is missing. With
+  `updater_signing_secrets_in_release_environment = true` it expects the two
+  signing secrets in the `release` environment instead, and warns if
+  repository copies are left behind. It reads secret names and dates only;
+  secret values never pass through Terraform. (The variables check does
+  read variable values into state — they are public keys and endpoints,
+  not secrets.)
 
 > If you rename a job in `ci.yml`, change `required_status_checks` and apply
 > **before** merging the rename, or every pull request waits forever for the
@@ -247,8 +262,9 @@ token can see more than one team.
 (`framework` omitted), Root Directory = repository root, install
 `npm ci --include=dev`, build `npm run build:web`, output `dist` (all
 mirroring `vercel.json`), Git repository `jaychandra1/coretools` with
-**Production Branch `production`**. Headers, the CSP and
-`git.deploymentEnabled.master: false` stay in `vercel.json`.
+**Production Branch `production`**. Headers, the CSPs and
+`git.deploymentEnabled` (no deployments of `master` or `dependabot/**`)
+stay in `vercel.json`.
 
 **Importing** (the project certainly exists). Project → Settings → General
 → *Project ID*:
@@ -321,7 +337,7 @@ only after a new release ships with the new secret, or in an incident
 
 | Item | Where | Why not Terraform |
 | --- | --- | --- |
-| Values of `ARTIFACTS_REPO_TOKEN`, `CORETOOLS_GOOGLE_CLIENT_ID/SECRET` | GitHub → Settings → Secrets and variables → Actions | Managing a secret puts its value in state. `secrets.tf` checks they exist. |
+| Values of `ARTIFACTS_REPO_TOKEN`, `CORETOOLS_GOOGLE_CLIENT_ID/SECRET`, `TAURI_SIGNING_PRIVATE_KEY/_PASSWORD`, `TAURI_UPDATER_PUBKEY` | GitHub → Settings → Secrets and variables → Actions (signing secrets: Settings → Environments → `release`, once the repository is public or on Pro) | Managing a secret puts its value in state. `secrets.tf` checks they exist. |
 | The fine-grained PAT behind `ARTIFACTS_REPO_TOKEN` | GitHub → Settings → Developer settings | GitHub has no API to create PATs. |
 | Private vulnerability reporting on **`jaychandra1/artifacts`** | Settings → Code security → *Private vulnerability reporting* → Enable, or `gh api -X PUT repos/jaychandra1/artifacts/private-vulnerability-reporting` | Managing that repository would mean importing all of its settings; one toggle doesn't justify it. `website/.well-known/security.txt` and `security.html` send reporters there. |
 | The `jaychandra1/artifacts` repository itself | GitHub | The publish job pushes to its `main` with the PAT; a ruleset there would need to allow that. |

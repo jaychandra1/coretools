@@ -1,10 +1,10 @@
 /**
  * The app's own at-rest encryption for secrets ("the vault").
  *
- * PBKDF2-SHA256 (310,000 iterations) derives a non-extractable AES-256-GCM
- * key from the user's encryption password. Each secret is encrypted with a
- * fresh random 12-byte IV; the per-user salt is 16 random bytes. The derived
- * CryptoKey lives only in memory and is dropped on lock.
+ * AES-256-GCM under the vault's data key (see vault-keys.ts for how the
+ * password unwraps it; PBKDF2 here only opens vaults from before 1.2). Each
+ * value is encrypted with a fresh random 12-byte IV. The key lives only in
+ * memory, as a non-extractable CryptoKey, and is dropped on lock.
  *
  * A "verifier" blob (a known sentinel string encrypted at password-set time)
  * lets unlock detect a wrong password without touching any real secret —
@@ -20,6 +20,58 @@ export const VERIFIER_PLAINTEXT = "coretools-authenticator-v1";
 export interface EncryptedBlob {
   iv: string;
   ct: string;
+  /** 2 = bound to its record and field (see sealField); absent on older blobs. */
+  v?: 2;
+}
+
+/**
+ * Where a record's encrypted field lives. Fields are sealed with this as
+ * additional data (audit L2), so someone who can write to the disk can't
+ * move a ciphertext to another record or field — a bank password shown
+ * under a different login, say — without decryption failing.
+ */
+export interface FieldBinding {
+  kind: "entry" | "credential" | "record";
+  id: string;
+  field: "secret" | "meta" | "password" | "notes" | "value";
+}
+
+/**
+ * A single sealed record kept under a meta key (the settings, the deletion
+ * records, a saved order): bound to that key, so one can't be swapped for
+ * another — the deletion records planted as the settings, say.
+ */
+export function recordBinding(name: string): FieldBinding {
+  return { kind: "record", id: name, field: "value" };
+}
+
+function bindingAad(binding: FieldBinding): Uint8Array {
+  return new TextEncoder().encode(
+    JSON.stringify(["coretools-field-v2", binding.kind, binding.id, binding.field]),
+  );
+}
+
+export async function sealField(
+  key: CryptoKey,
+  plaintext: string,
+  binding: FieldBinding,
+): Promise<EncryptedBlob> {
+  return { ...(await encryptString(key, plaintext, bindingAad(binding))), v: 2 };
+}
+
+/**
+ * Opens bound fields and, for records written before 1.3, unbound ones.
+ * Unbound blobs are re-sealed bound when their record is next written; until
+ * then an older unbound blob still opens (accepted residual risk: planting
+ * one needs a copy of this vault's own earlier data).
+ */
+export function openField(key: CryptoKey, blob: EncryptedBlob, binding: FieldBinding): Promise<string> {
+  return blob.v === 2 ? decryptString(key, blob, bindingAad(binding)) : decryptString(key, blob);
+}
+
+/** Still in the pre-1.3 unbound form: re-sealed on the next unlock. */
+export function isUnbound(blob: EncryptedBlob | null | undefined): boolean {
+  return !!blob && blob.v !== 2;
 }
 
 export function randomBytes(length: number): Uint8Array {

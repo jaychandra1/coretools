@@ -1,0 +1,219 @@
+name: Promote or roll back latest
+
+# Points coretools-latest — the website's download links, the in-app update
+# manifest installed copies poll, and coretools/releases/latest.json — at an
+# ALREADY PUBLISHED version, using that version's original files. Nothing is
+# rebuilt and coretools-v<version> is never modified (audit H3).
+#
+#   Roll back (docs/runbooks/bad-release.md): version = the last good
+#     version, withdraw = the bad one. The bad version leaves the index (its
+#     release gets a "Withdrawn" note), the good one becomes the newest, and
+#     every file the bad build added to coretools-latest — its updater.json
+#     above all — is deleted, so installed copies are no longer offered it.
+#     (The updater never downgrades: copies that already installed the bad
+#     version stay on it until a newer fix ships — fix forward too.)
+#   Widen a staged rollout: version = the current one, rollout = 50, later
+#     empty (= everyone).
+#   Server back-off: check-after-hours = N asks installed copies to check at
+#     most every N hours; empty = the app's default.
+#
+# Before anything is re-published, every downloaded file is checked against
+# the release's SHA256SUMS.txt and that file's Sigstore signature from this
+# repository's release.yml. Only files that SHA256SUMS.txt lists are
+# re-published (releases from this pipeline version on list every file,
+# update files included); anything else on the release is left out, with a
+# warning. The run refuses unless `version` ends up the newest version in the
+# index (withdraw the newer ones in the same run).
+#
+# It shares release.yml's concurrency group, so it waits for a running
+# release — including one paused for approval in the `release` environment.
+# Rolling back while a release waits: reject or cancel that release first
+# (docs/runbooks/bad-release.md). To stop in-app updates immediately, run
+# stop-updates.yml, which doesn't wait.
+#
+# No `release` environment: its deployment policy admits only v* tag runs,
+# and this workflow runs from master. Starting it needs write access to this
+# repository; it can only re-publish files the release workflow signed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version coretools-latest should serve (already published), e.g. 1.2.5
+        required: true
+        type: string
+      withdraw:
+        description: Version(s) to withdraw first, comma-separated (rollback), e.g. 1.2.6
+        required: false
+        default: ""
+        type: string
+      reason:
+        description: One line for the withdrawn release's notes (rollback)
+        required: false
+        default: ""
+        type: string
+      rollout:
+        description: Staged rollout — percent of installed copies offered this update (1–100). Empty = everyone.
+        required: false
+        default: ""
+        type: string
+      check-after-hours:
+        description: Ask installed copies to check for updates at most every N hours (1–168). Empty = the app's default.
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+# Never alongside a release (release.yml uses the same group).
+concurrency:
+  group: coretools-release
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Point coretools-latest at a published version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+      WITHDRAW: ${{ inputs.withdraw }}
+      ARTIFACTS_REPO: jaychandra1/artifacts
+    steps:
+      - name: Validate the request
+        env:
+          ROLLOUT: ${{ inputs.rollout }}
+          CHECK_AFTER_HOURS: ${{ inputs.check-after-hours }}
+        run: |
+          set -euo pipefail
+          semver='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z_.]+)?$'
+          if ! printf '%s' "$VERSION" | grep -Eq "$semver"; then
+            echo "::error::version must be semver without a leading v, e.g. 1.2.5 (got \"${VERSION}\")."
+            exit 1
+          fi
+          IFS=, read -r -a withdrawn <<< "$WITHDRAW"
+          for v in "${withdrawn[@]}"; do
+            v="${v// /}"
+            if [ -n "$v" ] && ! printf '%s' "${v#v}" | grep -Eq "$semver"; then
+              echo "::error::withdraw takes versions like 1.2.6, comma-separated (got \"${v}\")."
+              exit 1
+            fi
+          done
+          valid() { [ -z "$1" ] || { printf '%s' "$1" | grep -Eq '^[0-9]+$' && [ "$1" -ge 1 ] && [ "$1" -le "$2" ]; }; }
+          if ! valid "$ROLLOUT" 100; then echo "::error::rollout must be empty or 1–100."; exit 1; fi
+          if ! valid "$CHECK_AFTER_HOURS" 168; then echo "::error::check-after-hours must be empty or 1–168."; exit 1; fi
+
+      - name: Checkout (publish script + changelog)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Public release assets; the read-only GITHUB_TOKEN is enough.
+      - name: Download the published files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release download "coretools-v${VERSION}" --repo "$ARTIFACTS_REPO" --dir incoming
+          ls -l incoming
+
+      # Only files the release pipeline itself produced are re-published:
+      # every file SHA256SUMS.txt lists must be present and match, the
+      # checksum file must carry release.yml's Sigstore signature, and a file
+      # it doesn't list (an older release's unlisted update files, or
+      # anything uploaded later) is removed here, so it's never re-published.
+      - name: Verify checksums and the Sigstore signature
+        working-directory: incoming
+        env:
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sha256sum --check --strict SHA256SUMS.txt
+          if [ -f SHA256SUMS.txt.sigstore.json ]; then
+            identity="^https://github\.com/${SOURCE_REPO//./\\.}/\.github/workflows/release\.yml@refs/(tags/v.+|heads/master)\$"
+            cosign verify-blob SHA256SUMS.txt --bundle SHA256SUMS.txt.sigstore.json \
+              --certificate-identity-regexp "$identity" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          else
+            echo "::warning::coretools-v${VERSION} has no Sigstore signature (released before signing existed, v1.1.0 or earlier) — checked against its own SHA256SUMS.txt only."
+          fi
+          # File names exactly as sha256sum wrote them ("<hash>  <name>", or
+          # "<hash> *<name>" in binary mode).
+          sed -E 's/^[0-9a-fA-F]{64} [ *]//' SHA256SUMS.txt > "$RUNNER_TEMP/listed.txt"
+          for file in *; do
+            case "$file" in SHA256SUMS.txt | SHA256SUMS.txt.sigstore.json) continue ;; esac
+            if ! grep -qxF -- "$file" "$RUNNER_TEMP/listed.txt"; then
+              echo "::warning::${file} is on coretools-v${VERSION} but not in its SHA256SUMS.txt — not re-published."
+              rm -f -- "$file"
+            fi
+          done
+          ls -l
+
+      - name: Re-point coretools-latest
+        id: publish
+        uses: ./.github/actions/publish-artifacts
+        with:
+          app: coretools
+          app-name: CoreTools
+          version: ${{ inputs.version }}
+          artifacts-repo: jaychandra1/artifacts
+          token: ${{ secrets.ARTIFACTS_REPO_TOKEN }}
+          assets-dir: incoming
+          signer: https://github.com/${{ github.repository }}/.github/workflows/release.yml
+          withdraw: ${{ inputs.withdraw }}
+          rollout: ${{ inputs.rollout }}
+          check-after-hours: ${{ inputs.check-after-hours }}
+          require-newest: "true"
+          allow-overwrite: "false"
+
+      # The note is what the website, watchers and the release canary see.
+      - name: Mark withdrawn releases
+        if: inputs.withdraw != ''
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACTS_REPO_TOKEN }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          IFS=, read -r -a withdrawn <<< "$WITHDRAW"
+          for v in "${withdrawn[@]}"; do
+            v="${v// /}"
+            v="${v#v}"
+            [ -n "$v" ] || continue
+            tag="coretools-v${v}"
+            if ! gh release view "$tag" --repo "$ARTIFACTS_REPO" --json body --jq .body > "$RUNNER_TEMP/body.md" 2>/dev/null; then
+              echo "::notice::${tag} doesn't exist — nothing to mark."
+              continue
+            fi
+            if grep -q '^\*\*Withdrawn:\*\*' "$RUNNER_TEMP/body.md"; then
+              echo "${tag} is already marked withdrawn."
+              continue
+            fi
+            {
+              echo "**Withdrawn:** ${REASON:-this version was withdrawn}. Use v${VERSION} or newer instead."
+              echo ""
+              cat "$RUNNER_TEMP/body.md"
+            } > "$RUNNER_TEMP/withdrawn.md"
+            gh release edit "$tag" --repo "$ARTIFACTS_REPO" --notes-file "$RUNNER_TEMP/withdrawn.md"
+            echo "Marked ${tag} as withdrawn."
+          done
+
+      - name: Summary
+        env:
+          ROLLOUT: ${{ inputs.rollout }}
+          CHECK_AFTER_HOURS: ${{ inputs.check-after-hours }}
+        run: |
+          {
+            echo "### coretools-latest → v${VERSION}"
+            if [ -n "$WITHDRAW" ]; then echo "- Withdrawn: ${WITHDRAW}"; fi
+            echo "- Offered to: ${ROLLOUT:-100}% of installed copies"
+            if [ -n "$CHECK_AFTER_HOURS" ]; then echo "- Update checks: at most every ${CHECK_AFTER_HOURS} h"; fi
+            echo "- Check: https://raw.githubusercontent.com/${ARTIFACTS_REPO}/main/coretools/releases/latest.json (cached up to ~5 min), then Actions → Release canary → Run workflow."
+          } >> "$GITHUB_STEP_SUMMARY"

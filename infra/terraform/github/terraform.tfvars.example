@@ -11,3 +11,8 @@
 # Required reviewers on a PRIVATE repository need GitHub Enterprise Cloud.
 # On GitHub Free/Pro, GitHub rejects them: use an empty list.
 # release_reviewers = []
+
+# After moving TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+# from repository secrets into the `release` environment (needs a public
+# repository or GitHub Pro — Free can't configure environments of a private one):
+# updater_signing_secrets_in_release_environment = true

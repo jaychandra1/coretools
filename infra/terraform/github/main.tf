@@ -123,10 +123,22 @@ resource "github_repository_ruleset" "release_tags" {
 }
 
 # --- release environment ---------------------------------------------------------
-# release.yml's `publish` job runs in this environment. Only runs on a v* tag
-# may deploy (a manual run from master is refused unless
-# release_branch_patterns lists it). Each publish waits for a listed
-# reviewer when release_reviewers is non-empty.
+# release.yml's `sign-updates` and `publish` jobs run in this environment.
+# Only runs on a v* tag may deploy (a manual run from master is refused
+# unless release_branch_patterns lists it). Each of those jobs waits for a
+# listed reviewer when release_reviewers is non-empty — two approvals per
+# release with in-app updates on: signing, then publishing.
+#
+# The updater's private key (TAURI_SIGNING_PRIVATE_KEY + _PASSWORD) belongs
+# in this environment's secrets (audit S-2): then only sign-updates, on a v*
+# tag run, can read it. Set
+# updater_signing_secrets_in_release_environment = true once moved, and the
+# checks in secrets.tf look for them here instead of in the repository.
+# GitHub Free configures environments (secrets, policies, reviewers) only for
+# public repositories; a private repository needs GitHub Pro — like every
+# resource in this module.
+# promote-latest.yml deliberately doesn't use this environment (it runs from
+# master and only re-publishes files release.yml already signed).
 
 data "github_user" "release_reviewer" {
   for_each = toset(var.release_reviewers)
@@ -163,7 +175,7 @@ resource "github_repository_environment_deployment_policy" "release_tags" {
 }
 
 # Optional, off by default: lets release.yml's "Run workflow on master"
-# re-publish mode reach the environment.
+# re-publish mode reach the environment (both sign-updates and publish).
 resource "github_repository_environment_deployment_policy" "release_branches" {
   for_each = toset(var.release_branch_patterns)
 

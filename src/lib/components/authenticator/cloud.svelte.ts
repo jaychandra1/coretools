@@ -24,7 +24,9 @@
 
 import { authStore, type AuthEvent, type RestoreResult } from "./store.svelte";
 import { getPlatform } from "../../platform";
+import { noteFailure } from "../../diagnostics";
 import {
+  accountHash,
   EMPTY_SERIES,
   loadCloudConfig,
   saveCloudConfig,
@@ -106,9 +108,11 @@ export function restoreSummary(result: RestoreResult): string {
   if (result.restoredCredentials) parts.push(plural(result.credentialsAdded, "credential"));
   const skipped = result.skipped + result.credentialsSkipped;
   const removed = result.removed + result.credentialsRemoved;
+  const updated = result.updated + result.credentialsUpdated;
   return (
     `Restored ${parts.join(" and ") || "nothing"}` +
     (skipped ? ` (${skipped} already here or deleted here).` : ".") +
+    (updated ? ` Updated ${updated} with a newer copy from the backup.` : "") +
     (removed ? ` Removed ${removed} that another device deleted.` : "")
   );
 }
@@ -151,6 +155,8 @@ export class CloudBackupController {
 
   #bridge = getPlatform().cloud ?? null;
   #initPromise: Promise<void> | null = null;
+  /** Config writes, one at a time (see #update). */
+  #updates: Promise<void> = Promise.resolve();
   #debounce: ReturnType<typeof setTimeout> | undefined;
   #retryTimer: ReturnType<typeof setTimeout> | undefined;
   #attempt = 0;
@@ -242,13 +248,14 @@ export class CloudBackupController {
           const account = await bridge.status();
           this.account = account?.email ?? null;
           this.deviceName = account?.deviceName ?? "";
-        } catch {
+        } catch (e) {
+          noteFailure("cloud", "status failed", e);
           this.account = null;
         }
         // We were connected, but the OS keychain no longer has the
         // credential (profile reset, manual removal): say so rather than
         // silently stop backing up.
-        if (!this.account && config.email) this.needsReconnect = true;
+        if (!this.account && config.accountHash) this.needsReconnect = true;
       }
     }
     await this.#persist(); // stores a freshly generated device id / migrated series
@@ -266,23 +273,34 @@ export class CloudBackupController {
     if (this.config) await saveCloudConfig($state.snapshot(this.config));
   }
 
-  async #update(patch: Partial<CloudConfig>): Promise<void> {
-    if (!this.config) return;
-    this.config = { ...this.config, ...patch };
-    await this.#persist();
+  /**
+   * Change the config, disk first: memory only once it is saved. Changes run
+   * one at a time, each applied to the result of the last, so two in flight
+   * can't undo each other. A function patch sees the config as it is then.
+   */
+  #update(patch: Partial<CloudConfig> | ((config: CloudConfig) => Partial<CloudConfig>)): Promise<void> {
+    const run = this.#updates.then(async () => {
+      if (!this.config) return;
+      const next = { ...this.config, ...(typeof patch === "function" ? patch(this.config) : patch) };
+      await saveCloudConfig($state.snapshot(next) as CloudConfig);
+      this.config = next;
+    });
+    this.#updates = run.catch(() => undefined);
+    return run;
   }
 
   /** Patch some series' state (the others are kept). */
   async #updateSeries(
     patch: (kind: BackupKind, state: CloudSeriesState) => Partial<CloudSeriesState> | null,
   ): Promise<void> {
-    if (!this.config) return;
-    const series = { ...this.config.series };
-    for (const kind of BACKUP_KINDS) {
-      const change = patch(kind, series[kind]);
-      if (change) series[kind] = { ...series[kind], ...change };
-    }
-    await this.#update({ series });
+    await this.#update((config) => {
+      const series = { ...config.series };
+      for (const kind of BACKUP_KINDS) {
+        const change = patch(kind, series[kind]);
+        if (change) series[kind] = { ...series[kind], ...change };
+      }
+      return { series };
+    });
   }
 
   #dropConflicts(kinds: readonly BackupKind[]): void {
@@ -296,13 +314,16 @@ export class CloudBackupController {
   #markDirty(kinds: readonly BackupKind[]): void {
     for (const kind of kinds) this.#changeSeq[kind]++;
     if (kinds.some((kind) => !this.config?.series[kind].dirty)) {
-      void this.#updateSeries((kind) => (kinds.includes(kind) ? { dirty: true } : null));
+      // The in-memory change counter still drives the next backup if this write fails.
+      this.#updateSeries((kind) => (kinds.includes(kind) ? { dirty: true } : null)).catch((e) =>
+        noteFailure("cloud", "dirty flag not saved", e),
+      );
     }
   }
 
   #onAuthEvent(event: AuthEvent): void {
     if (event === "wipe") {
-      void this.#forgetAfterWipe();
+      this.#forgetAfterWipe().catch((e) => noteFailure("cloud", "reset after wipe failed", e));
       return;
     }
     if (this.#suppressChanges || !this.connected || !this.config) return;
@@ -431,6 +452,7 @@ export class CloudBackupController {
         }
 
         this.#dropConflicts([kind]);
+        if (outcome.pruneFailed) noteFailure("cloud", `${outcome.pruneFailed} old versions not pruned`);
         if (this.versions) {
           this.versions = sortNewestFirst([
             ...this.versions.filter((v) => backupKindOf(v.name) !== kind),
@@ -473,9 +495,15 @@ export class CloudBackupController {
       }
       if (this.dirty && this.config?.autoBackup) this.#schedule(DEBOUNCE_MS);
     } catch (e) {
+      // The vault locked during the pass: nothing failed. The series stays
+      // dirty and the unlock event resumes it (data audit L6).
+      if (authStore.locked) return;
       const info = describeCloudError(e);
       if (info.kind === "auth") this.needsReconnect = true;
-      this.lastError = info.message || "Backup failed.";
+      this.lastError =
+        e === "cloud_too_large"
+          ? "This backup is too large to upload (Google Drive backups are limited to 5 MB). Remove old trash or notes, or export a backup file instead."
+          : info.message || "Backup failed.";
       if (info.retryable) {
         const delay = retryDelayMs(this.#attempt++);
         this.retryAt = Date.now() + delay;
@@ -502,12 +530,13 @@ export class CloudBackupController {
     this.notice = null;
     try {
       const account = await bridge.connect();
-      const switched = !!this.config.email && this.config.email !== account.email;
+      const hash = await accountHash(account.email);
+      const switched = !!this.config.accountHash && this.config.accountHash !== hash;
       this.account = account.email;
       this.deviceName = account.deviceName;
       this.needsReconnect = false;
       this.lastError = null;
-      await this.#update({ email: account.email });
+      await this.#update({ accountHash: hash });
       // A different Google account holds a different backup history.
       if (switched) {
         this.versions = null;
@@ -528,7 +557,7 @@ export class CloudBackupController {
   }
 
   async cancelSignIn(): Promise<void> {
-    await this.#bridge?.cancelConnect().catch(() => {});
+    await this.#bridge?.cancelConnect().catch((e) => noteFailure("cloud", "cancel failed", e));
   }
 
   /**
@@ -624,7 +653,7 @@ export class CloudBackupController {
     }
     this.#resetConnection();
     await this.#update({
-      email: null,
+      accountHash: null,
       series: { authenticator: { ...EMPTY_SERIES }, credmanager: { ...EMPTY_SERIES } },
     });
     this.notice = {
@@ -645,11 +674,67 @@ export class CloudBackupController {
 
   /** "Wipe all data" also forgets this device's Google connection. */
   async #forgetAfterWipe(): Promise<void> {
-    await this.#bridge?.disconnect().catch(() => {});
+    await this.#bridge?.disconnect().catch((e) => noteFailure("cloud", "disconnect after wipe failed", e));
     this.#resetConnection();
     this.notice = null;
     this.config = await loadCloudConfig(); // meta was cleared → new device id
     await this.#persist();
+  }
+
+  /**
+   * After a password change (S-13): back up every series under the new
+   * password first — a normal backup, never forced over another device's
+   * newer one (NEW-10) — and only when that went through, delete the
+   * versions made before `time`. Throws, deleting nothing, otherwise.
+   * Returns how many were deleted.
+   */
+  async replaceVersionsBefore(time: number): Promise<number> {
+    if (this.needsReconnect) throw new Error("Reconnect your Google account first.");
+    await this.backupNow({ series: BACKUP_KINDS });
+    if (this.conflictKinds.length) {
+      throw new Error(
+        "Another device made a newer backup. Merge it or keep this device's data first, then try again — nothing was deleted.",
+      );
+    }
+    if (this.lastError) {
+      throw new Error(`The new backup didn't go through (${this.lastError}), so nothing was deleted.`);
+    }
+    return this.deleteVersionsBefore(time);
+  }
+
+  /**
+   * Delete the versions made before `time`, which still open with the old
+   * password (S-13). The newest version of each series is never deleted,
+   * so a series is never left without a backup. Returns how many were
+   * deleted.
+   */
+  async deleteVersionsBefore(time: number): Promise<number> {
+    const bridge = this.#bridge;
+    if (!bridge || !this.account) return 0;
+    this.activity = "deleting";
+    let deleted = 0;
+    try {
+      const all = await bridge.list();
+      for (const kind of BACKUP_KINDS) {
+        const [newest, ...older] = sortNewestFirst(ofKind(all, kind));
+        if (!newest) continue;
+        for (const file of older) {
+          if (Date.parse(file.createdTime) >= time) continue;
+          try {
+            await bridge.remove(file.id);
+            deleted++;
+          } catch (e) {
+            noteFailure("cloud", "delete failed", e);
+          }
+        }
+      }
+    } catch (e) {
+      this.notice = { kind: "error", text: describeCloudError(e).message };
+    } finally {
+      this.activity = null;
+    }
+    this.versions = null;
+    return deleted;
   }
 
   /**
@@ -669,7 +754,8 @@ export class CloudBackupController {
         try {
           await bridge.remove(file.id);
           deleted++;
-        } catch {
+        } catch (e) {
+          noteFailure("cloud", "delete failed", e);
           failed++;
         }
       }
@@ -718,8 +804,9 @@ export class CloudBackupController {
     if (!bridge || !this.account || this.needsReconnect) return;
     try {
       this.versions = sortNewestFirst(await bridge.list());
-    } catch {
+    } catch (e) {
       // Display-only; the status line already reports real backup failures.
+      noteFailure("cloud", "list failed", e);
     }
   }
 

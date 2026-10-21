@@ -3,7 +3,9 @@ name: Prepare release
 # Release pull request flow (audit F-26).
 #
 # Run: Actions → "Prepare release" → Run workflow (from master), version
-# without the leading v, e.g. 1.2.0. This workflow:
+# x.y.z without the leading v, e.g. 1.2.0 (no pre-releases: installed copies
+# accept only x.y.z). It refuses until src-tauri/Cargo.lock is committed
+# (Actions → "Generate Cargo.lock"). This workflow:
 #   1. bumps package.json + package-lock.json and copies the version into
 #      Cargo.toml, tauri.conf.json, website/scripts/downloads.js (and
 #      src-tauri/Cargo.lock once committed) — scripts/sync-version.mjs;
@@ -26,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: New version, semver without the leading v (e.g. 1.2.0)
+        description: New version, x.y.z without the leading v (e.g. 1.2.0)
         required: true
         type: string
 
@@ -56,18 +58,30 @@ jobs:
             echo "::error::Run Prepare release from master (this run uses ${GITHUB_REF})."
             exit 1
           fi
-          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z_.]+)?$'; then
-            echo "::error::The version must be semver without a leading v, e.g. 1.2.0 (got \"${VERSION}\")."
+          # x.y.z only: installed copies accept no other version, in
+          # latest.json or updater.json (src-tauri/src/updates.rs), so a
+          # pre-release would break their update check.
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::The version must be x.y.z without a leading v, e.g. 1.2.0 (got \"${VERSION}\"). Pre-releases can't be published: installed copies accept only x.y.z versions."
             exit 1
           fi
 
       - name: Checkout master
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: master
 
+      # Audit S-3: a release refuses to run without the lockfile, and CI
+      # won't tag one — so don't open a release pull request that can't ship.
+      - name: Cargo.lock is committed
+        run: |
+          if [ ! -f src-tauri/Cargo.lock ]; then
+            echo "::error::src-tauri/Cargo.lock is not committed — the release would refuse to run (audit S-3). Run Actions → 'Generate Cargo.lock', merge its pull request, then run Prepare release again."
+            exit 1
+          fi
+
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
 
@@ -148,6 +162,8 @@ jobs:
             echo "**Merging this pull request releases v${VERSION}.** Once CI passes on \`master\`, it tags the merge commit \`v${VERSION}\` and starts the Release workflow, which waits for approval in the \`release\` environment before anything is published."
             echo ""
             echo "Need to change the notes? Edit \`CHANGELOG.md\` on this branch; pushes run CI as usual. (CI for the opening commit was started by the Prepare release workflow — pull requests opened by GitHub Actions don't trigger it themselves.)"
+            echo ""
+            echo "**Soak rule (DEPLOYMENT.md):** merge this only when every change it ships has been on \`master\` for 24 hours — security fixes excepted — and merge nothing else until CI has tagged \`v${VERSION}\`."
             echo ""
             echo "## Release notes"
             echo ""

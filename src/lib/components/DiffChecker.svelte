@@ -25,10 +25,17 @@
   const canCompare = $derived(leftText.length > 0 || rightText.length > 0);
 
   function compare() {
-    blocks = computeDiff(leftText, rightText);
+    saveMsg = "";
+    try {
+      blocks = computeDiff(leftText, rightText);
+    } catch (e) {
+      blocks = [];
+      compared = false;
+      saveMsg = e instanceof Error ? e.message : "Couldn't compare these files";
+      return;
+    }
     selection = defaultSelection(blocks);
     compared = true;
-    saveMsg = "";
   }
 
   function acceptAll(side: "a" | "b") {

@@ -174,6 +174,11 @@ describe("detectConflict", () => {
     expect(detectConflict(list, "x", mine)?.id).toBe("y");
   });
 
+  it("flags a newer version from a copy of this profile (same device id)", () => {
+    const list = [remote("x", 1, mine), remote("y", 2, mine)];
+    expect(detectConflict(list, "x", mine)?.id).toBe("y");
+  });
+
   it("flags existing backups on a freshly connected device", () => {
     expect(detectConflict([remote("x", 1, "dev-other")], null, mine)?.id).toBe("x");
   });
@@ -223,7 +228,7 @@ describe("performBackup", () => {
     series: "authenticator" as BackupKind,
     deviceId: "dev-me",
     deviceLabel: "MY-PC",
-    seal: async () => '{"sealed":true}',
+    seal: async () => ({ content: '{"sealed":true}', records: 1 }),
   };
 
   it("uploads the first backup", async () => {
@@ -281,7 +286,7 @@ describe("performBackup", () => {
       lastSyncedRemoteId: null,
       seal: async () => {
         sealed = true;
-        return "{}";
+        return { content: "{}", records: 0 };
       },
     });
     expect(outcome).toMatchObject({ kind: "conflict", remote: { id: "theirs" } });

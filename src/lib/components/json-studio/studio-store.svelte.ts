@@ -17,15 +17,12 @@ import {
   type StudioSession,
 } from "../../core/json-studio/db";
 import { findSecret } from "../../core/json-studio/secrets";
+import { readSetting, writeSetting } from "../../local-setting";
 
 const RECOVERY_PREF = "coretools.jsonStudio.recovery";
 
 function recoveryPref(): boolean {
-  try {
-    return localStorage.getItem(RECOVERY_PREF) !== "off";
-  } catch {
-    return true;
-  }
+  return readSetting(RECOVERY_PREF) !== "off";
 }
 
 export type StudioTool =
@@ -138,11 +135,7 @@ class StudioStore {
 
   setRecovery(on: boolean): void {
     this.recovery = on;
-    try {
-      localStorage.setItem(RECOVERY_PREF, on ? "on" : "off");
-    } catch {
-      // Not remembered across restarts; still applies now.
-    }
+    writeSetting(RECOVERY_PREF, on ? "on" : "off");
     if (on) this.scheduleAutosave();
     else {
       clearTimeout(this.#saveTimer);

@@ -36,6 +36,15 @@ window.CORETOOLS_DOWNLOADS = {
   // In-browser version of the tool (no install). Served at /app on the deploy.
   webAppUrl: "/app/",
 
+  // Microsoft Store listing (Windows). While `productId` is empty the Store
+  // button stays hidden and Windows users get the direct download only. Once
+  // the app is live in the Store, paste its 12-character Store ID from
+  // Partner Center (Product management → Product identity, e.g. 9NBLGGH4NNS1)
+  // and the Windows card offers the Store first, the .exe second.
+  microsoftStore: {
+    productId: "",
+  },
+
   // Stable "latest" asset URLs in the public artifacts repository.
   platforms: {
     windows: {

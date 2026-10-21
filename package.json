@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Lightweight, fully offline desktop toolkit: file diff & merge + Kubernetes YAML optimizer.",
   "engines": {
-    "node": ">=20.19"
+    "node": "24.x"
   },
   "scripts": {
     "version:sync": "node scripts/sync-version.mjs",
@@ -25,7 +25,6 @@
   "dependencies": {
     "@cfworker/json-schema": "^4.1.1",
     "@tauri-apps/api": "^2.0.0",
-    "@tauri-apps/plugin-dialog": "^2.0.0",
     "diff": "^9.0.0",
     "fast-xml-parser": "^5.11.1",
     "fflate": "^0.8.3",

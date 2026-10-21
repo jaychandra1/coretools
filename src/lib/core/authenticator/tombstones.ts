@@ -11,11 +11,15 @@
  *  - removes local records another device deleted after this device last
  *    added them (remote tombstone newer than the record).
  * A record added again later clears its tombstone. Tombstones expire after
- * TOMBSTONE_TTL_MS; by then every backup old enough to resurrect the
- * record has been pruned or is a deliberate rollback ("replace").
+ * TOMBSTONE_TTL_MS, a little longer than the year Drive keeps versions
+ * (cloud-sync.ts RETENTION — the version protected from before a mass
+ * deletion too). An exported file never expires, though: merging one older
+ * than TOMBSTONE_TTL_MS can bring back a record deleted since. "Replace"
+ * restores exactly the backup either way.
  */
 
-import { sha256Hex } from "./vault-crypto";
+import { openField, recordBinding, sealField, sha256Hex } from "./vault-crypto";
+import type { StoredTombstones, TombstoneSet } from "./db";
 
 export interface Tombstone {
   k: string;
@@ -50,4 +54,49 @@ export function mergeTombstones(
 
 export function withoutKeys(list: readonly Tombstone[], keys: ReadonlySet<string>): Tombstone[] {
   return list.filter((t) => !keys.has(t.k));
+}
+
+const BINDING = recordBinding("tombstones");
+
+/** Only well-formed records: a planted or damaged list can't smuggle in anything else. */
+function validList(value: unknown): Tombstone[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(
+      (t): t is Tombstone =>
+        !!t &&
+        typeof t === "object" &&
+        typeof (t as Tombstone).k === "string" &&
+        /^[0-9a-f]{64}$/.test((t as Tombstone).k) &&
+        Number.isFinite((t as Tombstone).at),
+    )
+    .map((t) => ({ k: t.k, at: t.at }));
+}
+
+/**
+ * The deletion records as stored: sealed under the vault key when a password
+ * is set, plain otherwise. Throws when sealed ones can't be decrypted.
+ */
+export async function openTombstones(
+  stored: StoredTombstones | undefined,
+  key: CryptoKey | null,
+): Promise<TombstoneSet> {
+  let set: unknown = {};
+  if (stored?.sealed && key) {
+    set = JSON.parse(await openField(key, stored.sealed, BINDING));
+  } else if (stored?.plain) {
+    set = stored.plain;
+  }
+  const lists = (set ?? {}) as Record<string, unknown>;
+  return {
+    entries: mergeTombstones([validList(lists.entries)]),
+    credentials: mergeTombstones([validList(lists.credentials)]),
+  };
+}
+
+export async function sealTombstones(
+  set: TombstoneSet,
+  key: CryptoKey | null,
+): Promise<StoredTombstones> {
+  return key ? { sealed: await sealField(key, JSON.stringify(set), BINDING) } : { plain: set };
 }

@@ -8,6 +8,7 @@
  */
 
 import type { JsonValue } from "./types";
+import { hasOwn, setOwn } from "../own";
 
 export interface InferOptions {
   /** Detect string formats (date-time, email, uuid, uri). Default true. */
@@ -61,7 +62,7 @@ function inferNode(value: JsonValue, options: Required<InferOptions>): Schema {
     case "object": {
       const properties: Schema = {};
       for (const [key, child] of Object.entries(value)) {
-        properties[key] = inferNode(child, options);
+        setOwn(properties, key, inferNode(child, options));
       }
       const schema: Schema = { type: "object", properties };
       if (options.markRequired) schema.required = Object.keys(value);
@@ -99,12 +100,15 @@ export function mergeSchemas(
     const propsB = (b.properties ?? {}) as Schema;
     const properties: Schema = {};
     for (const key of new Set([...Object.keys(propsA), ...Object.keys(propsB)])) {
-      const inA = key in propsA;
-      const inB = key in propsB;
-      properties[key] =
+      const inA = hasOwn(propsA, key);
+      const inB = hasOwn(propsB, key);
+      setOwn(
+        properties,
+        key,
         inA && inB
           ? mergeSchemas(propsA[key] as Schema, propsB[key] as Schema, options)
-          : ((inA ? propsA[key] : propsB[key]) as Schema);
+          : ((inA ? propsA[key] : propsB[key]) as Schema),
+      );
     }
     const schema: Schema = { type: "object", properties };
     if (options.markRequired) {

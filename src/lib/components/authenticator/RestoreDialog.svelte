@@ -340,7 +340,7 @@
         type="password"
         bind:value={password}
         placeholder="Backup password"
-        autocomplete="current-password"
+        autocomplete="off"
         aria-label="Backup password"
         autofocus
       />

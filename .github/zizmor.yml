@@ -1,0 +1,26 @@
+# zizmor configuration (.github/workflows/security.yml). Every entry is an
+# accepted finding, with the reason; keep the list short.
+rules:
+  artipacked:
+    ignore:
+      # Jobs here push with the checkout's credentials (ci.yml tag-release,
+      # prepare-release, cargo-lock) or fetch from this private repository
+      # (ci.yml rust-windows). Every other checkout sets
+      # persist-credentials: false.
+      - ci.yml
+      - prepare-release.yml
+      - cargo-lock.yml
+  self-repository:
+    ignore:
+      # `uses: ./.github/actions/publish-artifacts` runs after a checkout of
+      # the very commit being released, with persist-credentials: false.
+      # GitHub's `$/…` form (July 2026) is newer than the pinned actionlint,
+      # which would reject it — switch both together.
+      - release.yml
+      - promote-latest.yml
+  bot-conditions:
+    ignore:
+      # github.actor is ANDed with github.event.pull_request.user.login (the
+      # recommended, unspoofable check): it only narrows the job further, to
+      # runs Dependabot's own push started.
+      - dependabot-auto-merge.yml

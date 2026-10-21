@@ -7,35 +7,36 @@
  * `CredentialVaultHooks` (registered at bootstrap, src/lib/vault-bootstrap.ts).
  *
  * At rest everything identifying is sealed (audit F-14): the metadata in
- * `meta`, the password and notes each in their own blob. In memory, while
- * unlocked, `items` carry the decrypted metadata for listing and search;
- * passwords and notes are decrypted ON DEMAND — only for the one credential
- * the user reveals, copies or edits — and never kept here. Revealing or
- * copying a password requires a fresh Windows Hello / master-password check
- * (trusted for a minute) when `credentialsRevealAuth` is on, and is written
- * to the tamper-evident audit log (F-19).
+ * `meta`, the password and notes each in their own blob, each bound to its
+ * record and field (L2). In memory, while unlocked, `items` carry the
+ * decrypted metadata for listing and search; passwords and notes are
+ * decrypted ON DEMAND — only for the one credential the user reveals,
+ * copies or edits — and never kept here. Revealing or copying a password
+ * requires a fresh Windows Hello / master-password check (trusted for a
+ * minute) when `credentialsRevealAuth` is on, and is written to the
+ * tamper-evident audit log (F-19).
  */
 
 import {
   authStore,
   type CredentialSnapshot,
   type CredentialVaultHooks,
+  type PasswordPrompt,
   type VaultCrypto,
 } from "../authenticator/store.svelte";
 import {
   appendAuditRecords,
-  deleteCredentials,
   loadAuditHead,
   loadAuditRecords,
   CREDENTIAL_ORDER_KEY,
-  loadCredentialOrder,
   loadCredentials,
-  loadSpaceOrder,
+  loadSealedList,
   replaceAuditRecords,
-  saveCredentialOrder,
   saveCredentials,
-  saveSpaceOrder,
+  saveSealedList,
   SPACE_ORDER_KEY,
+  StaleVaultError,
+  type SealedListKey,
   type StoredSealedList,
 } from "../../core/authenticator/db";
 import {
@@ -57,11 +58,14 @@ import {
   type ChainHead,
   type ChainStatus,
 } from "../../core/credentials/audit-chain";
-import { tombstoneKey, type Tombstone } from "../../core/authenticator/tombstones";
+import type { Tombstone } from "../../core/authenticator/tombstones";
+import { isUnbound, recordBinding, type FieldBinding } from "../../core/authenticator/vault-crypto";
+import { inBatches } from "../../core/batches";
+import { planMerge } from "../../core/authenticator/merge";
 import { normalizeSpaceName } from "../../core/credentials/spaces";
+import { noteFailure } from "../../diagnostics";
 
-/** How long a successful reveal check is trusted. */
-const REVEAL_GRACE_MS = 60_000;
+export type { PasswordPrompt } from "../authenticator/store.svelte";
 
 export interface CredentialInput extends CredentialFields {
   /** New password; null keeps the current one (edit). */
@@ -69,9 +73,6 @@ export interface CredentialInput extends CredentialFields {
   /** New notes; null keeps the current ones (edit). */
   notes: string | null;
 }
-
-/** Shown by the UI when the user has to confirm it's them. */
-export type PasswordPrompt = () => Promise<string | null>;
 
 const BLANK_FIELDS: CredentialFields = {
   platform: "",
@@ -105,12 +106,29 @@ function cleanOrder(names: readonly string[]): string[] {
 }
 
 function snapshot(c: StoredCredential): StoredCredential {
-  return JSON.parse(JSON.stringify(c)) as StoredCredential;
+  return $state.snapshot(c) as StoredCredential;
 }
 
 function chainCrypto(crypto: VaultCrypto): ChainCrypto {
   return { encrypt: crypto.encryptAad, decrypt: crypto.decryptAad };
 }
+
+/** Where a credential's encrypted field is bound (audit L2). */
+function bound(id: string, field: "meta" | "password" | "notes"): FieldBinding {
+  return { kind: "credential", id, field };
+}
+
+/** A saved order (space names or credential ids), sealed under the vault key, bound to `key`. */
+async function sealList(
+  list: readonly string[],
+  crypto: VaultCrypto,
+  key: SealedListKey,
+): Promise<StoredSealedList> {
+  return { sealed: await crypto.seal(JSON.stringify(list), recordBinding(key)) };
+}
+
+/** Audit appends retry this often when another write got in first (D-1). */
+const AUDIT_ATTEMPTS = 3;
 
 export class CredentialStore {
   ready = $state(false);
@@ -120,6 +138,12 @@ export class CredentialStore {
   audit = $state<AuditEvent[]>([]);
   /** What verifying the audit log proved (F-19); null until loaded. */
   auditStatus = $state<ChainStatus | null>(null);
+  /** An event couldn't be appended to the audit log this session (D-9). */
+  auditWriteFailed = $state(false);
+  /** Logins that couldn't be decrypted and are set aside (D-2). */
+  unreadable = $state(0);
+  /** Logins the trash deleted for good this session after TRASH_RETENTION_MS (shown once). */
+  autoPurged = $state(0);
   /** The space tab on screen ("" = All); kept while switching app tabs. */
   activeSpace = $state("");
   /**
@@ -136,7 +160,8 @@ export class CredentialStore {
   credentialOrder = $state<string[]>([]);
 
   #initPromise: Promise<void> | null = null;
-  #trustedUntil = 0;
+  /** Records that failed to decrypt: kept as stored, out of `items` (D-2). */
+  #damaged: StoredCredential[] = [];
   /** Ids created by a restore that hasn't been persisted yet. */
   #pendingRestored = new Set<string>();
   /** Audit appends run one at a time: each extends the chain head. */
@@ -160,7 +185,6 @@ export class CredentialStore {
     this.items = await loadCredentials();
     authStore.subscribe((event) => {
       if (event === "lock" || event === "wipe") {
-        this.#trustedUntil = 0;
         // Space names are login metadata: nothing of them stays in view when locked.
         this.activeSpace = "";
         this.pendingSpaces = [];
@@ -182,7 +206,7 @@ export class CredentialStore {
       count: () => this.items.length,
       open: (crypto) => this.#open(crypto),
       close: () => this.#close(),
-      exportPlain: (decrypt) => this.#exportPlain(decrypt),
+      exportPlain: (crypto) => this.#exportPlain(crypto),
       reseal: (from, to) => this.#reseal(from, to),
       restore: (items, mode, crypto, tombstones) =>
         this.#restoreRecords(items, mode, crypto, tombstones),
@@ -195,11 +219,26 @@ export class CredentialStore {
           void this.#log(restored.map((c) => [c, "restored-from-backup"] as const));
         }
       },
+      reload: async (crypto) => {
+        await this.init();
+        const records = await loadCredentials();
+        if (crypto) {
+          // Still unlocked: decrypted before it replaces what is shown.
+          await this.#open(crypto, records);
+          return;
+        }
+        this.items = records;
+        this.#damaged = [];
+        this.unreadable = 0;
+        this.#close();
+      },
       clear: () => {
         this.items = [];
+        this.#damaged = [];
+        this.unreadable = 0;
         this.audit = [];
         this.auditStatus = null;
-        this.#trustedUntil = 0;
+        this.auditWriteFailed = false;
         this.activeSpace = "";
         this.pendingSpaces = [];
         this.spaceOrder = [];
@@ -208,59 +247,108 @@ export class CredentialStore {
     };
   }
 
-  // ---- sealing (F-14) -----------------------------------------------------------
+  // ---- sealing (F-14, L2) ---------------------------------------------------------
 
   /** The on-disk form: metadata sealed, plaintext fields empty. */
   async #toStored(c: StoredCredential, crypto: VaultCrypto): Promise<StoredCredential> {
     const plain = snapshot(c);
-    const meta = await crypto.encrypt(JSON.stringify(clean(plain)));
+    const meta = await crypto.seal(JSON.stringify(clean(plain)), bound(plain.id, "meta"));
     return { ...plain, ...BLANK_FIELDS, meta };
   }
 
-  /** Persist records, keeping each in-memory record's `meta` in step with disk. */
-  async #persist(records: StoredCredential[]): Promise<void> {
+  /**
+   * Persist records, keeping each in-memory record's `meta` in step with
+   * disk. Refused when the vault was replaced since `epoch` (D-1).
+   */
+  async #persist(records: StoredCredential[], epoch: number): Promise<void> {
     const crypto = authStore.vaultCrypto();
     const stored = await Promise.all(records.map((c) => this.#toStored(c, crypto)));
+    authStore.assertCurrent(epoch);
     await saveCredentials(stored);
     records.forEach((c, i) => (c.meta = stored[i].meta));
   }
 
-  async #open(crypto: VaultCrypto): Promise<void> {
+  /**
+   * Decrypt every record's metadata (`records`: as read from disk; by default
+   * the ones in memory) and make it the state; set aside the ones that won't
+   * open (D-2). Nothing on screen changes until all of it is decrypted.
+   */
+  async #open(
+    crypto: VaultCrypto,
+    records: StoredCredential[] = [...this.items, ...this.#damaged],
+  ): Promise<void> {
     await this.init();
-    const view: StoredCredential[] = [];
-    let unsealed = false;
-    for (const c of this.items) {
-      const record = snapshot(c);
-      if (record.meta) {
-        const fields = JSON.parse(await crypto.decrypt(record.meta)) as CredentialFields;
-        view.push({ ...record, ...clean(fields) });
-      } else {
-        view.push({ ...record, ...clean(record) });
-        unsealed = true;
+    const epoch = authStore.epoch;
+    const candidates = records.map(snapshot);
+    const opened = await inBatches(candidates, async (record) => {
+      try {
+        const fields = record.meta
+          ? (JSON.parse(await crypto.open(record.meta, bound(record.id, "meta"))) as CredentialFields)
+          : record;
+        return { ...record, ...clean(fields) };
+      } catch (e) {
+        noteFailure("credentials", "login unreadable", e);
+        return null;
       }
-    }
-    if (unsealed) {
-      // Records written before 1.2 kept their metadata in the clear.
-      const stored = await Promise.all(view.map((c) => this.#toStored(c, crypto)));
-      await saveCredentials(stored);
-      view.forEach((c, i) => (c.meta = stored[i].meta));
-    }
+    });
+    const view: StoredCredential[] = [];
+    const damaged: StoredCredential[] = [];
+    const legacy: StoredCredential[] = [];
+    opened.forEach((record, i) => {
+      if (!record) {
+        damaged.push(candidates[i]);
+        return;
+      }
+      view.push(record);
+      // Records from before 1.2 (clear metadata) or 1.3 (unbound fields).
+      if (!record.meta || isUnbound(record.meta) || isUnbound(record.password) || isUnbound(record.notes)) {
+        legacy.push(record);
+      }
+    });
+    if (legacy.length) await this.#upgrade(legacy, crypto, epoch);
+    const spaceOrder = cleanOrder(await this.#openList(SPACE_ORDER_KEY, crypto));
+    const credentialOrder = [...new Set(await this.#openList(CREDENTIAL_ORDER_KEY, crypto))];
     this.items = view;
-    this.spaceOrder = cleanOrder(await this.#openList(loadSpaceOrder, crypto));
-    this.credentialOrder = [...new Set(await this.#openList(loadCredentialOrder, crypto))];
+    this.#damaged = damaged;
+    this.unreadable = damaged.length;
+    this.spaceOrder = spaceOrder;
+    this.credentialOrder = credentialOrder;
   }
 
-  /** A saved order; one sealed under an older key reads as none. */
-  async #openList(
-    load: () => Promise<StoredSealedList | undefined>,
-    crypto: VaultCrypto,
-  ): Promise<string[]> {
-    const stored = await load();
+  /** Seal older records the current way: metadata sealed, every field bound. */
+  async #upgrade(records: StoredCredential[], crypto: VaultCrypto, epoch: number): Promise<void> {
+    try {
+      for (const record of records) {
+        record.password = await crypto.seal(
+          await crypto.open(record.password, bound(record.id, "password")),
+          bound(record.id, "password"),
+        );
+        if (record.notes) {
+          record.notes = await crypto.seal(
+            await crypto.open(record.notes, bound(record.id, "notes")),
+            bound(record.id, "notes"),
+          );
+        }
+      }
+      const stored = await Promise.all(records.map((c) => this.#toStored(c, crypto)));
+      authStore.assertCurrent(epoch);
+      await saveCredentials(stored);
+      records.forEach((c, i) => (c.meta = stored[i].meta));
+    } catch (e) {
+      // They stay readable as they are; retried on the next unlock.
+      noteFailure("credentials", "upgrade of older logins failed", e);
+    }
+  }
+
+  /** A saved order. An unreadable one reads as none: the list falls back to A–Z. */
+  async #openList(key: SealedListKey, crypto: VaultCrypto): Promise<string[]> {
+    const stored = await loadSealedList(key);
     if (!stored) return [];
     try {
-      const list: unknown = JSON.parse(await crypto.decrypt(stored.sealed));
+      const list: unknown = JSON.parse(await crypto.open(stored.sealed, recordBinding(key)));
       return Array.isArray(list) ? list.filter((n): n is string => typeof n === "string") : [];
-    } catch {
+    } catch (e) {
+      noteFailure("credentials", `${key} unreadable`, e);
       return [];
     }
   }
@@ -271,7 +359,6 @@ export class CredentialStore {
     this.credentialOrder = [];
     this.audit = [];
     this.auditStatus = null;
-    this.#trustedUntil = 0;
   }
 
   /** Maintenance that needs the key: trash expiry and sealing an old audit log. */
@@ -279,22 +366,21 @@ export class CredentialStore {
     try {
       await this.#sealLegacyAudit();
       await this.#purgeExpiredTrash();
-    } catch {
+    } catch (e) {
       // Best effort; retried on the next unlock.
+      noteFailure("credentials", "unlock maintenance failed", e);
     }
   }
 
   // ---- vault hooks -------------------------------------------------------------
 
-  async #exportPlain(
-    decrypt: (blob: StoredCredential["password"]) => Promise<string>,
-  ): Promise<BackupCredential[]> {
+  async #exportPlain(crypto: VaultCrypto): Promise<BackupCredential[]> {
     const out: BackupCredential[] = [];
     for (const c of this.items) {
       out.push({
         ...clean(c),
-        password: await decrypt(c.password),
-        notes: c.notes ? await decrypt(c.notes) : "",
+        password: await crypto.open(c.password, bound(c.id, "password")),
+        notes: c.notes ? await crypto.open(c.notes, bound(c.id, "notes")) : "",
         createdAt: c.createdAt,
         updatedAt: c.updatedAt,
         passwordUpdatedAt: c.passwordUpdatedAt,
@@ -310,26 +396,37 @@ export class CredentialStore {
     for (const c of this.items) {
       const next: StoredCredential = {
         ...snapshot(c),
-        password: await to.encrypt(await from.decrypt(c.password)),
-        notes: c.notes ? await to.encrypt(await from.decrypt(c.notes)) : null,
+        password: await to.seal(
+          await from.open(c.password, bound(c.id, "password")),
+          bound(c.id, "password"),
+        ),
+        notes: c.notes
+          ? await to.seal(await from.open(c.notes, bound(c.id, "notes")), bound(c.id, "notes"))
+          : null,
       };
       const sealed = await this.#toStored(next, to);
       stored.push(sealed);
       view.push({ ...next, meta: sealed.meta });
     }
-    // The audit log moves to the new key as a fresh chain with the same events.
-    const { events } = await this.#openAudit(from);
-    const chain = await sealEvents([...events].reverse(), null, chainCrypto(to));
+    // The audit log moves to the new key as a fresh chain with the same
+    // events. A tampered log isn't laundered into a "verified" one: the new
+    // chain carries what could be verified plus a record of the reset (D-9).
+    const { events, status } = await this.#openAudit(from);
+    const carried = [...events].reverse();
+    if (status.state === "tampered") {
+      carried.push({ id: crypto.randomUUID(), at: Date.now(), action: "log-reset", credentialId: "", platform: "" });
+    }
+    const chain = await sealEvents(carried, null, chainCrypto(to));
     const head = chain.records.length
       ? { sealed: await sealHead(chain.head, chainCrypto(to)) }
       : null;
     // The saved orders (tabs, logins) move to the new key too.
-    const meta: Record<string, StoredSealedList> = {};
+    const meta: Partial<Record<SealedListKey, StoredSealedList>> = {};
     if (this.spaceOrder.length) {
-      meta[SPACE_ORDER_KEY] = { sealed: await to.encrypt(JSON.stringify(this.spaceOrder)) };
+      meta[SPACE_ORDER_KEY] = await sealList(this.spaceOrder, to, SPACE_ORDER_KEY);
     }
     if (this.credentialOrder.length) {
-      meta[CREDENTIAL_ORDER_KEY] = { sealed: await to.encrypt(JSON.stringify(this.credentialOrder)) };
+      meta[CREDENTIAL_ORDER_KEY] = await sealList(this.credentialOrder, to, CREDENTIAL_ORDER_KEY);
     }
     return { stored, view, audit: { records: chain.records, head }, meta };
   }
@@ -337,62 +434,58 @@ export class CredentialStore {
   async #restoreRecords(
     incoming: BackupCredential[],
     mode: "merge" | "replace",
-    crypto: VaultCrypto,
+    vault: VaultCrypto,
     tombstones: { local: Tombstone[]; remote: Tombstone[] },
-  ): Promise<CredentialSnapshot & { added: number; skipped: number; removed: number; revived: string[] }> {
-    let kept = mode === "merge" ? this.items.map(snapshot) : [];
-
-    // Deletions another device recorded after this record last changed here.
-    let removed = 0;
-    if (mode === "merge" && tombstones.remote.length) {
-      const remote = new Map(tombstones.remote.map((t) => [t.k, t.at]));
-      const survivors: StoredCredential[] = [];
-      for (const c of kept) {
-        const at = remote.get(await tombstoneKey(credentialKey(c)));
-        if (at !== undefined && c.updatedAt < at) {
-          removed++;
-          continue;
-        }
-        survivors.push(c);
-      }
-      kept = survivors;
+  ): Promise<
+    CredentialSnapshot & {
+      added: number;
+      updated: number;
+      skipped: number;
+      removed: number;
+      revived: string[];
     }
-
-    const seen = new Set(kept.map(credentialKey));
-    const deletedHere = new Set(mode === "merge" ? tombstones.local.map((t) => t.k) : []);
-    const view = [...kept];
-    const revived: string[] = [];
-    let added = 0;
-    let skipped = 0;
-    for (const item of incoming) {
-      const key = credentialKey(item);
-      if (seen.has(key)) {
-        skipped++;
-        continue;
-      }
-      const k = await tombstoneKey(key);
-      if (deletedHere.has(k)) {
-        skipped++; // permanently deleted on this device — a merge doesn't bring it back
-        continue;
-      }
-      seen.add(key);
-      revived.push(k);
-      view.push({
-        id: globalThis.crypto.randomUUID(), // `crypto` here is the vault's
-        ...clean(item),
-        password: await crypto.encrypt(item.password),
-        notes: item.notes ? await crypto.encrypt(item.notes) : null,
-        createdAt: item.createdAt,
-        updatedAt: item.updatedAt,
-        passwordUpdatedAt: item.passwordUpdatedAt,
-        deletedAt: item.deletedAt,
-      });
-      added++;
-    }
-    const stored = await Promise.all(view.map((c) => this.#toStored(c, crypto)));
+  > {
+    const plan = await planMerge({
+      mode,
+      local: this.items.map(snapshot),
+      incoming,
+      localKey: credentialKey,
+      incomingKey: credentialKey,
+      // A deletion elsewhere wins only if it came after this login last changed here.
+      changedAt: (c) => c.updatedAt,
+      // Last writer wins: a newer copy in the backup replaces this one (D-3).
+      isNewer: (here, there) => there.updatedAt > here.updatedAt,
+      tombstones,
+    });
+    const fromBackup = async (id: string, item: BackupCredential): Promise<StoredCredential> => ({
+      id,
+      ...clean(item),
+      password: await vault.seal(item.password, bound(id, "password")),
+      notes: item.notes ? await vault.seal(item.notes, bound(id, "notes")) : null,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      passwordUpdatedAt: item.passwordUpdatedAt,
+      deletedAt: item.deletedAt,
+    });
+    const replaced = new Map<string, StoredCredential>();
+    for (const [here, there] of plan.updated) replaced.set(here.id, await fromBackup(here.id, there));
+    const view = plan.kept.map((c) => replaced.get(c.id) ?? c);
+    for (const item of plan.added) view.push(await fromBackup(crypto.randomUUID(), item));
+    const stored = await Promise.all(view.map((c) => this.#toStored(c, vault)));
     view.forEach((c, i) => (c.meta = stored[i].meta));
-    this.#pendingRestored = new Set(view.slice(view.length - added).map((c) => c.id));
-    return { stored, view, added, skipped, removed, revived };
+    this.#pendingRestored = new Set([
+      ...view.slice(plan.kept.length).map((c) => c.id),
+      ...replaced.keys(),
+    ]);
+    return {
+      stored,
+      view,
+      added: plan.added.length,
+      updated: plan.updated.length,
+      skipped: plan.skipped,
+      removed: plan.removed,
+      revived: plan.revived,
+    };
   }
 
   // ---- audit (F-19) ---------------------------------------------------------------
@@ -402,10 +495,16 @@ export class CredentialStore {
     return openChain(records, head?.sealed ?? null, chainCrypto(crypto));
   }
 
-  /** Seal a pre-1.2 plaintext log into the chain (oldest first). */
+  /**
+   * Seal a pre-1.2 plaintext log into the chain (oldest first). Only a log
+   * that is entirely plaintext, with no chain head, is migrated: an unsealed
+   * record next to sealed ones is tampering, and re-sealing it would erase
+   * the real history (audit S-4). openChain reports it instead.
+   */
   async #sealLegacyAudit(): Promise<void> {
-    const records = await loadAuditRecords();
-    if (records.length === 0 || records.every((r) => r.sealed)) return;
+    const epoch = await authStore.beginWrite();
+    const [records, head] = await Promise.all([loadAuditRecords(), loadAuditHead()]);
+    if (records.length === 0 || head || records.some((r) => r.sealed)) return;
     const crypto = authStore.vaultCrypto();
     const legacy: AuditEvent[] = records
       .filter((r): r is StoredAuditEvent & { action: AuditAction } => !r.sealed && !!r.action)
@@ -418,9 +517,9 @@ export class CredentialStore {
         platform: r.platform ?? "",
       }));
     const chain = await sealEvents(legacy, null, chainCrypto(crypto));
-    await replaceAuditRecords(chain.records, {
-      sealed: await sealHead(chain.head, chainCrypto(crypto)),
-    });
+    const sealed = await sealHead(chain.head, chainCrypto(crypto));
+    authStore.assertCurrent(epoch);
+    await replaceAuditRecords(chain.records, { sealed });
   }
 
   async #log(events: ReadonlyArray<readonly [StoredCredential, AuditAction]>): Promise<void> {
@@ -433,19 +532,33 @@ export class CredentialStore {
       platform: c.platform,
     }));
     const run = this.#auditQueue.then(async () => {
-      const vault = chainCrypto(authStore.vaultCrypto());
-      const stored = await loadAuditHead();
-      let head: ChainHead | null = null;
-      if (stored) head = await openHead(stored.sealed, vault);
-      const chain = await sealEvents(records, head, vault);
-      await appendAuditRecords(chain.records, { sealed: await sealHead(chain.head, vault) });
+      // The chain head is read fresh each time; another window's write
+      // getting in first only means extending the chain from its new head.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const vault = chainCrypto(authStore.vaultCrypto());
+          const stored = await loadAuditHead();
+          let head: ChainHead | null = null;
+          if (stored) head = await openHead(stored.sealed, vault);
+          const chain = await sealEvents(records, head, vault);
+          const sealed = await sealHead(chain.head, vault);
+          await appendAuditRecords(chain.records, { sealed });
+          break;
+        } catch (e) {
+          if (!(e instanceof StaleVaultError) || attempt >= AUDIT_ATTEMPTS) throw e;
+          await authStore.beginWrite();
+        }
+      }
       if (this.audit.length) this.audit = [...[...records].reverse(), ...this.audit];
     });
-    this.#auditQueue = run.catch(() => {});
+    this.#auditQueue = run.catch(() => {}); // the failure is noted below
     try {
       await run;
-    } catch {
-      // Logging must never block the action it records.
+    } catch (e) {
+      // Logging must never block the action it records — but it must not
+      // fail unnoticed either: the activity log says so.
+      this.auditWriteFailed = true;
+      noteFailure("audit", "append failed", e);
     }
   }
 
@@ -495,20 +608,22 @@ export class CredentialStore {
   async add(input: CredentialInput): Promise<StoredCredential> {
     this.#requireVault();
     if (!input.platform.trim()) throw new Error("Enter a platform or application name");
+    const epoch = await authStore.beginWrite();
     const now = Date.now();
+    const id = crypto.randomUUID();
     const credential: StoredCredential = {
-      id: crypto.randomUUID(),
+      id,
       ...clean(input),
-      password: await authStore.encryptSecret(input.password ?? ""),
-      notes: input.notes ? await authStore.encryptSecret(input.notes) : null,
+      password: await authStore.sealSecret(input.password ?? "", bound(id, "password")),
+      notes: input.notes ? await authStore.sealSecret(input.notes, bound(id, "notes")) : null,
       createdAt: now,
       updatedAt: now,
       passwordUpdatedAt: now,
       deletedAt: null,
     };
-    await this.#persist([credential]);
+    await this.#persist([credential], epoch);
     this.items = [...this.items, credential];
-    await authStore.forgetCredentialDeletions([credentialKey(credential)]);
+    await authStore.forgetCredentialDeletions([credentialKey(credential)], epoch);
     await this.#log([[credential, "created"]]);
     this.#changed();
     return credential;
@@ -516,6 +631,7 @@ export class CredentialStore {
 
   async update(id: string, input: CredentialInput): Promise<void> {
     this.#requireVault();
+    const epoch = await authStore.beginWrite();
     const current = this.items.find((c) => c.id === id);
     if (!current) throw new Error("That credential no longer exists");
     if (!input.platform.trim()) throw new Error("Enter a platform or application name");
@@ -527,15 +643,15 @@ export class CredentialStore {
       updatedAt: now,
     };
     if (passwordChanged) {
-      next.password = await authStore.encryptSecret(input.password ?? "");
+      next.password = await authStore.sealSecret(input.password ?? "", bound(id, "password"));
       next.passwordUpdatedAt = now;
     }
     if (input.notes !== null) {
-      next.notes = input.notes ? await authStore.encryptSecret(input.notes) : null;
+      next.notes = input.notes ? await authStore.sealSecret(input.notes, bound(id, "notes")) : null;
     }
-    await this.#persist([next]);
+    await this.#persist([next], epoch);
     this.items = this.items.map((c) => (c.id === id ? next : c));
-    await authStore.forgetCredentialDeletions([credentialKey(next)]);
+    await authStore.forgetCredentialDeletions([credentialKey(next)], epoch);
     await this.#log(
       passwordChanged ? [[next, "updated"], [next, "password-changed"]] : [[next, "updated"]],
     );
@@ -549,13 +665,14 @@ export class CredentialStore {
    */
   async moveToSpace(ids: readonly string[], space: string): Promise<number> {
     this.#requireVault();
+    const epoch = await authStore.beginWrite();
     const target = normalizeSpaceName(space);
     const now = Date.now();
     const moved = this.items
       .filter((c) => ids.includes(c.id) && c.space !== target)
       .map((c) => ({ ...snapshot(c), space: target, updatedAt: now }));
     if (moved.length === 0) return 0;
-    await this.#persist(moved);
+    await this.#persist(moved, epoch);
     const byId = new Map(moved.map((c) => [c.id, c]));
     this.items = this.items.map((c) => byId.get(c.id) ?? c);
     await this.#log(moved.map((c) => [c, "updated"] as const));
@@ -566,9 +683,11 @@ export class CredentialStore {
   /** Save the tab order (a view setting: not audited, not backed up). */
   async setSpaceOrder(order: readonly string[]): Promise<void> {
     this.#requireVault();
+    const epoch = await authStore.beginWrite();
     const next = cleanOrder(order);
-    const sealed = await authStore.vaultCrypto().encrypt(JSON.stringify(next));
-    await saveSpaceOrder({ sealed });
+    const sealed = await sealList(next, authStore.vaultCrypto(), SPACE_ORDER_KEY);
+    authStore.assertCurrent(epoch);
+    await saveSealedList(SPACE_ORDER_KEY, sealed);
     this.spaceOrder = next;
   }
 
@@ -578,10 +697,12 @@ export class CredentialStore {
    */
   async setCredentialOrder(ids: readonly string[]): Promise<void> {
     this.#requireVault();
+    const epoch = await authStore.beginWrite();
     const known = new Set(this.items.map((c) => c.id));
     const next = [...new Set(ids)].filter((id) => known.has(id));
-    const sealed = await authStore.vaultCrypto().encrypt(JSON.stringify(next));
-    await saveCredentialOrder({ sealed });
+    const sealed = await sealList(next, authStore.vaultCrypto(), CREDENTIAL_ORDER_KEY);
+    authStore.assertCurrent(epoch);
+    await saveSealedList(CREDENTIAL_ORDER_KEY, sealed);
     this.credentialOrder = next;
   }
 
@@ -601,11 +722,12 @@ export class CredentialStore {
 
   async #setDeleted(id: string, deletedAt: number | null, action: AuditAction): Promise<void> {
     this.#requireVault();
+    const epoch = await authStore.beginWrite();
     const current = this.items.find((c) => c.id === id);
     if (!current) return;
     // updatedAt moves too, so a deletion recorded elsewhere earlier doesn't win.
     const next = { ...snapshot(current), deletedAt, updatedAt: Date.now() };
-    await this.#persist([next]);
+    await this.#persist([next], epoch);
     this.items = this.items.map((c) => (c.id === id ? next : c));
     await this.#log([[next, action]]);
     this.#changed();
@@ -614,47 +736,43 @@ export class CredentialStore {
   /** Permanently delete trashed credentials. */
   async purge(ids: string[]): Promise<void> {
     this.#requireVault();
+    const epoch = await authStore.beginWrite();
     const doomed = this.items.filter((c) => ids.includes(c.id) && c.deletedAt !== null);
     if (doomed.length === 0) return;
-    await this.#forget(doomed);
+    await this.#forget(doomed, epoch);
     this.#changed();
   }
 
-  async #forget(doomed: StoredCredential[]): Promise<void> {
-    await deleteCredentials(doomed.map((c) => c.id));
+  /**
+   * Delete for good, recording the deletions so an older backup merged later
+   * doesn't bring them back (F-09) — both in one transaction (D-6).
+   */
+  async #forget(doomed: StoredCredential[], epoch: number): Promise<void> {
+    await authStore.deleteCredentials(
+      doomed.map((c) => c.id),
+      doomed.map(credentialKey),
+      epoch,
+    );
     this.items = this.items.filter((c) => !doomed.includes(c));
-    // So an older backup merged later doesn't bring them back (F-09).
-    await authStore.recordCredentialDeletions(doomed.map(credentialKey));
     await this.#log(doomed.map((c) => [c, "purged"] as const));
   }
 
   async #purgeExpiredTrash(): Promise<void> {
+    const epoch = await authStore.beginWrite();
     const cutoff = Date.now() - TRASH_RETENTION_MS;
     const expired = this.items.filter((c) => c.deletedAt !== null && c.deletedAt < cutoff);
     if (expired.length === 0) return;
-    await this.#forget(expired);
+    await this.#forget(expired, epoch);
+    this.autoPurged += expired.length; // the Credential Manager says so
     authStore.notifyCredentialsChange();
   }
 
   // ---- secrets (on demand, gated, audited) ----------------------------------------
 
-  /**
-   * Make sure it's really the user before showing a secret: Windows Hello
-   * where available, otherwise the master password (via `prompt`). A success
-   * is trusted for a minute; locking ends the trust immediately.
-   */
+  /** The reveal check, when the setting asks for it (F-19). */
   async #confirmUser(prompt: PasswordPrompt): Promise<void> {
-    if (!authStore.settings.credentialsRevealAuth) return;
-    if (Date.now() < this.#trustedUntil) return;
-    // Windows Hello where available; a cancel rejects and nothing is shown.
-    if (await authStore.verifyUserPresence()) {
-      this.#trustedUntil = Date.now() + REVEAL_GRACE_MS;
-      return;
-    }
-    const password = await prompt();
-    if (password === null) throw new Error("canceled");
-    if (!(await authStore.verifyPassword(password))) throw new Error("Wrong password");
-    this.#trustedUntil = Date.now() + REVEAL_GRACE_MS;
+    // Revealing several logins in a row asks once a minute, not every time.
+    if (authStore.settings.credentialsRevealAuth) await authStore.confirmUser(prompt, { reuse: true });
   }
 
   /** Decrypted password for display; audited as "revealed". */
@@ -672,7 +790,7 @@ export class CredentialStore {
     const credential = this.items.find((c) => c.id === id);
     if (!credential) throw new Error("That credential no longer exists");
     await this.#confirmUser(prompt);
-    const plain = await authStore.decryptSecret(credential.password);
+    const plain = await authStore.openSecret(credential.password, bound(id, "password"));
     authStore.touch();
     await this.#log([[credential, action]]);
     return plain;
@@ -684,7 +802,7 @@ export class CredentialStore {
     const credential = this.items.find((c) => c.id === id);
     if (!credential?.notes) return "";
     await this.#confirmUser(prompt);
-    return authStore.decryptSecret(credential.notes);
+    return authStore.openSecret(credential.notes, bound(id, "notes"));
   }
 }
 

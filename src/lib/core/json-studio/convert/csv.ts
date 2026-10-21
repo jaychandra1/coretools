@@ -8,6 +8,7 @@
  */
 
 import type { JsonValue, Result } from "./../types";
+import { setOwn } from "../../own";
 
 export interface CsvOptions {
   delimiter?: "," | ";" | "\t";
@@ -185,7 +186,7 @@ export function csvToJson(text: string, options: CsvOptions = {}): Result<JsonVa
     const record: { [k: string]: JsonValue } = {};
     header.forEach((column, i) => {
       const raw = fields[i] ?? "";
-      record[column] = coerceTypes ? coerce(raw) : raw;
+      setOwn(record, column, coerceTypes ? coerce(raw) : raw);
     });
     return record;
   });

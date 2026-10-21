@@ -5,6 +5,7 @@
   import { isMigrationUri, isOtpAuthUri, parseOtpAuthUri } from "../../core/authenticator/otpauth";
   import { parseMigrationUri } from "../../core/authenticator/migration";
   import { DEFAULTS, type OtpType, type ParsedAccount } from "../../core/authenticator/types";
+  import { getPlatform } from "../../platform";
 
   let {
     onclose,
@@ -58,11 +59,20 @@
   async function startCamera() {
     cameraError = "";
     const mine = ++cameraGeneration;
+    const platform = getPlatform();
     try {
-      const media = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: "environment" },
-        audio: false,
-      });
+      // The desktop app grants camera access only while the scanner asks for
+      // it (L1): armed for this request, disarmed as soon as it's answered.
+      await platform.armCamera?.(true);
+      let media: MediaStream;
+      try {
+        media = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "environment" },
+          audio: false,
+        });
+      } finally {
+        platform.armCamera?.(false).catch(() => {});
+      }
       if (mine !== cameraGeneration) {
         media.getTracks().forEach((t) => t.stop());
         return;

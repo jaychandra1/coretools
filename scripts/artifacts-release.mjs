@@ -15,6 +15,9 @@
  *     <app>/releases/README.md    latest links, checksums, version history
  *     <app>/releases/latest.json  machine-readable latest release
  *     <app>/releases/index.json   every published version (source of truth)
+ *     <app>/releases/updater.json the newest version's in-app update manifest
+ *                                 (when it has one) — committed together with
+ *                                 latest.json, so the two always agree
  *     README.md                   app list between <!-- apps:start/end -->
  *
  * App-agnostic and dependency-free so other applications can reuse it as is.
@@ -28,14 +31,36 @@
  *
  *   node scripts/artifacts-release.mjs index --app coretools --name CoreTools \
  *     --version 0.3.0 --artifacts-repo jaychandra1/artifacts \
- *     --assets-dir incoming --repo-dir artifacts-repo [--date 2026-10-12]
+ *     --assets-dir incoming --repo-dir artifacts-repo [--date 2026-10-12] \
+ *     [--rollout 1-100] [--check-after-hours 1-168] \
+ *     [--withdraw 0.2.9[,0.2.8]] [--require-newest true]
  *
  * `--assets-dir` must contain the installers plus SHA256SUMS.txt
  * ("<sha256>  <file>" per line, as written by sha256sum). Other files listed
- * there — e.g. a CycloneDX SBOM (*.cdx.json) — are published and indexed
- * alongside the installers.
+ * there — e.g. a CycloneDX SBOM (*.cdx.json), in-app update files (*.sig,
+ * updater.json, a macOS *.app.tar.gz) — are published and indexed alongside
+ * the installers. Every file in --assets-dir must be listed, except
+ * SHA256SUMS.txt itself and its Sigstore bundle: whatever is published is
+ * covered by the signed checksums.
+ *
+ * index options:
+ *   --date               release date; default: the version's existing date in
+ *                        the index (a re-publish keeps it), else today (UTC)
+ *   --rollout N          staged rollout: installed copies read `rollout` from
+ *                        latest.json and only N% of them offer this update.
+ *                        Omitted = everyone (no field written)
+ *   --check-after-hours  server back-off: installed copies check for updates
+ *                        at most every N hours (`checkAfterHours`). Omitted =
+ *                        the app's own schedule
+ *   --withdraw V[,V…]    drop these versions from the index first (rollback:
+ *                        the previous version becomes the newest again)
+ *   --require-newest     fail (writing nothing) unless --version ends up the
+ *                        newest version — for promote/rollback runs, whose only
+ *                        purpose is to move the stable links
+ * The rollout fields belong to the version's index entry; latest.json carries
+ * the newest entry's.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 // ---- arguments ---------------------------------------------------------------
@@ -64,9 +89,20 @@ const version = need("version");
 const repo = need("artifacts-repo");
 const assetsDir = need("assets-dir");
 
+const SEMVER = /^\d+\.\d+\.\d+(-[\w.]+)?$/;
 if (!/^[a-z0-9][a-z0-9-]*$/.test(app)) fail(`--app must be a lowercase slug, got "${app}"`);
-if (!/^\d+\.\d+\.\d+(-[\w.]+)?$/.test(version)) fail(`--version must be semver, got "${version}"`);
+if (!SEMVER.test(version)) fail(`--version must be semver, got "${version}"`);
 if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) fail(`--artifacts-repo must be owner/name, got "${repo}"`);
+
+/** Optional whole number in [min, max]; absent or "" = undefined. */
+function optionalInt(name, min, max) {
+  const raw = args[name];
+  if (raw === undefined || raw === "") return undefined;
+  if (!/^\d+$/.test(raw) || Number(raw) < min || Number(raw) > max) {
+    fail(`--${name} must be a whole number from ${min} to ${max}, got "${raw}"`);
+  }
+  return Number(raw);
+}
 
 const tag = `${app}-v${version}`;
 const latestTag = `${app}-latest`;
@@ -93,6 +129,11 @@ function readAssets() {
     if (!existsSync(path)) fail(`SHA256SUMS.txt lists ${file}, but it is missing`);
     assets.push({ name: file, size: statSync(path).size, sha256 });
   }
+  // Everything in --assets-dir is uploaded, so everything must be covered.
+  const unlisted = readdirSync(assetsDir).filter((file) => file !== "SHA256SUMS.txt" && file !== BUNDLE && !sums.has(file));
+  if (unlisted.length) {
+    fail(`${unlisted.join(", ")} would be published but ${unlisted.length > 1 ? "aren't" : "isn't"} listed in SHA256SUMS.txt — every published file must be covered by the checksums`);
+  }
   const sumsSize = statSync(sumsPath).size;
   return { assets, sumsSize };
 }
@@ -108,8 +149,14 @@ function isSbom(file) {
   return /\.(cdx|spdx)\.(json|xml)$/i.test(file) || /(^|[-_.])sbom([-_.]|$)/i.test(file);
 }
 
-/** Short platform hint from a file extension, or "SBOM" (display only). */
+/** In-app update files (Tauri): signatures, the manifest, macOS's .app archive. */
+function isUpdateFile(file) {
+  return /\.sig$/i.test(file) || file === "updater.json" || /\.app\.tar\.gz$/i.test(file);
+}
+
+/** Short platform hint from a file extension, or "SBOM" / "In-app update" (display only). */
 function kind(file) {
+  if (isUpdateFile(file)) return "In-app update";
   if (/\.(exe|msi)$/i.test(file)) return "Windows";
   if (/\.(dmg|pkg)$/i.test(file)) return "macOS";
   if (/\.(AppImage|deb|rpm)$/i.test(file)) return "Linux";
@@ -292,8 +339,11 @@ function appReadme(index) {
     "| --- | --- | --- |",
     ...index.versions.map((v) => {
       const releaseTag = `${index.app}-v${v.version}`;
+      // In-app update files stay off this table (they're on the release).
       const links = [
-        ...v.assets.map((a) => `[${kind(a.name) || a.name}](${downloadUrl(releaseTag, a.name)})`),
+        ...v.assets
+          .filter((a) => !isUpdateFile(a.name))
+          .map((a) => `[${kind(a.name) || a.name}](${downloadUrl(releaseTag, a.name)})`),
         `[SHA256SUMS](${downloadUrl(releaseTag, "SHA256SUMS.txt")})`,
         ...(v.signed ? [`[signature](${downloadUrl(releaseTag, BUNDLE)})`] : []),
       ].join(" · ");
@@ -347,7 +397,16 @@ function rootReadme(repoDir) {
 
 function writeIndex() {
   const repoDir = need("repo-dir");
-  const date = args.date || new Date().toISOString().slice(0, 10);
+  const rollout = optionalInt("rollout", 1, 100);
+  const checkAfterHours = optionalInt("check-after-hours", 1, 168);
+  const withdraw = (args.withdraw || "")
+    .split(",")
+    .map((v) => v.trim().replace(/^v/, ""))
+    .filter(Boolean);
+  for (const v of withdraw) {
+    if (!SEMVER.test(v)) fail(`--withdraw takes versions like 1.2.3, got "${v}"`);
+    if (v === version) fail(`--withdraw ${v} is the version being published`);
+  }
   const { assets } = readAssets();
   const dir = join(repoDir, app, "releases");
   mkdirSync(dir, { recursive: true });
@@ -358,17 +417,43 @@ function writeIndex() {
     : { app, name, versions: [] };
   index.app = app;
   index.name = name;
-  // Re-publishing a version replaces its entry (e.g. a re-run release).
-  index.versions = index.versions.filter((v) => v.version !== version);
-  index.versions.push({ version, date, assets, signed });
+  const previous = index.versions.find((v) => v.version === version);
+  for (const v of withdraw) {
+    if (!index.versions.some((e) => e.version === v)) console.log(`v${v} is not in the index (already withdrawn?)`);
+  }
+  // Re-publishing a version replaces its entry (e.g. a re-run release) but
+  // keeps the date it was first published; withdrawn versions drop out.
+  index.versions = index.versions.filter((v) => v.version !== version && !withdraw.includes(v.version));
+  const entry = { version, date: args.date || previous?.date || new Date().toISOString().slice(0, 10), assets, signed };
+  if (rollout !== undefined) entry.rollout = rollout;
+  if (checkAfterHours !== undefined) entry.checkAfterHours = checkAfterHours;
+  index.versions.push(entry);
   index.versions.sort((a, b) => compareSemver(b.version, a.version));
 
+  // Only the newest version may move the stable <app>-latest links — a
+  // hotfix for an older line must not roll everyone back.
   const newest = index.versions[0];
+  const isNewest = newest.version === version;
+  if (args["require-newest"] === "true" && !isNewest) {
+    fail(
+      `v${version} would not be the newest version — v${newest.version} is still listed. ` +
+        `Withdraw v${newest.version} too (--withdraw), or promote v${newest.version} instead. Nothing was changed.`,
+    );
+  }
+
+  const manifest = join(assetsDir, "updater.json");
+  if (existsSync(manifest)) {
+    const offered = JSON.parse(readFileSync(manifest, "utf8")).version;
+    if (offered !== version) fail(`updater.json in --assets-dir offers v${offered}, not v${version}`);
+  }
+
   const latest = {
     app,
     name,
     version: newest.version,
     date: newest.date,
+    ...(newest.rollout !== undefined ? { rollout: newest.rollout } : {}),
+    ...(newest.checkAfterHours !== undefined ? { checkAfterHours: newest.checkAfterHours } : {}),
     releaseUrl: `https://github.com/${repo}/releases/tag/${app}-v${newest.version}`,
     checksumsUrl: downloadUrl(latestTag, "SHA256SUMS.txt"),
     assets: newest.assets.map((a) => ({
@@ -383,15 +468,30 @@ function writeIndex() {
   writeFileSync(join(dir, "README.md"), appReadme(index));
   rootReadme(repoDir);
 
-  // Only the newest version may move the stable <app>-latest links — a
-  // hotfix for an older line must not roll everyone back.
-  const isNewest = newest.version === version;
+  // The newest version's in-app update manifest, next to latest.json. A
+  // newest version without one removes the file, so a withdrawn build's
+  // manifest never outlives a rollback. Older versions leave it alone.
+  if (isNewest) {
+    const target = join(dir, "updater.json");
+    if (existsSync(manifest)) {
+      copyFileSync(manifest, target);
+    } else if (existsSync(target)) {
+      rmSync(target);
+      console.log(`Removed ${app}/releases/updater.json (v${version} has no in-app update manifest)`);
+    }
+  }
+
   if (process.env.GITHUB_OUTPUT) {
     writeFileSync(process.env.GITHUB_OUTPUT, `is_newest=${isNewest}\n`, { flag: "a" });
   }
+  const extras = [
+    withdraw.length ? `withdrew v${withdraw.join(", v")}` : "",
+    rollout !== undefined ? `rollout ${rollout}%` : "",
+    checkAfterHours !== undefined ? `checkAfterHours ${checkAfterHours}` : "",
+  ].filter(Boolean);
   console.log(
     `Indexed ${tag} in ${app}/releases (newest: v${newest.version}; ` +
-      `${isNewest ? "updates" : "does not update"} ${latestTag})`,
+      `${isNewest ? "updates" : "does not update"} ${latestTag})${extras.length ? `; ${extras.join("; ")}` : ""}`,
   );
 }
 

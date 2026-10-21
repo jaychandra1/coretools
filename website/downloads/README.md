@@ -19,7 +19,8 @@ This directory exists only for the tracked README you are reading.
 anything you drop in locally stays local.
 
 Historical note: installers committed before this change are still present in
-old git history. The last of those builds (0.1.0, commit `8f016a5`) can be
-published to the artifacts repo with the "Import old release" workflow.
+old git history (the last, 0.1.0, at commit `8f016a5`). The one-off workflow
+that imported such builds into the artifacts repo was removed: it bypassed
+every release gate (audit M1).
 Purging them from this repo's history (git filter-repo + force-push) is a
 coordinated, history-rewriting operation — see DEPLOYMENT.md.

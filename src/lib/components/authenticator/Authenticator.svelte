@@ -15,6 +15,10 @@
   import type { CloudBackupFile } from "../../core/authenticator/cloud-backup";
   import type { ParsedAccount } from "../../core/authenticator/types";
   import type { StoredEntry } from "../../core/authenticator/db";
+  import { Sortable } from "../../sortable.svelte";
+  import PasswordPrompt from "../credentials/PasswordPrompt.svelte";
+  import type { RemovedEntry } from "./store.svelte";
+  import { getPlatform } from "../../platform";
 
   // ---- lifecycle: init + activity tracking ---------------------------------
   // The shared clock (and with it the idle auto-lock) is owned by the store so
@@ -70,12 +74,31 @@
   // ---- toast + clipboard --------------------------------------------------
 
   let toast = $state("");
+  /** Offered with the toast: put back the account just deleted (D-8). */
+  let undo = $state<(() => void) | null>(null);
   let toastTimer: ReturnType<typeof setTimeout> | undefined;
 
-  function showToast(message: string) {
+  function showToast(message: string, onundo: (() => void) | null = null) {
     toast = message;
+    undo = onundo;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => (toast = ""), 2200);
+    toastTimer = setTimeout(() => {
+      toast = "";
+      undo = null;
+    }, onundo ? 8000 : 2200);
+  }
+
+  // ---- "confirm it's you" before an export (S-9) --------------------------------
+
+  let promptResolve = $state<((value: string | null) => void) | null>(null);
+
+  function askPassword(): Promise<string | null> {
+    return new Promise((resolve) => {
+      promptResolve = (value) => {
+        promptResolve = null;
+        resolve(value);
+      };
+    });
   }
 
   function onCopied(code: string) {
@@ -133,12 +156,17 @@
     dialog = "import";
   }
 
-  function openExport() {
+  /** Exports carry every secret, so they're confirmed first (S-9). */
+  async function openExport() {
     try {
+      await authStore.confirmUser(askPassword);
       exportEntries = authStore.exportables();
       dialog = "export";
     } catch (e) {
-      showToast(e instanceof Error ? e.message : "Export unavailable");
+      const message = e instanceof Error ? e.message : "";
+      if (message !== "canceled" && message !== "hello_canceled") {
+        showToast(message || "Export unavailable");
+      }
     }
   }
 
@@ -169,24 +197,51 @@
     renameAccount = entry.account;
   }
 
+  /** A failed change's message for the toast. */
+  function failure(e: unknown, fallback: string): string {
+    return e instanceof Error && e.message ? e.message : fallback;
+  }
+
   async function applyRename(event: SubmitEvent) {
     event.preventDefault();
     if (!renaming) return;
-    await authStore.rename(renaming.id, renameIssuer, renameAccount);
+    try {
+      await authStore.rename(renaming.id, renameIssuer, renameAccount);
+    } catch (e) {
+      showToast(failure(e, "Couldn't rename the account"));
+      return;
+    }
     renaming = null;
     showToast("Renamed");
   }
 
   async function applyDelete() {
     if (!deleting) return;
-    await authStore.remove(deleting.id);
+    let removed: RemovedEntry | null;
+    try {
+      removed = await authStore.remove(deleting.id);
+    } catch (e) {
+      showToast(failure(e, "Couldn't delete the account"));
+      return;
+    }
     deleting = null;
-    showToast("Account deleted");
+    showToast(
+      "Account deleted",
+      removed
+        ? () => {
+            toast = "";
+            undo = null;
+            authStore.restoreRemoved(removed).catch(() => showToast("Couldn't restore the account"));
+          }
+        : null,
+    );
   }
 
   // ---- drag & drop reordering -----------------------------------------------
 
-  let draggedId: string | null = null;
+  const sortable = new Sortable<string>((dragged, target) => {
+    authStore.reorder(dragged, target).catch(() => showToast("Couldn't save the order"));
+  });
 
   // ---- banners ----------------------------------------------------------------
 
@@ -233,7 +288,10 @@
 
 <div class="authenticator">
   {#if authStore.loadError}
-    <p class="load-error" role="alert">{authStore.loadError}</p>
+    <div class="load-error" role="alert">
+      <p>{authStore.loadError}</p>
+      <button onclick={() => authStore.retryInit()}>Try again</button>
+    </div>
   {:else if !authStore.ready}
     <p class="muted center">Loading…</p>
   {:else if authStore.locked}
@@ -298,6 +356,29 @@
         {/if}
       </div>
     </div>
+
+    {#if authStore.unreadableEntries > 0}
+      <div class="banner warn" role="status">
+        <span>
+          {authStore.unreadableEntries === 1 ? "One account" : `${authStore.unreadableEntries} accounts`}
+          couldn't be decrypted and {authStore.unreadableEntries === 1 ? "is" : "are"} hidden. The
+          rest of the vault is fine — restore {authStore.unreadableEntries === 1 ? "it" : "them"}
+          from a backup or a local snapshot in Settings.
+        </span>
+        <button onclick={() => (dialog = "settings")}>Settings</button>
+      </div>
+    {/if}
+
+    {#if getPlatform().kind === "browser" && authStore.storagePersisted === false && authStore.entries.length > 0}
+      <div class="banner warn" role="status">
+        <span>
+          This browser may clear its stored data when space runs low or after
+          a while without visits. Export an encrypted backup file regularly
+          (Settings → Backup file).
+        </span>
+        <button onclick={() => (dialog = "settings")}>Settings</button>
+      </div>
+    {/if}
 
     {#if authStore.weakPassword}
       <div class="banner warn" role="status">
@@ -387,13 +468,8 @@
             oncopied={onCopied}
             onrename={startRename}
             ondelete={(e) => (deleting = e)}
-            ondragstartcard={(id) => (draggedId = id)}
-            ondropcard={(targetId) => {
-              if (draggedId && draggedId !== targetId) {
-                authStore.reorder(draggedId, targetId);
-              }
-              draggedId = null;
-            }}
+            onfailed={(message) => showToast(message)}
+            {sortable}
           />
         {/each}
       </div>
@@ -404,9 +480,20 @@
   {/if}
 
   {#if toast}
-    <div class="toast" role="status">{toast}</div>
+    <div class="toast" role="status">
+      {toast}
+      {#if undo}<button class="undo" onclick={undo}>Undo</button>{/if}
+    </div>
   {/if}
 </div>
+
+{#if promptResolve}
+  <PasswordPrompt
+    reason="Enter your master password to export your accounts."
+    onsubmit={(pw) => promptResolve?.(pw)}
+    oncancel={() => promptResolve?.(null)}
+  />
+{/if}
 
 {#if !authStore.locked}
   {#if dialog === "add"}
@@ -476,13 +563,13 @@
       {#if deleting.issuer && deleting.account}({deleting.account}){/if}?
     </p>
     <p class="warn-text">
-      This cannot be undone. If two-factor authentication is still enabled on
-      that service, you may be locked out — make sure you have another way to
-      sign in first.
+      You can undo it for a few seconds afterwards; then it's gone from this
+      device. If two-factor authentication is still enabled on that service,
+      you may be locked out — make sure you have another way to sign in first.
     </p>
     <div class="modal-actions">
       <button onclick={() => (deleting = null)}>Cancel</button>
-      <button class="danger-btn" onclick={applyDelete}>Delete permanently</button>
+      <button class="danger-btn" onclick={applyDelete}>Delete account</button>
     </div>
   </Modal>
 {/if}
@@ -501,6 +588,9 @@
     color: var(--removed-fg);
     font-size: 13px;
     line-height: 1.5;
+  }
+  .load-error p {
+    margin: 0 0 10px;
   }
   .center {
     text-align: center;
@@ -639,6 +729,15 @@
     display: flex;
     gap: 8px;
     justify-content: center;
+  }
+  .toast .undo {
+    margin-left: 10px;
+    border: none;
+    background: transparent;
+    color: inherit;
+    font-weight: 700;
+    text-decoration: underline;
+    padding: 0;
   }
   .toast {
     position: fixed;

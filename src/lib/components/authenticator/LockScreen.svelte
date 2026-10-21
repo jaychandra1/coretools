@@ -125,6 +125,9 @@
         unlock this section.
       {/if}
     </p>
+    {#if authStore.notice}
+      <p class="notice" role="status">{authStore.notice}</p>
+    {/if}
 
     {#if authStore.canUnlockWithHello}
       <button
@@ -151,7 +154,7 @@
         bind:value={password}
         type="password"
         placeholder="Encryption password"
-        autocomplete="current-password"
+        autocomplete="off"
         aria-label="Encryption password"
         disabled={busy && helloWaiting}
       />
@@ -237,5 +240,12 @@
     margin: 12px 0 0;
     color: var(--danger);
     font-size: 13px;
+  }
+  .notice {
+    margin: 0 0 12px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 12.5px;
+    background: var(--accent-soft);
   }
 </style>

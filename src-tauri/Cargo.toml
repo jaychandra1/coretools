@@ -21,14 +21,23 @@ tauri-plugin-dialog = "2"
 # In-app updates: download, verify (minisign) and install a signed release
 # (src/updates.rs). Registered only in builds with an updater public key.
 tauri-plugin-updater = "2"
+# Reads an update signature's trusted comment with the same parser the
+# updater verifies it with (src/updates.rs, audit N1). MUST match the
+# version tauri-plugin-updater uses (2.14 → 0.3), so only one copy builds.
+minisign-verify = "0.3"
+# A second launch focuses the running window instead of opening a second
+# copy on the same vault and IndexedDB (audit D-1). Registered first.
+tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Authenticator cloud backup (opt-in, Google Drive): HTTPS client (rustls,
-# bundled roots — no system OpenSSL), OS keychain for the OAuth refresh
-# token, and PKCE primitives. keyring's platform features are target-gated:
-# each OS only compiles its own store.
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# Authenticator cloud backup (opt-in, Google Drive): HTTPS client (rustls —
+# no system OpenSSL), OS keychain for the OAuth refresh token, and PKCE
+# primitives. Trusts the bundled Mozilla roots AND the OS trust store, so
+# TLS-inspecting corporate proxies the OS trusts work (audit L11).
+# keyring's platform features are target-gated: each OS only compiles its
+# own store.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 sha2 = "0.10"
 base64 = "0.22"
@@ -48,6 +57,10 @@ arboard = { version = "3.6", default-features = false }
 # PlatformWebview::controller(). tauri 2.12 → 0.39. The Windows CI check
 # fails on a mismatch.
 webview2-com = "0.39"
+# The COM `Interface` trait (`cast`) and string types of the windows-core
+# version webview2-com 0.39 is built on (0.62) — NOT the one the `windows`
+# crate below uses. Bump together with webview2-com.
+windows-core = "0.62"
 windows = { version = "0.58", features = [
   "Foundation",
   "Security_Credentials",

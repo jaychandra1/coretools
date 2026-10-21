@@ -1,0 +1,12 @@
+# The one Rust toolchain every build uses (audit M4): CI, releases and local
+# builds. rustup reads this file from the repository root, so it applies to
+# src-tauri/ too. The workflows install exactly this version with the
+# runner's own rustup (scripts/setup-rust.sh) — change it here, nowhere else.
+#
+# Bumping: pick the current stable release (https://releases.rs),
+# change `channel`, and let CI (clippy, tests, the Windows check) prove it.
+# New lints in a newer clippy fail CI until fixed — that's intended.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

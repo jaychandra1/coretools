@@ -1,0 +1,56 @@
+name: CodeQL
+
+# Static analysis of the TypeScript/Svelte app, the Rust shell and these
+# workflows (audit M5). Code scanning is free only for PUBLIC repositories;
+# on this private repository (GitHub Free) it needs GitHub Advanced
+# Security, a paid add-on, and the upload would fail. So the job runs only
+# while the repository is public: today every run is skipped at no cost, and
+# making jaychandra1/coretools public (DEPLOYMENT.md, "Manual steps") turns
+# it on without editing this file. Results then appear under Security →
+# Code scanning.
+#
+# No schedule: a scheduled event doesn't say whether the repository is
+# private. Push, pull request and manual runs do.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # upload the results to code scanning
+    strategy:
+      fail-fast: false
+      matrix:
+        # build-mode none: analysed from source, nothing is compiled.
+        language: [actions, javascript-typescript, rust]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          category: /language:${{ matrix.language }}

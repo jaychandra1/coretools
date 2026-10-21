@@ -13,8 +13,18 @@ const SHARED = {
   textNodeName: "#text",
 } as const;
 
+/**
+ * Documents that declare their own entities are refused: nested entity
+ * definitions can expand a few bytes into gigabytes ("billion laughs").
+ * The five standard XML entities (&amp; and friends) still decode.
+ */
+export const DECLARED_ENTITY = /<!ENTITY/i;
+
 export function xmlToJson(xml: string): Result<JsonValue> {
   if (xml.trim() === "") return { ok: false, error: "XML input is empty" };
+  if (DECLARED_ENTITY.test(xml)) {
+    return { ok: false, error: "XML with entity declarations (<!ENTITY …>) isn't supported" };
+  }
   const check = XMLValidator.validate(xml);
   if (check !== true) {
     return {

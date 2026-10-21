@@ -4,6 +4,7 @@
  */
 
 import type { JsonValue, ParseResult } from "./types";
+import { setOwn } from "../own";
 
 /** Convert a 0-based character offset to 1-based line/column. */
 export function offsetToLineColumn(
@@ -108,7 +109,7 @@ export function sortKeysDeep(value: JsonValue): JsonValue {
   if (value !== null && typeof value === "object") {
     const sorted: { [key: string]: JsonValue } = {};
     for (const key of Object.keys(value).sort()) {
-      sorted[key] = sortKeysDeep(value[key]);
+      setOwn(sorted, key, sortKeysDeep(value[key]));
     }
     return sorted;
   }

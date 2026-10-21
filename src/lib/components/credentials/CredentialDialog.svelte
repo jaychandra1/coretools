@@ -220,7 +220,7 @@
             bind:value={password}
             oninput={() => (passwordDirty = true)}
             placeholder={editing ? "Unchanged — type to replace" : ""}
-            autocomplete="new-password"
+            autocomplete="off"
             aria-labelledby="pw-label"
           />
           <button

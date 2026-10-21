@@ -9,7 +9,8 @@ Drive backup, and the Vercel site.
 | --- | --- |
 | [Google project suspended or deleted](google-project-suspended-or-deleted.md) | Sign-in or every backup fails for everyone; Google emails about the project |
 | [Release pipeline or publishing token compromised](release-pipeline-compromise.md) | A release, asset or index commit you didn't make; `ARTIFACTS_REPO_TOKEN` or the GitHub account exposed; a release fails `cosign verify-blob` |
-| [Bad release shipped](bad-release.md) | A published version is broken or harmful; the site deploy is broken |
+| [Bad release shipped](bad-release.md) | A published version is broken or harmful; the site deploy is broken; the release canary reports a withdrawn build still offered |
+| [Updater signing key lost or leaked](updater-key-lost-or-leaked.md) | `TAURI_SIGNING_PRIVATE_KEY` or its password exposed, or lost; an `updater.json` or `.sig` nobody published |
 | [Drive API outage or quota exhaustion](drive-api-outage-or-quota.md) | Drive API alerts fire; users report backups stuck on "retrying" |
 
 ## Severity
@@ -22,8 +23,14 @@ Drive backup, and the Vercel site.
 | **SEV4** | Cosmetic or docs | Wrong text on the site; a stale link | Next normal release. |
 
 When unsure, pick the higher level and lower it later. Anything involving
-installer integrity, signing, tokens or users' secrets is SEV1 until shown
-otherwise.
+installer integrity, signing (including the in-app updater key), tokens or
+users' secrets is SEV1 until shown otherwise.
+
+**Early warning.** Actions → *Release canary* runs every 6 hours and fails
+(GitHub emails the maintainer) when `latest.json`, the `coretools-latest`
+downloads, `updater.json` or the website disagree with the newest release.
+An external uptime monitor watches the site independently of GitHub
+(DEPLOYMENT.md → "Manual steps").
 
 ## Who decides
 
@@ -41,9 +48,15 @@ an issue or by email.
 
 ## Telling users
 
-Installed copies never contact us (no update check, no telemetry), so the
-only way to reach users is where they look when downloading or updating.
-Use every channel that applies.
+There is no telemetry, so the project can't contact installed copies
+directly. Copies with update notifications turned on read
+`coretools/releases/latest.json` in `jaychandra1/artifacts` about once an
+hour (less often while its `checkAfterHours` back-off is set), and show its
+optional one-line `notice` in the update banner. The publish script doesn't
+write that field: add it by hand after publishing a fix (the next publish,
+or a *Promote or roll back latest* run, overwrites the file). Everyone else is reached only
+where they look when downloading or updating. Use every channel that
+applies.
 
 1. **GitHub Security Advisory on
    [`jaychandra1/artifacts`](https://github.com/jaychandra1/artifacts/security/advisories)**

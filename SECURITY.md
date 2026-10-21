@@ -106,27 +106,42 @@ be audited rather than taken on faith.
 
 ## 3. Minimal, guarded native surface
 
-The Rust backend (`src-tauri/src/lib.rs` and its modules `hello.rs`,
-`cloud.rs`, `secure_clipboard.rs`, `updates.rs`, `diagnostics.rs`)
-exposes exactly twenty-five commands: five for files, one to open a saved
-login page, five for Windows Hello, nine for cloud backup, two for the secure
-clipboard, one update check and two for the diagnostics log. **The dialog-origin rule is enforced in Rust, not by
-frontend convention:** the file dialogs are opened by Rust
-(`pick_open_path` / `pick_save_path`), every path they issue is canonicalized
-and stored in managed state, and each read/write command accepts only a
-stored path — consuming it on use. A compromised webview therefore cannot
-read or write any path the user did not just pick in a native dialog. The
-webview holds no dialog capability of its own
-(`capabilities/default.json` grants only `core:default`).
+The Rust backend (`src-tauri/src/lib.rs` and its modules `files.rs`,
+`links.rs`, `hello.rs`, `cloud.rs`, `secure_clipboard.rs`, `updates.rs`,
+`diagnostics.rs`, `webview_permissions.rs`) exposes twenty-seven commands:
+five for files, one to open a link, five for Windows Hello, nine for cloud
+backup, two for the secure clipboard, two for updates, two for the
+diagnostics log and one for the QR scanner's camera. **The dialog-origin
+rule is enforced in Rust, not by frontend convention:** the file dialogs are
+opened by Rust (`pick_open_path` / `pick_save_path`), and each path they
+return is a grant for ONE operation of that kind — a picked file can be read
+once, a save target written once. The read/write commands look the path
+string up among the grants before touching the filesystem, so a compromised
+webview can't read or write anything else, can't probe whether a file
+exists, and can't make Windows open a UNC or device path (which would send
+the user's network credentials to that server). After a grant matches, the
+path must still resolve to where it pointed when the user picked it.
+Writes go to a temporary file that replaces the target, so a crash never
+leaves a half-written file. The webview holds no dialog capability of its
+own (`capabilities/default.json` grants only `core:default`).
+
+The webview also can't leave the app: a navigation guard refuses every
+navigation to another origin, the CSP forbids form submissions
+(`form-action 'none'`), and links open in the system browser only through
+`open_external_url` — directly for a short allow-list (the project's GitHub
+and site, Google account pages), otherwise only after the user confirms a
+native dialog naming the site, at most ten per minute. Only one copy of the
+desktop app runs at a time; a second launch focuses the first.
 
 | Command | Purpose | Guards |
 | --- | --- | --- |
-| `pick_open_path()` | Native open-dialog | Runs off the main thread; canonicalizes and authorizes the picked file for one read |
-| `pick_save_path(defaultName)` | Native save-dialog | Canonicalizes against the (existing) parent directory; authorizes for one write |
-| `read_text_file(path)` | Read a user-selected file | Path must match a dialog-issued authorization (single use); must be a regular file; rejected if larger than 50 MiB; read as UTF-8 only |
-| `write_text_file(path, contents)` | Write to a user-selected path | Dialog-issued authorization (single use); refuses writes above 100 MiB |
-| `write_binary_file(path, contents)` | Binary counterpart (e.g. .xlsx exports) | Same single-use authorization; refuses writes above 100 MiB |
-| `open_external_url(url)` | Credential Manager "Open login page" in the system browser | Absolute `http`/`https` URLs with a host only (≤ 2048 chars), re-serialized by the URL parser — no `file:`, custom-protocol or shell handlers |
+| `pick_open_path()` | Native open-dialog | Runs off the main thread; the picked file becomes a grant for one read |
+| `pick_save_path(defaultName)` | Native save-dialog | The suggested name is reduced to a plain file name (no folders, ≤ 120 characters, known extensions only); the target becomes a grant for one write |
+| `read_text_file(path)` | Read a user-selected file | Exact match with an unused read grant before any filesystem access; still resolves to the picked file; regular files only; read capped at 50 MiB while reading; UTF-8 only |
+| `write_text_file(path, contents)` | Write to a user-selected path | Unused write grant; refuses writes above 100 MiB; temporary file renamed over the target |
+| `write_binary_file` (raw body, `x-path` header) | Binary counterpart (e.g. .xlsx exports) | Same grant rules; the bytes travel as the raw IPC body, not as JSON |
+| `open_external_url(url)` | Open a saved login page or help link in the system browser | `http`/`https` with a host and no embedded credentials (≤ 2048 chars); allow-listed hosts open directly, others only after a native confirmation naming the host (once per host per session); at most 10 per minute |
+| `qr_camera_armed(armed)` | The QR scanner is (not) using the camera | The camera is granted only to the app's own page and only while armed |
 | `hello_available()` | Report whether Windows Hello is set up | Read-only capability probe; Windows-only (`false` elsewhere) |
 | `hello_create_key(challenge)` | Create/replace the app's Hello key and sign the enrollment challenge | OS shows the Hello verification prompt; challenge limited to 128 bytes; never sees secrets or passwords |
 | `hello_sign(challenge)` | Sign the stored challenge to unlock | OS enforces a biometric/PIN verification on **every** call; challenge limited to 128 bytes |
@@ -136,15 +151,16 @@ webview holds no dialog capability of its own
 | `cloud_status()` | Connected account email + computer name | Reads the OS keychain only; no network |
 | `cloud_connect()` | Google sign-in | System browser + loopback redirect + PKCE (S256) + CSRF state; 5-minute timeout; refuses if Drive access was unticked; refresh token stored in the OS keychain, never returned to the webview |
 | `cloud_cancel_connect()` | Abort a waiting sign-in | Sets a flag the listener polls |
-| `cloud_disconnect()` | Forget + revoke the credential | Deletes the keychain entry first, then revokes at Google (best effort) |
-| `cloud_list()` | List backup versions | App-data folder only (`drive.appdata` scope) |
-| `cloud_upload(name, content, deviceId, deviceLabel)` | Upload one encrypted backup version | Name must match `coretools-authenticator-*.json` or `coretools-credmanager-*.json` (charset-restricted); content ≤ 5 MiB; labels sanitized and byte-capped; always written to the connected account's app-data folder |
+| `cloud_disconnect()` | Revoke + forget the credential | Revokes at Google first (5 s timeout), then always deletes the keychain entry; reports whether the revoke succeeded |
+| `cloud_list()` | List backup versions | App-data folder only (`drive.appdata` scope); follows result pages; each response size-capped while reading |
+| `cloud_upload(name, content, deviceId, deviceLabel, records)` | Upload one encrypted backup version | Name must match `coretools-authenticator-*.json` or `coretools-credmanager-*.json` (charset-restricted); content ≤ 5 MiB; labels sanitized and byte-capped; the record count is stored with the file (shrink protection); always written to the connected account's app-data folder |
 | `cloud_download(id)` | Fetch one version | Id charset-restricted; response ≤ 5 MiB; UTF-8 only |
 | `cloud_delete(id)` | Delete one version | Id charset-restricted; already-gone counts as success |
 | `clipboard_copy_secret(text)` | Copy a password or 2FA code | Marked so clipboard history, the Windows cloud clipboard and clipboard managers skip it (Windows `ExcludeClipboardContentFromMonitorProcessing`, macOS `org.nspasteboard.ConcealedType`, Linux `x-kde-passwordManagerHint`); ≤ 4,096 characters; never stored or logged |
 | `clipboard_clear_if(expected)` | Auto-clear after 30 s | Clears only if the clipboard still holds exactly that text, so a later copy is never destroyed |
-| `check_for_update()` | Opt-in update check | One fixed public URL; response ≤ 64 KiB; version must be `x.y.z`; the release link must be in the public release repository |
-| `diagnostics_record(source, cause)` | Record a UI-side failure cause | Control characters stripped, length-capped; callers pass error tokens only |
+| `check_for_update()` | Opt-in update check | One fixed public URL; response ≤ 64 KiB while reading; version must be `x.y.z`; links must stay inside the public release repository (parsed, no `..` segments) |
+| `install_update(onProgress)` | In-app update | Only after a native "Install and restart?" confirmation; the download must come from that version's own release, and its signature must name a file of that version — so an old signed build can't be offered as a new one |
+| `diagnostics_record(source, cause)` | Record a UI-side failure cause | Control characters stripped, length-capped, at most 30 per minute; callers pass error tokens only |
 | `diagnostics_report()` | Recent log lines for *Copy diagnostics* | Read-only; newest 200 lines |
 
 Business logic stays out of the backend, keeping the trusted native surface small.
@@ -275,16 +291,35 @@ reading a small number of well-isolated files.
   the signature before upload, and refuses a half-configured platform rather
   than silently shipping it unsigned. Until then installers are unsigned and
   the release notes say so.
-- **Only reviewed code ships.** A release builds only a commit that is
+- **Only code on `master` ships.** A release builds only a commit that is
   already on `master`, its CHANGELOG notes must exist, and publishing runs
-  in the `release` environment, which can require an approval (on a
-  private repository GitHub offers required reviewers only with Enterprise;
-  see DEPLOYMENT.md). The website deploys from a `production` branch
-  that CI moves only after the web checks pass on `master`. CI also refuses
-  temporary test code (such as a fake cloud backend) in `src/`.
-- **Reproducible Rust builds.** Once `src-tauri/Cargo.lock` is committed, CI
-  and releases verify it (`cargo metadata --locked`), so a build can't
-  silently resolve different dependencies from the reviewed set.
+  in the `release` environment, which can require an approval. Nothing
+  enforces review before code reaches `master` today: the source repository
+  is private on GitHub Free, which offers neither branch rulesets nor
+  required reviewers (accepted risks F-03/F-04 in DEPLOYMENT.md). The
+  website deploys from a `production` branch that CI moves only after the
+  web checks pass on `master`. CI also refuses temporary test code (such as
+  a fake cloud backend) in `src/`.
+- **Reproducible Rust builds.** A release refuses to build without
+  `src-tauri/Cargo.lock` or when it is out of date (`cargo metadata
+  --locked`), so a build can't silently resolve different dependencies from
+  the reviewed set; `cargo deny` checks them against the RustSec advisory
+  database. The Rust and Node toolchains are pinned (`rust-toolchain.toml`,
+  `.nvmrc`).
+- **The update signing key is used in one isolated step.** The platform
+  builds never see it: a separate job — no npm install scripts, no build
+  caches — signs version-named copies of the finished installers and checks
+  each signature against the public key before anything is published. The
+  app then refuses any update whose signature names another version.
+- **Workflow and code scanning.** Every change runs actionlint and zizmor
+  over the workflows; CodeQL and dependency review run when the source
+  repository is public (they need a paid plan on a private one).
+- **Rollouts and rollbacks.** A release can be offered to a share of
+  installs first; rolling `coretools-latest` back republishes an earlier,
+  checksum-verified release without rebuilding and withdraws the bad one,
+  so a withdrawn build is never offered as an update. Published versioned
+  releases are never overwritten. A scheduled canary checks every few hours
+  that the published release, its downloads and the website are consistent.
 
 ## 8. Authenticator: local persistence & encryption model
 
@@ -302,9 +337,42 @@ database. This section specifies exactly what that means.
 - With an encryption password set, **everything identifying is encrypted**:
   each secret in its own **AES-256-GCM** blob, and the issuer and account
   name sealed together in a `meta` blob (the plaintext fields are stored
-  empty). Only non-identifying fields stay in the clear: code type, digits,
-  period, counter, display order, pinned flag, and a SHA-256 of the secret
-  used to detect duplicates. Every encryption uses a fresh random 12-byte IV.
+  empty). Each blob is **bound to its record and field** as additional
+  authenticated data, so a ciphertext moved to another record or field fails
+  to decrypt instead of showing one site's secret under another; records
+  from before 1.3 are re-sealed this way on the next unlock. Only
+  non-identifying fields stay in the clear: code type, digits, period,
+  counter, display order and pinned flag. (Versions before 1.3 also stored an
+  unsalted SHA-256 of each secret; it is dropped as records are rewritten.)
+  Every encryption uses a fresh random 12-byte IV.
+- **Several windows or tabs** can't overwrite each other: every write to the
+  vault (and the settings) checks and bumps a generation counter in the same
+  transaction, and the other windows are told over a BroadcastChannel and
+  read the vault again — staying unlocked while the key is unchanged, locking
+  after a password change or rollback elsewhere. Within a window, writes run
+  one at a time, and a change prepared from a copy that has since been
+  re-read is refused rather than written. The desktop app runs as a single
+  instance.
+- **A damaged record doesn't lock you out.** One that won't decrypt is set
+  aside and reported; the rest of the vault opens, and it is kept as it is
+  through password changes and merges (only a "replace" restore drops it).
+- **Local snapshots.** Before a password change, password removal or restore,
+  the vault is copied as stored (still encrypted) into a snapshot; the last
+  five are kept and can be restored from Settings (after confirming it's
+  you). Restoring one from before a password change asks for the password
+  it had then and checks it before anything changes, so a rollback can't
+  leave you locked out. A deleted 2FA account can be undone for a few
+  seconds.
+- **Settings that protect the vault** (auto-lock, clipboard clearing, the
+  reveal check) are also sealed under the vault key, bound to their record.
+  On unlock the sealed copy wins over the plaintext one; when it is missing,
+  damaged or another record was put in its place, the stricter of the
+  plaintext values and the defaults applies — values planted on disk can't
+  weaken them either way. They can't be changed while the vault is locked.
+  **Lowering any of them, exporting accounts, rolling back to a snapshot or
+  wiping the vault asks for the master password — or Windows Hello, where
+  you turned it on for the vault — every time.** Revealing saved passwords
+  asks at most once a minute.
 - **Unencrypted (explicit opt-out).** If no password is set, secrets and
   names are stored in plaintext and the UI shows a **persistent warning
   banner** until a password is set — mirroring the extension's behaviour.
@@ -330,7 +398,9 @@ database. This section specifies exactly what that means.
   the app asks the user to change it.
 - The working key is **non-extractable** and exists **only in memory**; raw
   key bytes, where they briefly exist (wrapping for Hello, the upgrade), are
-  zeroed after use.
+  zeroed after use. Only a wrong password is reported as one: any other
+  unlock failure (the key derivation running out of memory, say) shows its
+  own error, so nobody wipes a vault they could have opened.
 - The section is **locked on every load** and after a configurable idle
   timeout (default 5 minutes). Locking drops the key, clears the decrypted
   secrets, and blanks the decrypted names and credential metadata in memory.
@@ -441,9 +511,12 @@ wrapped key); both layouts restore.
 - Before upload, each sealed file is decrypted again locally and checked. After
   upload, Drive's MD5 of the stored bytes is compared with what was sent. A
   mismatch deletes the upload and retries; older versions are never touched.
-- KDF parameters from a downloaded header are bounded (Argon2id 19 MiB–1 GiB
-  memory, 1–10 passes, 1–8 lanes; PBKDF2 100k–5M iterations), so a tampered
+- KDF parameters from a downloaded header are bounded (Argon2id 19–256 MiB
+  memory, 1–6 passes, 1–4 lanes; PBKDF2 100k–5M iterations), so a tampered
   file can't stall a restore, exhaust memory, or downgrade to a cheap setting.
+  Files are refused above 16 MiB before parsing, and every account's code
+  settings are checked (5–10 digits, a 5–3,600 s period) wherever accounts
+  come in — QR codes, links, files and restores.
 - Every header field — including the KDF parameters and the wrapped key — is
   bound into the payload's GCM tag, so none can be swapped.
 
@@ -485,7 +558,19 @@ wrapped key); both layouts restore.
 - **Deletions are recorded** (as SHA-256 hashes of the record's identity,
   encrypted at rest and inside the backup) and honoured by merges: a merge
   never brings back something this device deleted, and removes what another
-  device deleted after this device last added or changed it.
+  device deleted after this device last added or changed it. A deletion and
+  its record are written in one transaction.
+- **A merge never brings back an older version.** When the backup holds a
+  login that is also here, the newer of the two wins (last writer wins), so
+  a password rotated on one device isn't reverted by merging an older
+  backup; a 2FA account keeps the higher HOTP counter.
+- **Shrink protection counts records.** Each backup file carries how many
+  records it holds; the version before a mass deletion (fewer than half the
+  records) is kept even when deletion records keep the file's size up.
+  Old versions are pruned only after the provider's checksum confirms the
+  new upload — without a checksum, nothing is pruned.
+- **After a password change** the app offers to delete the cloud versions
+  and local snapshots that still open with the old password.
 - Each device remembers, per series, which remote version its data is based
   on. If another device made a newer backup of a series, automatic backups of
   that series pause instead of burying it.
@@ -560,12 +645,15 @@ both.
   restore, permanent delete, password view and password copy are recorded
   locally (newest 2,000 events). Each record's content is AES-GCM-sealed with
   its position bound in, links to the SHA-256 of the previous record, and a
-  sealed head names the newest — so editing, reordering, splicing or
-  dropping the newest records is detected and shown ("altered outside
-  CoreTools"). The log can be exported with its verification result and
-  chain head. It never contains a secret. Limits, stated plainly: deleting
-  the whole log, or rolling the log and its head back together to an older
-  copy, can't be prevented on a device the attacker fully controls.
+  sealed head names the newest — so editing, reordering, splicing,
+  dropping the newest or the oldest records, and planting unsealed records
+  are detected and shown ("altered outside CoreTools"). A password change
+  never launders a tampered log into a verified one: the new chain records
+  that it was reset. A failure to write an event is shown in the log too.
+  The log can be exported with its verification result and chain head. It
+  never contains a secret. Limits, stated plainly: deleting the whole log,
+  or rolling the log and its head back together to an older copy, can't be
+  prevented on a device the attacker fully controls.
 - **Password changes and restores are atomic.** Changing the master password
   re-encrypts every credential, and a cloud restore writes credentials, in
   the same IndexedDB transaction as the vault config and authenticator

@@ -11,22 +11,66 @@
 //! short cause (an error class, an HTTP status, Google's error *reason*).
 //! Never recorded: secrets, tokens, file contents, URLs, account names. The
 //! callers pass causes only, and every line is stripped of control
-//! characters and capped.
+//! characters and capped. The webview may add at most 30 lines a minute,
+//! so a misbehaving page can't flush the useful lines out of the log.
+//! Panics are recorded by source location, plus the message only when it
+//! is a fixed string from the code.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Mutex, MutexGuard, OnceLock, TryLockError};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::Manager;
 
 const MAX_BYTES: u64 = 256 * 1024;
 const MAX_LINE_CHARS: usize = 300;
 const REPORT_LINES: usize = 200;
+/// Lines the webview may record per minute; the rest are only counted.
+const UI_RECORDS_PER_WINDOW: u32 = 30;
+const UI_WINDOW: Duration = Duration::from_secs(60);
+/// Longest panic payload kept (only `&'static str` payloads, from code).
+const PANIC_MESSAGE_CHARS: usize = 120;
 
 static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
+static UI_BUDGET: Mutex<UiBudget> = Mutex::new(UiBudget {
+    window_start: None,
+    used: 0,
+    dropped: 0,
+});
+
+/// Fixed-window budget for UI records.
+struct UiBudget {
+    window_start: Option<Instant>,
+    used: u32,
+    dropped: u32,
+}
+
+impl UiBudget {
+    /// `Some(n)` when a record may be written now — `n` lines were dropped
+    /// in the previous window and should be summarised first — or `None`
+    /// when this one is dropped.
+    fn admit(&mut self, now: Instant) -> Option<u32> {
+        let expired = match self.window_start {
+            Some(start) => now.saturating_duration_since(start) >= UI_WINDOW,
+            None => true,
+        };
+        let mut dropped_before = 0;
+        if expired {
+            dropped_before = std::mem::take(&mut self.dropped);
+            self.window_start = Some(now);
+            self.used = 0;
+        }
+        if self.used >= UI_RECORDS_PER_WINDOW {
+            self.dropped = self.dropped.saturating_add(1);
+            return None;
+        }
+        self.used += 1;
+        Some(dropped_before)
+    }
+}
 
 /// Resolve the log file under the app's log directory. Called once at setup.
 pub fn init(app: &tauri::App) {
@@ -74,8 +118,14 @@ fn timestamp(secs: u64) -> String {
 
 /// Append one line. Best effort: diagnostics must never break the app.
 pub fn record(source: &str, cause: &str) {
+    // A panic elsewhere while holding the lock poisons it; logging goes on.
+    let guard = WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    append(&guard, source, cause);
+}
+
+/// Write one line; `_guard` proves the caller holds WRITE_LOCK.
+fn append(_guard: &MutexGuard<'_, ()>, source: &str, cause: &str) {
     let Some(path) = LOG_PATH.get() else { return };
-    let Ok(_guard) = WRITE_LOCK.lock() else { return };
     if fs::metadata(path).map(|m| m.len() > MAX_BYTES).unwrap_or(false) {
         let _ = fs::rename(path, path.with_extension("log.1"));
     }
@@ -94,9 +144,48 @@ pub fn record(source: &str, cause: &str) {
     }
 }
 
+/// Record panics (audit observability): where, and a code-supplied message
+/// at most. A formatted message could carry user data, so only static
+/// `&str` payloads are kept. Then the previous hook runs as before.
+pub fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let location = info
+            .location()
+            .map(|at| format!("{}:{}", at.file(), at.line()))
+            .unwrap_or_else(|| "unknown location".to_string());
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|text| clean(text, PANIC_MESSAGE_CHARS))
+            .unwrap_or_else(|| "(message withheld)".to_string());
+        // Never block here: the panicking thread may hold the lock already.
+        let guard = match WRITE_LOCK.try_lock() {
+            Ok(guard) => Some(guard),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => None,
+        };
+        if let Some(guard) = guard {
+            append(&guard, "panic", &format!("{location} {message}"));
+        }
+        previous(info);
+    }));
+}
+
 /// The webview records UI-side failures (error tokens, never content).
+/// At most 30 lines a minute; drops are counted into one summary line.
 #[tauri::command]
 pub fn diagnostics_record(source: String, cause: String) -> Result<(), String> {
+    let admitted = UI_BUDGET
+        .lock()
+        .ok()
+        .and_then(|mut budget| budget.admit(Instant::now()));
+    let Some(dropped) = admitted else {
+        return Ok(());
+    };
+    if dropped > 0 {
+        record("ui", &format!("{dropped} more UI lines dropped (rate limit)"));
+    }
     record(&format!("ui:{}", clean(&source, 16)), &cause);
     Ok(())
 }
@@ -129,5 +218,24 @@ mod tests {
     fn strips_control_characters_and_caps_length() {
         assert_eq!(clean("a\nb\tc\u{7}", 10), "abc");
         assert_eq!(clean(&"x".repeat(500), 300).len(), 300);
+    }
+
+    #[test]
+    fn rate_limits_ui_records_and_counts_the_drops() {
+        let start = Instant::now();
+        let mut budget = UiBudget {
+            window_start: None,
+            used: 0,
+            dropped: 0,
+        };
+        for _ in 0..UI_RECORDS_PER_WINDOW {
+            assert_eq!(budget.admit(start), Some(0));
+        }
+        for _ in 0..5 {
+            assert_eq!(budget.admit(start + Duration::from_secs(59)), None);
+        }
+        // The next window reports the five dropped lines once.
+        assert_eq!(budget.admit(start + UI_WINDOW), Some(5));
+        assert_eq!(budget.admit(start + UI_WINDOW), Some(0));
     }
 }

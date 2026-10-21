@@ -223,7 +223,8 @@ describe("backup round-trip", () => {
     const parsedRaw = JSON.parse(json) as Record<string, { hash: string; index: number; type: string; encrypted: boolean }>;
     for (const [key, value] of Object.entries(parsedRaw)) {
       expect(key).toBe(value.hash);
-      expect(key).toMatch(/^[0-9a-f]{64}$/); // SHA-256 hex of the secret
+      // A random id, not a hash of the secret (which would sit next to it).
+      expect(key).toMatch(/^[0-9a-f-]{36}$/);
       expect(value.encrypted).toBe(false);
     }
     expect(Object.values(parsedRaw).some((v) => v.type === "battle")).toBe(true);

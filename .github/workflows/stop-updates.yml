@@ -1,0 +1,119 @@
+name: Stop in-app updates
+
+# Kill switch (docs/runbooks/bad-release.md, step 1). Deletes BOTH copies of
+# the in-app update manifest, in the order installed copies try them
+# (src-tauri/tauri.conf.json → plugins.updater.endpoints):
+#   1. coretools/releases/updater.json in jaychandra1/artifacts' repository
+#      tree (served by raw.githubusercontent.com, cached up to ~5 minutes);
+#   2. the updater.json asset of the coretools-latest release.
+# Deleting only one of them changes nothing for installed copies: they fall
+# back to the other. With neither, **Update now** finds nothing to install;
+# update notifications (latest.json) and the website's downloads keep
+# working, and nothing else is touched.
+#
+# The next Release or "Promote or roll back latest" run writes updater.json
+# again — that is how updates resume (roll back, or fix forward).
+#
+# Not in the coretools-release concurrency group on purpose: a release
+# paused for approval holds that group, and stopping updates must not wait
+# behind it. Reject or cancel such a release too, or it may publish a new
+# updater.json after this run. Needs ARTIFACTS_REPO_TOKEN; when that token
+# is revoked (release-pipeline-compromise.md), use the runbook's commands
+# with your own credentials instead.
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: One line for the commit in jaychandra1/artifacts, e.g. "v1.2.7 breaks unlock"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coretools-stop-updates
+  cancel-in-progress: false
+
+jobs:
+  stop:
+    name: Delete both updater.json copies
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      ARTIFACTS_REPO: jaychandra1/artifacts
+      MANIFEST: coretools/releases/updater.json
+      LATEST_TAG: coretools-latest
+    steps:
+      - name: Publishing token is set and valid
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACTS_REPO_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::The ARTIFACTS_REPO_TOKEN secret is missing — delete both copies by hand (docs/runbooks/bad-release.md, step 1)."
+            exit 1
+          fi
+          if ! gh api "repos/${ARTIFACTS_REPO}" --jq .full_name >/dev/null; then
+            echo "::error::ARTIFACTS_REPO_TOKEN was rejected — delete both copies by hand (docs/runbooks/bad-release.md, step 1)."
+            exit 1
+          fi
+
+      # The first endpoint installed copies try. The contents API commits the
+      # deletion straight to main; no clone, the token stays in the header.
+      - name: Delete coretools/releases/updater.json (repository tree)
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACTS_REPO_TOKEN }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          if ! sha=$(gh api "repos/${ARTIFACTS_REPO}/contents/${MANIFEST}?ref=main" --jq .sha 2>"$RUNNER_TEMP/err"); then
+            if grep -q 'HTTP 404' "$RUNNER_TEMP/err"; then
+              echo "${MANIFEST} is already gone."
+              exit 0
+            fi
+            cat "$RUNNER_TEMP/err" >&2
+            exit 1
+          fi
+          message="CoreTools: stop in-app updates"
+          if [ -n "$REASON" ]; then message="${message} — ${REASON}"; fi
+          gh api -X DELETE "repos/${ARTIFACTS_REPO}/contents/${MANIFEST}" \
+            -f message="$message" -f sha="$sha" -f branch=main --jq .commit.html_url
+          echo "Deleted ${MANIFEST}."
+
+      # The fallback endpoint.
+      - name: Delete updater.json from coretools-latest
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACTS_REPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh release view "$LATEST_TAG" --repo "$ARTIFACTS_REPO" --json assets --jq '.assets[].name' | grep -qx updater.json; then
+            gh release delete-asset "$LATEST_TAG" updater.json --repo "$ARTIFACTS_REPO" --yes
+            echo "Deleted updater.json from ${LATEST_TAG}."
+          else
+            echo "${LATEST_TAG} has no updater.json."
+          fi
+
+      # The release asset answers 404 at once; raw.githubusercontent.com may
+      # keep serving its cached copy for a few minutes.
+      - name: Check both endpoints
+        run: |
+          set -uo pipefail
+          raw="https://raw.githubusercontent.com/${ARTIFACTS_REPO}/main/${MANIFEST}"
+          asset="https://github.com/${ARTIFACTS_REPO}/releases/download/${LATEST_TAG}/updater.json"
+          raw_status=$(curl -s -o /dev/null -w '%{http_code}' -H 'Cache-Control: no-cache' "$raw")
+          asset_status=$(curl -sL -o /dev/null -w '%{http_code}' "$asset")
+          {
+            echo "### In-app updates stopped"
+            echo "- \`${MANIFEST}\` (tree, tried first): HTTP ${raw_status}"
+            echo "- \`${LATEST_TAG}/updater.json\` (release asset): HTTP ${asset_status}"
+            echo "- The release canary now reports updater.json as missing until the next release or promote run writes it again."
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$asset_status" != "404" ]; then
+            echo "::error::${asset} still answers HTTP ${asset_status}."
+            exit 1
+          fi
+          if [ "$raw_status" != "404" ]; then
+            echo "::warning::${raw} still answers HTTP ${raw_status} — raw.githubusercontent.com caches for up to ~5 minutes; check again shortly."
+          fi

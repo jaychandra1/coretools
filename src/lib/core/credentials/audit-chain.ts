@@ -13,11 +13,16 @@
  * deleting the whole log, or rolling log + head back together to an older
  * copy; verification reports what it can prove and nothing more.
  *
+ * The one-time migration of a pre-1.2 plaintext log (credentials.svelte.ts
+ * `#sealLegacyAudit`) runs only on a log that has no sealed record and no
+ * head; an unsealed record planted into a sealed log is reported as
+ * tampering, never re-sealed (audit S-4).
+ *
  * Pruning drops the oldest records beyond AUDIT_LIMIT; the chain is then
  * verified from the oldest record kept.
  */
 
-import type { AuditAction, AuditEvent, StoredAuditEvent } from "./types";
+import { AUDIT_LIMIT, type AuditAction, type AuditEvent, type StoredAuditEvent } from "./types";
 import type { EncryptedBlob } from "../authenticator/vault-crypto";
 import { sha256Hex } from "../authenticator/vault-crypto";
 
@@ -118,6 +123,12 @@ export async function openChain(
     return head && head.seq >= 0
       ? tampered("records were deleted")
       : { events, status: { state: "verified", count: 0, head } };
+  }
+
+  // Pruning only ever keeps exactly AUDIT_LIMIT records, so a shorter log
+  // must still start at the first position.
+  if (chained.length < AUDIT_LIMIT && chained[0].seq !== 0) {
+    return tampered("the oldest records were removed");
   }
 
   let previous: StoredAuditEvent | null = null;

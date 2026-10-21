@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { openChain, sealEvents, sealHead, type ChainCrypto } from "./audit-chain";
-import type { AuditEvent, StoredAuditEvent } from "./types";
+import { AUDIT_LIMIT, type AuditEvent, type StoredAuditEvent } from "./types";
 import { decryptString, encryptString, importVaultKey, randomBytes } from "../authenticator/vault-crypto";
 
 let crypto: ChainCrypto;
@@ -81,9 +81,16 @@ describe("audit chain", () => {
   });
 
   it("stays verifiable after the oldest records are pruned", async () => {
+    // Pruning always keeps exactly AUDIT_LIMIT records.
+    const { records, sealedHead } = await chainOf(AUDIT_LIMIT + 2);
+    const { status } = await openChain(records.slice(2), sealedHead, crypto);
+    expect(status).toMatchObject({ state: "verified", count: AUDIT_LIMIT });
+  }, 60_000); // seals and opens ~AUDIT_LIMIT records: slow when the suite runs in parallel
+
+  it("notices the oldest records of a short log were deleted", async () => {
     const { records, sealedHead } = await chainOf(6);
     const { status } = await openChain(records.slice(2), sealedHead, crypto);
-    expect(status).toMatchObject({ state: "verified", count: 4 });
+    expect(status).toMatchObject({ state: "tampered", reason: "the oldest records were removed" });
   });
 
   it("refuses a log sealed under another key, and plaintext records", async () => {

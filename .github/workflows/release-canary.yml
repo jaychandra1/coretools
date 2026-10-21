@@ -1,0 +1,57 @@
+name: Release canary
+
+# Observability for the release pipeline (audit H3), read-only. Every six
+# hours scripts/release-canary.mjs checks that:
+#   - coretools/releases/latest.json names the newest v* tag of this
+#     repository (a new tag gets 6 hours to be built, approved and
+#     published; a version whose release notes say "Withdrawn", or one listed
+#     in the RELEASE_CANARY_IGNORE_VERSIONS repository variable, is skipped);
+#   - every download in latest.json answers 200 with the listed size on both
+#     coretools-latest and coretools-v<version>, and coretools-latest's
+#     SHA256SUMS.txt matches latest.json — the stable links really serve the
+#     newest files;
+#   - coretools-latest/updater.json (polled by installed copies) exists when
+#     that release was signed for in-app updates, and offers exactly that
+#     version — never a withdrawn build;
+#   - https://coretools-chi.vercel.app/ and /app/ answer 200.
+# Any problem fails the run, and GitHub emails a failed scheduled run to
+# whoever last changed this file's schedule (the maintainer). An external
+# uptime monitor still watches the site from outside GitHub (DEPLOYMENT.md).
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read # list this repository's v* tags; nothing is written
+
+concurrency:
+  group: release-canary
+  cancel-in-progress: true
+
+jobs:
+  canary:
+    name: Published release is the newest, whole and consistent
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout (scripts)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Check the published release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          ARTIFACTS_REPO: jaychandra1/artifacts
+          APP: coretools
+          SITE_URL: https://coretools-chi.vercel.app
+          GRACE_HOURS: "6"
+          IGNORE_VERSIONS: ${{ vars.RELEASE_CANARY_IGNORE_VERSIONS }}
+        run: node scripts/release-canary.mjs

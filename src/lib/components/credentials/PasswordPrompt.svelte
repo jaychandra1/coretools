@@ -1,12 +1,16 @@
 <script lang="ts">
   import Modal from "../authenticator/Modal.svelte";
+  import { focusOnMount } from "../../focus";
 
   let {
     onsubmit,
     oncancel,
+    reason = "Enter your master password to show or copy saved passwords.",
   }: {
     onsubmit: (password: string) => void;
     oncancel: () => void;
+    /** What the password unlocks, shown above the field. */
+    reason?: string;
   } = $props();
 
   let password = $state("");
@@ -19,18 +23,15 @@
 
 <Modal title="Confirm it's you" onclose={oncancel}>
   <form onsubmit={submit}>
-    <p class="muted">
-      Enter your master password to show or copy saved passwords. You won't be
-      asked again for a minute.
-    </p>
-    <!-- svelte-ignore a11y_autofocus -->
+    <p class="muted">{reason} You won't be asked again for a minute.</p>
+    <!-- autocomplete off: browsers shouldn't save, or fill in, the master password (L8). -->
     <input
       type="password"
       bind:value={password}
       placeholder="Master password"
-      autocomplete="current-password"
+      autocomplete="off"
       aria-label="Master password"
-      autofocus
+      {@attach focusOnMount}
     />
     <div class="actions">
       <button type="button" onclick={oncancel}>Cancel</button>

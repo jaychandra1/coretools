@@ -10,6 +10,7 @@
  */
 
 import { parseAllDocuments, stringify } from "yaml";
+import { hasOwn, setOwn } from "./own";
 
 export interface OptimizeChange {
   /** Dotted path of the affected field, e.g. `metadata.creationTimestamp`. */
@@ -141,7 +142,7 @@ function clean(
       }
     }
 
-    result[key] = cleaned;
+    setOwn(result, key, cleaned);
   }
 
   return result;
@@ -381,10 +382,10 @@ function orderKeys(
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const key of priority) {
-    if (key in obj) out[key] = obj[key];
+    if (hasOwn(obj, key)) setOwn(out, key, obj[key]);
   }
   for (const [key, value] of Object.entries(obj)) {
-    if (!(key in out)) out[key] = value;
+    if (!hasOwn(out, key)) setOwn(out, key, value);
   }
   return out;
 }
@@ -637,7 +638,7 @@ function stripAllAnnotations(
       });
       continue;
     }
-    out[key] = stripAllAnnotations(raw, childPath, changes, key);
+    setOwn(out, key, stripAllAnnotations(raw, childPath, changes, key));
   }
   return out;
 }

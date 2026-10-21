@@ -13,6 +13,29 @@
 //!
 //! Everything is `cfg(windows)`-gated; other platforms get honest stubs so the
 //! app still builds and the feature simply reports "unavailable".
+//!
+//! The WinRT calls block (`.get()`) until the user answers the Windows Hello
+//! prompt, so they run on a blocking-pool worker thread, never on the main
+//! (UI) thread, whose window would otherwise freeze meanwhile (audit M7).
+//! Those threads have no STA; windows-rs joins the MTA on first use, which
+//! is where blocking on WinRT operations is allowed.
+
+/// HRESULTs `DeleteAsync` reports for a key that doesn't exist: nothing to
+/// delete, so disabling Hello is idempotent (audit L8 — matched by code, not
+/// by the localized error text).
+#[cfg(any(windows, test))]
+const MISSING_KEY_HRESULTS: [u32; 5] = [
+    0x8007_0002, // HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)
+    0x8007_0490, // HRESULT_FROM_WIN32(ERROR_NOT_FOUND): "Element not found."
+    0x8009_000D, // NTE_NO_KEY
+    0x8009_0011, // NTE_NOT_FOUND
+    0x8009_0016, // NTE_BAD_KEYSET
+];
+
+#[cfg(any(windows, test))]
+fn is_missing_key(hresult: i32) -> bool {
+    MISSING_KEY_HRESULTS.contains(&(hresult as u32))
+}
 
 /// Name under which the Hello key pair is registered for this app.
 #[cfg(windows)]
@@ -170,26 +193,32 @@ mod imp {
         match KeyCredentialManager::DeleteAsync(&HSTRING::from(KEY_NAME)) {
             Ok(op) => match op.get() {
                 Ok(()) => Ok(()),
-                Err(e) => {
-                    let message = e.to_string();
-                    if message.contains("not found") || message.contains("NotFound") {
-                        Ok(())
-                    } else {
-                        Err(message)
-                    }
-                }
+                Err(e) if super::is_missing_key(e.code().0) => Ok(()),
+                Err(e) => Err(e.to_string()),
             },
             Err(e) => Err(e.to_string()),
         }
     }
 }
 
+/// Run a blocking Hello call on the blocking pool (see the module docs).
+#[cfg(windows)]
+async fn off_main_thread<T, F>(work: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|_| "hello_failed".to_string())?
+}
+
 /// Whether Windows Hello (biometrics or PIN) is set up on this device.
 #[tauri::command]
-pub fn hello_available() -> Result<bool, String> {
+pub async fn hello_available() -> Result<bool, String> {
     #[cfg(windows)]
     {
-        imp::available()
+        off_main_thread(imp::available).await
     }
     #[cfg(not(windows))]
     {
@@ -199,13 +228,13 @@ pub fn hello_available() -> Result<bool, String> {
 
 /// Enable-time: create/replace the Hello key and sign the enrollment challenge.
 #[tauri::command]
-pub fn hello_create_key(challenge: Vec<u8>) -> Result<Vec<u8>, String> {
+pub async fn hello_create_key(challenge: Vec<u8>) -> Result<Vec<u8>, String> {
     if challenge.is_empty() || challenge.len() > 128 {
         return Err("Invalid challenge".into());
     }
     #[cfg(windows)]
     {
-        imp::create_and_sign(&challenge)
+        off_main_thread(move || imp::create_and_sign(&challenge)).await
     }
     #[cfg(not(windows))]
     {
@@ -215,13 +244,13 @@ pub fn hello_create_key(challenge: Vec<u8>) -> Result<Vec<u8>, String> {
 
 /// Unlock-time: sign the stored challenge (OS shows the Hello prompt).
 #[tauri::command]
-pub fn hello_sign(challenge: Vec<u8>) -> Result<Vec<u8>, String> {
+pub async fn hello_sign(challenge: Vec<u8>) -> Result<Vec<u8>, String> {
     if challenge.is_empty() || challenge.len() > 128 {
         return Err("Invalid challenge".into());
     }
     #[cfg(windows)]
     {
-        imp::open_and_sign(&challenge)
+        off_main_thread(move || imp::open_and_sign(&challenge)).await
     }
     #[cfg(not(windows))]
     {
@@ -232,10 +261,10 @@ pub fn hello_sign(challenge: Vec<u8>) -> Result<Vec<u8>, String> {
 /// Cloud-restore gate: Windows verifies the user (biometric/PIN prompt).
 /// Never touches the unlock key; rejects unless verification succeeds.
 #[tauri::command]
-pub fn hello_verify_user() -> Result<(), String> {
+pub async fn hello_verify_user() -> Result<(), String> {
     #[cfg(windows)]
     {
-        imp::verify_user()
+        off_main_thread(imp::verify_user).await
     }
     #[cfg(not(windows))]
     {
@@ -245,13 +274,28 @@ pub fn hello_verify_user() -> Result<(), String> {
 
 /// Disable-time: remove the app's Hello key. Idempotent.
 #[tauri::command]
-pub fn hello_delete_key() -> Result<(), String> {
+pub async fn hello_delete_key() -> Result<(), String> {
     #[cfg(windows)]
     {
-        imp::delete()
+        off_main_thread(imp::delete).await
     }
     #[cfg(not(windows))]
     {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognises_missing_key_errors_by_code() {
+        // HRESULTs are negative as i32; compare through their bit pattern.
+        assert!(is_missing_key(0x8007_0490_u32 as i32));
+        assert!(is_missing_key(0x8009_0016_u32 as i32));
+        assert!(!is_missing_key(0x8007_0005_u32 as i32)); // E_ACCESSDENIED
+        assert!(!is_missing_key(0x8000_4005_u32 as i32)); // E_FAIL
+        assert!(!is_missing_key(0));
     }
 }

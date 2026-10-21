@@ -7,6 +7,9 @@ import type { Platform, LoadedFile } from "./types";
  * in-memory File API — nothing is persisted. Saving triggers a standard blob
  * download, which is the browser's own explicit "save" gesture.
  */
+/** The same limit as the desktop app's read_text_file (L7). */
+const MAX_READ_BYTES = 50 * 1024 * 1024;
+
 export const browserPlatform: Platform = {
   kind: "browser",
 
@@ -17,7 +20,7 @@ export const browserPlatform: Platform = {
   },
 
   openTextFile(): Promise<LoadedFile | null> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const input = document.createElement("input");
       input.type = "file";
       input.style.display = "none";
@@ -26,6 +29,9 @@ export const browserPlatform: Platform = {
         const file = input.files?.[0];
         input.remove();
         if (!file) return resolve(null);
+        if (file.size > MAX_READ_BYTES) {
+          return reject(new Error("That file is too large to open here (over 50 MB)."));
+        }
         try {
           const content = await file.text();
           resolve({ name: file.name, content });

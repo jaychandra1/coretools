@@ -11,7 +11,7 @@
  * migration.ts.
  */
 
-import { DEFAULTS, type OtpAlgorithm, type OtpType, type ParsedAccount } from "./types";
+import { DEFAULTS, otpParamsError, type OtpAlgorithm, type OtpType, type ParsedAccount } from "./types";
 import { isValidBase32, normalizeBase32 } from "./base32";
 
 function parseAlgorithm(value: string | null): OtpAlgorithm {
@@ -87,7 +87,7 @@ export function parseOtpAuthUri(uri: string): ParsedAccount {
     throw new Error(`Unsupported otpauth type "${scheme}"`);
   }
 
-  return {
+  const parsed: ParsedAccount = {
     type,
     issuer,
     account,
@@ -97,6 +97,9 @@ export function parseOtpAuthUri(uri: string): ParsedAccount {
     period: parseIntOr(params.get("period"), DEFAULTS.period),
     counter: parseIntOr(params.get("counter"), 0),
   };
+  const problem = otpParamsError(parsed);
+  if (problem) throw new Error(problem);
+  return parsed;
 }
 
 /**

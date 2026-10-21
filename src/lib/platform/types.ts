@@ -68,6 +68,8 @@ export interface CloudBridge {
     content: string;
     deviceId: string;
     deviceLabel: string;
+    /** Records in the file, kept with it so shrinkage is visible without opening it (D-5). */
+    records: number;
   }): Promise<RemoteBackup>;
   download(id: string): Promise<string>;
   remove(id: string): Promise<void>;
@@ -102,6 +104,11 @@ export interface Platform {
   readonly updates?: UpdateBridge;
   /** Local diagnostics log (F-16). Desktop only. */
   readonly diagnostics?: DiagnosticsBridge;
+  /**
+   * Tell the host the QR scanner is (or stops) using the camera, so camera
+   * access is granted only while it is open (L1). Desktop only.
+   */
+  armCamera?(armed: boolean): Promise<void>;
 }
 
 /**
@@ -125,6 +132,13 @@ export interface UpdateInfo {
   security: boolean;
   /** This platform's installer, straight from the release; null when not listed. */
   downloadUrl: string | null;
+  /**
+   * Staged rollout: the share of installs (1–100) offered this release so
+   * far; null = everyone.
+   */
+  rollout: number | null;
+  /** The release index asks clients to check no more often than this; null = no hint. */
+  checkAfterHours: number | null;
 }
 
 /** Progress of an in-app update, as it downloads and then installs. */

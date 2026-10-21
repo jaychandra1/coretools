@@ -1,0 +1,421 @@
+name: Release dry run
+
+# On demand: everything release.yml does up to publishing, and nothing that
+# publishes. Run it after changing the release pipeline, the Tauri CLI, the
+# Rust toolchain or the bundling config — Actions → "Release dry run" → Run
+# workflow (on master, or on the branch under test).
+#
+#   - builds all three platforms with release.yml's build steps (unsigned:
+#     no code-signing credentials, no Google OAuth client — the build then
+#     reports cloud backup as not configured, exactly as release.yml does
+#     without those secrets), with in-app updates switched on;
+#   - generates the CycloneDX SBOM as release.yml does;
+#   - signs the update files with a THROWAWAY updater key generated in this
+#     run (`tauri signer generate --ci`), compiled into these builds and
+#     trusted by nothing else, then runs scripts/verify-update-signature.mjs
+#     and scripts/updater-manifest.mjs on them exactly as sign-updates and
+#     publish do;
+#   - writes SHA256SUMS.txt over every file the release would publish, and
+#     the release notes and index (scripts/artifacts-release.mjs) into a
+#     scratch directory.
+#
+# Publishes NOTHING: no secrets, no publishing token, no Sigstore signature,
+# no `release` environment; this repository's token is read-only. The
+# outputs are workflow artifacts kept for one day. Keep the build job in step
+# with release.yml's (only its signing steps and secrets are left out).
+#
+# No build cache is restored, as in release.yml.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-dry-run-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  keygen:
+    # The throwaway key pair: the public half is compiled into the builds
+    # below (like TAURI_UPDATER_PUBKEY), the private half and its random
+    # password reach the sign job as a one-day artifact. It signs only this
+    # run's files and no installed copy trusts it.
+    name: Throwaway updater key
+    runs-on: ubuntu-latest
+    outputs:
+      pubkey: ${{ steps.key.outputs.pubkey }}
+      version: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Checkout (package-lock.json)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install the Tauri CLI (lockfile-exact, no install scripts)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Resolve version
+        id: version
+        run: echo "value=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Generate the throwaway key pair
+        id: key
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/dry-run-key"
+          openssl rand -hex 24 > "$RUNNER_TEMP/dry-run-key/password.txt"
+          node_modules/.bin/tauri signer generate --ci \
+            -w "$RUNNER_TEMP/dry-run-key/updater.key" \
+            -p "$(cat "$RUNNER_TEMP/dry-run-key/password.txt")" > /dev/null
+          pubkey=$(tr -d '\r\n' < "$RUNNER_TEMP/dry-run-key/updater.key.pub")
+          node scripts/verify-update-signature.mjs --pubkey "$pubkey" --check-key
+          echo "pubkey=${pubkey}" >> "$GITHUB_OUTPUT"
+
+      - name: Hand the throwaway key to the sign job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dry-run-throwaway-updater-key
+          path: ${{ runner.temp }}/dry-run-key/
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: keygen
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # As in release.yml.
+          - platform: windows-latest
+            args: ""
+            bundles: "--bundles nsis"
+            rust_targets: ""
+            glob: "src-tauri/target/release/bundle/nsis/*-setup.exe"
+            out: CoreTools-Windows-Setup.exe
+          - platform: macos-latest
+            args: "--target universal-apple-darwin"
+            bundles: ""
+            rust_targets: "aarch64-apple-darwin x86_64-apple-darwin"
+            glob: "src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg"
+            out: CoreTools-macOS.dmg
+          - platform: ubuntu-22.04
+            args: "--verbose"
+            bundles: "--bundles appimage"
+            rust_targets: ""
+            glob: "src-tauri/target/release/bundle/appimage/*.AppImage"
+            out: CoreTools-Linux.AppImage
+
+    runs-on: ${{ matrix.platform }}
+
+    env:
+      TAURI_ARGS: ${{ matrix.args }}
+      TAURI_BUNDLES: ${{ matrix.bundles }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Set up Rust
+        shell: bash
+        env:
+          RUST_TARGETS: ${{ matrix.rust_targets }}
+        run: bash scripts/setup-rust.sh $RUST_TARGETS
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libgtk-3-dev \
+            libdbus-1-dev \
+            pkg-config \
+            libfuse2 \
+            file \
+            xdg-utils
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Cargo.lock is committed and current
+        working-directory: src-tauri
+        shell: bash
+        run: |
+          if [ ! -f Cargo.lock ]; then
+            echo "::error::src-tauri/Cargo.lock is not committed (audit S-3) — a release would refuse to run."
+            exit 1
+          fi
+          cargo metadata --locked --format-version 1 > /dev/null
+
+      - name: Generate app icons
+        run: npm run icon
+
+      - name: Updater configuration (throwaway public key)
+        shell: bash
+        env:
+          PUBKEY: ${{ needs.keygen.outputs.pubkey }}
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const path = require("path");
+            const pubkey = process.argv[1].trim();
+            fs.writeFileSync(path.join(process.env.RUNNER_TEMP, "tauri.updater.json"), JSON.stringify({ plugins: { updater: { pubkey } } }));
+          ' "$PUBKEY"
+
+      - name: Build the desktop app
+        shell: bash
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -eo pipefail
+          cfg() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
+          args=()
+          if [ -n "$TAURI_ARGS" ]; then read -r -a args <<< "$TAURI_ARGS"; fi
+          args+=(--config "$(cfg "$RUNNER_TEMP/tauri.updater.json")")
+          if [ -n "$TAURI_BUNDLES" ]; then
+            read -r -a bundles <<< "$TAURI_BUNDLES"
+            args+=("${bundles[@]}")
+          fi
+          npm run tauri build -- "${args[@]}" -- --locked
+
+      - name: Collect the installer under its stable asset name
+        shell: bash
+        env:
+          GLOB: ${{ matrix.glob }}
+          OUT: ${{ matrix.out }}
+        run: |
+          set -eo pipefail
+          mkdir -p staging
+          # GLOB comes from the matrix above; left unquoted so it expands.
+          src=$(ls $GLOB | head -n 1)
+          echo "Found installer: $src"
+          cp "$src" "staging/$OUT"
+
+      - name: Update archive (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          set -euo pipefail
+          app=$(ls -d src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app | head -n 1)
+          name=$(basename "$app")
+          archive=staging/CoreTools-macOS.app.tar.gz
+          COPYFILE_DISABLE=1 tar -C "$(dirname "$app")" -czf "$archive" "$name"
+          if tar -tzf "$archive" | awk -v top="$name" 'index($0, top) != 1 || /(^|\/)\._/ { bad = 1 } END { exit !bad }'; then
+            echo "::error::$archive has entries outside $name/ or AppleDouble files."
+            exit 1
+          fi
+          ls -l "$archive"
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ matrix.out }}
+          path: staging/
+          if-no-files-found: error
+          retention-days: 1
+
+  sbom:
+    name: SBOM (CycloneDX — npm + Rust)
+    needs: keygen
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Set up Rust
+        run: bash scripts/setup-rust.sh
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --version 0.5.9 --locked
+
+      - name: Rust dependency set
+        working-directory: src-tauri
+        run: cargo metadata --locked --format-version 1 > /dev/null
+
+      - name: Rust SBOM (all target platforms)
+        working-directory: src-tauri
+        run: cargo cyclonedx --format json --spec-version 1.5 --target all --override-filename rust-sbom
+
+      - name: npm SBOM (package-lock.json)
+        run: npm sbom --sbom-format cyclonedx --sbom-type application --package-lock-only > "$RUNNER_TEMP/npm-sbom.json"
+
+      - name: Merge into the release SBOM
+        env:
+          VERSION: ${{ needs.keygen.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p staging
+          node scripts/sbom-merge.mjs --name CoreTools --version "$VERSION" \
+            --npm "$RUNNER_TEMP/npm-sbom.json" --cargo src-tauri/rust-sbom.json \
+            --cargo-lock committed --out staging/CoreTools-sbom.cdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: CoreTools-sbom.cdx.json
+          path: staging/CoreTools-sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 1
+
+  assemble:
+    # sign-updates + the publish job's file preparation, minus publishing.
+    name: Sign, verify and assemble (nothing is published)
+    needs: [keygen, build, sbom]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.keygen.outputs.version }}
+      PUBKEY: ${{ needs.keygen.outputs.pubkey }}
+    steps:
+      - name: Checkout (package-lock.json + scripts + changelog)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install the Tauri CLI (lockfile-exact, no install scripts)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Download the installers and the SBOM
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: CoreTools-*
+          path: incoming
+          merge-multiple: true
+
+      - name: Download the throwaway key
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dry-run-throwaway-updater-key
+          path: ${{ runner.temp }}/dry-run-key
+
+      - name: Require all three installers, the macOS update archive and the SBOM
+        run: |
+          set -e
+          ls -lh incoming
+          for f in CoreTools-Windows-Setup.exe CoreTools-macOS.dmg CoreTools-macOS.app.tar.gz CoreTools-Linux.AppImage CoreTools-sbom.cdx.json; do
+            test -f "incoming/$f" || { echo "::error::Missing $f — a release would refuse to publish"; exit 1; }
+          done
+
+      # From here on, as release.yml's sign-updates job.
+      - name: Stage version-named copies
+        run: |
+          set -euo pipefail
+          mkdir -p sign
+          cp incoming/CoreTools-Windows-Setup.exe "sign/CoreTools_${VERSION}_windows-x86_64-setup.exe"
+          cp incoming/CoreTools-macOS.app.tar.gz "sign/CoreTools_${VERSION}_darwin-universal.app.tar.gz"
+          cp incoming/CoreTools-Linux.AppImage "sign/CoreTools_${VERSION}_linux-x86_64.AppImage"
+          ls -l sign
+
+      - name: Sign the update files (throwaway key)
+        run: |
+          set -euo pipefail
+          TAURI_SIGNING_PRIVATE_KEY=$(cat "$RUNNER_TEMP/dry-run-key/updater.key")
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$(cat "$RUNNER_TEMP/dry-run-key/password.txt")
+          export TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          for file in sign/CoreTools_*; do
+            case "$file" in *.sig) continue ;; esac
+            node_modules/.bin/tauri signer sign "$file" < /dev/null
+          done
+
+      - name: Verify the signatures against the compiled-in public key
+        run: |
+          node scripts/verify-update-signature.mjs --pubkey "$PUBKEY" --version "$VERSION" \
+            "sign/CoreTools_${VERSION}_windows-x86_64-setup.exe" \
+            "sign/CoreTools_${VERSION}_darwin-universal.app.tar.gz" \
+            "sign/CoreTools_${VERSION}_linux-x86_64.AppImage"
+
+      - name: Signatures under the published file names
+        run: |
+          set -euo pipefail
+          cp "sign/CoreTools_${VERSION}_windows-x86_64-setup.exe.sig" incoming/CoreTools-Windows-Setup.exe.sig
+          cp "sign/CoreTools_${VERSION}_darwin-universal.app.tar.gz.sig" incoming/CoreTools-macOS.app.tar.gz.sig
+          cp "sign/CoreTools_${VERSION}_linux-x86_64.AppImage.sig" incoming/CoreTools-Linux.AppImage.sig
+
+      # From here on, as release.yml's publish job up to (not including)
+      # the Sigstore signature and the publish action.
+      - name: Updater manifest
+        run: |
+          set -euo pipefail
+          node scripts/changelog.mjs notes "$VERSION" > "$RUNNER_TEMP/notes.md"
+          node scripts/updater-manifest.mjs --dir incoming --version "$VERSION" \
+            --base-url "https://github.com/jaychandra1/artifacts/releases/download/coretools-v${VERSION}" \
+            --notes-file "$RUNNER_TEMP/notes.md" --require
+
+      - name: Generate SHA-256 checksums
+        working-directory: incoming
+        run: |
+          set -euo pipefail
+          if find . -mindepth 1 ! -type f | grep -q .; then
+            echo "::error::incoming/ holds something other than files:"
+            find . -mindepth 1 ! -type f
+            exit 1
+          fi
+          mapfile -t files < <(LC_ALL=C ls | grep -vx -e 'SHA256SUMS.txt' -e 'SHA256SUMS.txt.sigstore.json')
+          sha256sum -- "${files[@]}" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          sha256sum --check --strict --quiet SHA256SUMS.txt
+
+      # The publish action's notes and index, into a scratch directory
+      # instead of jaychandra1/artifacts.
+      - name: Release notes and index (scratch copy)
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/dry-run-output"
+          mkdir -p "$out/artifacts-repo"
+          node scripts/artifacts-release.mjs notes \
+            --app coretools --name CoreTools --version "$VERSION" \
+            --artifacts-repo jaychandra1/artifacts --assets-dir incoming \
+            --changelog CHANGELOG.md \
+            --signer "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml" \
+            --out "$out/release-notes.md" --latest-out "$out/latest-notes.md"
+          node scripts/artifacts-release.mjs index \
+            --app coretools --name CoreTools --version "$VERSION" \
+            --artifacts-repo jaychandra1/artifacts --assets-dir incoming \
+            --repo-dir "$out/artifacts-repo"
+          cp incoming/SHA256SUMS.txt incoming/updater.json incoming/*.sig "$out/"
+          {
+            echo "### Release dry run — v${VERSION} (nothing published)"
+            echo ""
+            echo "Built, signed with a throwaway updater key, verified, and assembled:"
+            echo ""
+            echo '```'
+            cat incoming/SHA256SUMS.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the assembled metadata
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dry-run-release-metadata
+          path: ${{ runner.temp }}/dry-run-output/
+          if-no-files-found: error
+          retention-days: 1

@@ -9,6 +9,8 @@
     type ExportableEntry,
   } from "../../core/authenticator/backup";
   import { buildOtpAuthUri } from "../../core/authenticator/otpauth";
+  import { assessPassword } from "../../core/authenticator/password-strength";
+  import PasswordStrength from "./PasswordStrength.svelte";
 
   let {
     entries,
@@ -23,15 +25,17 @@
   const platform = getPlatform();
 
   type Format = "ext-json" | "ext-json-enc" | "gcm-json" | "uris" | "qr";
-  let format = $state<Format>("ext-json");
+  // Encrypted by default: a plaintext export is a deliberate choice (S-11).
+  let format = $state<Format>("gcm-json");
   let password = $state("");
   let confirm = $state("");
   let error = $state("");
   let busy = $state(false);
 
   const needsPassword = $derived(format === "ext-json-enc" || format === "gcm-json");
+  // The file is only as strong as its password: the vault's policy applies.
   const passwordOk = $derived(
-    !needsPassword || (password.length > 0 && password === confirm),
+    !needsPassword || (assessPassword(password).ok && password === confirm),
   );
 
   function stamp(): string {
@@ -132,15 +136,15 @@
     <label>
       <input type="radio" bind:group={format} value="ext-json-enc" />
       <span>
-        <strong>Encrypted JSON (extension-compatible)</strong>
-        <span class="muted">CryptoJS/OpenSSL format the browser extension can decrypt</span>
+        <strong>Password-obscured JSON (extension-compatible)</strong>
+        <span class="muted">weak protection (the extension's MD5-based format) — only for moving accounts into the browser extension</span>
       </span>
     </label>
     <label>
       <input type="radio" bind:group={format} value="gcm-json" />
       <span>
-        <strong>Encrypted JSON (modern, this app only)</strong>
-        <span class="muted">PBKDF2 + AES-256-GCM — not readable by the extension</span>
+        <strong>Encrypted JSON (recommended, this app only)</strong>
+        <span class="muted">Argon2id + AES-256-GCM, names bound to their secrets — not readable by the extension</span>
       </span>
     </label>
     <label>
@@ -165,17 +169,18 @@
         type="password"
         bind:value={password}
         placeholder="Backup password"
-        autocomplete="new-password"
+        autocomplete="off"
         aria-label="Backup password"
       />
       <input
         type="password"
         bind:value={confirm}
         placeholder="Confirm password"
-        autocomplete="new-password"
+        autocomplete="off"
         aria-label="Confirm backup password"
       />
     </div>
+    <PasswordStrength {password} />
     {#if password && confirm && password !== confirm}
       <p class="error">Passwords do not match.</p>
     {/if}

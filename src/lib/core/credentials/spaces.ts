@@ -10,6 +10,7 @@
 
 import type { CredentialFields } from "./types";
 import { moveTo } from "./order";
+import { nameHue } from "../hue";
 
 export const SPACE_NAME_MAX = 40;
 
@@ -98,9 +99,7 @@ export function inSpace<T extends Pick<CredentialFields, "space">>(items: readon
   return space ? items.filter((i) => i.space === space) : [...items];
 }
 
-/** A stable hue (0–359) per space name, so its tab dot keeps its colour. */
+/** A stable hue per space name, whatever its case, so its tab dot keeps its colour. */
 export function spaceHue(name: string): number {
-  let hash = 0;
-  for (const char of name.toLowerCase()) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
-  return hash % 360;
+  return nameHue(name.toLowerCase());
 }

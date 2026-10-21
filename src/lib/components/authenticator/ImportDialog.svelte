@@ -105,8 +105,13 @@
   }
 
   async function openFile() {
-    const file = await platform.openTextFile();
-    if (file) analyzeText(file.content);
+    error = "";
+    try {
+      const file = await platform.openTextFile();
+      if (file) analyzeText(file.content);
+    } catch (e) {
+      error = e instanceof Error ? e.message : "Couldn't open the file";
+    }
   }
 
   async function onQrImageChosen(event: Event) {

@@ -75,10 +75,14 @@
   }
 
   async function openFile() {
-    const file = await platform.openTextFile();
-    if (!file) return;
-    studioStore.setDocText(file.content);
-    showToast(`Loaded ${file.name}`);
+    try {
+      const file = await platform.openTextFile();
+      if (!file) return;
+      studioStore.setDocText(file.content);
+      showToast(`Loaded ${file.name}`);
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "Couldn't open the file");
+    }
   }
 
   async function saveFile() {

@@ -62,6 +62,8 @@ export async function hotpRaw(
   digits = 6,
   algorithm: OtpAlgorithm = "SHA1",
 ): Promise<string> {
+  // Last line of defence behind otpParamsError: never build a huge string.
+  if (!Number.isInteger(digits) || digits < 5 || digits > 10) throw new Error("Unsupported digits");
   const digest = await hmac(algorithm, keyBytes, counterBytes(counter));
   const code = truncate(digest) % 10 ** digits;
   return code.toString().padStart(digits, "0");

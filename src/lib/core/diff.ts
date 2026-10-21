@@ -50,8 +50,14 @@ function splitLines(value: string): string[] {
  * (modified). Consecutive removed/added regions are coalesced into a single
  * {@link ChangeBlock} so the UI can present one decision per logical change.
  */
+/** Comparing stops after this long: two huge, wholly different files would hang the UI (L7). */
+export const DIFF_TIMEOUT_MS = 8000;
+
 export function computeDiff(a: string, b: string): DiffBlock[] {
-  const parts = diffLines(a, b);
+  const parts = diffLines(a, b, { timeout: DIFF_TIMEOUT_MS });
+  if (!parts) {
+    throw new Error("These files are too different to compare quickly. Compare smaller sections instead.");
+  }
   const blocks: DiffBlock[] = [];
   let changeId = 0;
 

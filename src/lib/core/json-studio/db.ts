@@ -7,7 +7,13 @@
  * no-storage rule that the Authenticator makes, documented in SECURITY.md.
  * Everything stays in the local `coretools-json-studio` database; nothing is
  * transmitted anywhere.
+ *
+ * Recovery is a convenience, not a requirement: where storage is blocked
+ * (private windows) every call quietly does nothing and the studio works
+ * without it.
  */
+
+import { connection, requestResult, txDone } from "../idb";
 
 const DB_NAME = "coretools-json-studio";
 const DB_VERSION = 1;
@@ -31,43 +37,23 @@ export interface StudioSession {
   updatedAt: number;
 }
 
-let dbPromise: Promise<IDBDatabase> | null = null;
-
-function db(): Promise<IDBDatabase> {
-  dbPromise ??= new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(STORE)) {
-        request.result.createObjectStore(STORE);
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-  return dbPromise;
-}
+const db = connection(DB_NAME, DB_VERSION, (database) => {
+  if (!database.objectStoreNames.contains(STORE)) database.createObjectStore(STORE);
+});
 
 export async function loadSession(): Promise<StudioSession | null> {
   try {
     const database = await db();
-    const session = await new Promise<StudioSession | null>((resolve, reject) => {
-      const request = database
-        .transaction(STORE)
-        .objectStore(STORE)
-        .get(KEY) as IDBRequest<StudioSession | undefined>;
-      request.onsuccess = () => resolve(request.result ?? null);
-      request.onerror = () => reject(request.error);
-    });
+    const store = database.transaction(STORE).objectStore(STORE);
+    const session = await requestResult(store.get(KEY) as IDBRequest<StudioSession | undefined>);
     // Pasted content shouldn't linger on disk: recovery is for today's work.
     if (session && Date.now() - session.updatedAt > SESSION_TTL_MS) {
       await clearSession();
       return null;
     }
-    return session;
+    return session ?? null;
   } catch {
-    // Private windows / blocked storage: recovery is a convenience, not a
-    // requirement — the studio works without it.
-    return null;
+    return null; // storage unavailable: no recovery (see above)
   }
 }
 
@@ -76,31 +62,35 @@ export async function saveSession(session: StudioSession): Promise<void> {
     session.docText.length + session.schemaText.length + session.rightText.length >
     MAX_PERSIST_CHARS
   ) {
+    // Too big to keep: an older, smaller copy mustn't be left behind (L6).
+    await clearSession();
     return;
   }
   try {
     const database = await db();
-    await new Promise<void>((resolve, reject) => {
-      const tx = database.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).put(session, KEY);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
+    const tx = database.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).put(session, KEY);
+    await txDone(tx);
   } catch {
-    // Same rationale as loadSession.
+    // Storage unavailable: no recovery (see above).
   }
+}
+
+/**
+ * Delete a recovery copy past its expiry. Run at app start, so expired
+ * content doesn't stay on disk until JSON-Studio is next opened (L6).
+ */
+export async function purgeExpiredSession(): Promise<void> {
+  await loadSession(); // deletes it when expired
 }
 
 export async function clearSession(): Promise<void> {
   try {
     const database = await db();
-    await new Promise<void>((resolve, reject) => {
-      const tx = database.transaction(STORE, "readwrite");
-      tx.objectStore(STORE).delete(KEY);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
-    });
+    const tx = database.transaction(STORE, "readwrite");
+    tx.objectStore(STORE).delete(KEY);
+    await txDone(tx);
   } catch {
-    // ignore
+    // Storage unavailable: nothing was stored to clear.
   }
 }

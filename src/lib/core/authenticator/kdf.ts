@@ -52,9 +52,11 @@ export const LEGACY_PBKDF2_ITERATIONS = 310_000;
  */
 const BOUNDS = {
   pbkdf2Iterations: [100_000, 5_000_000],
-  argonMemoryKiB: [19 * 1024, 1024 * 1024],
-  argonIterations: [1, 10],
-  argonParallelism: [1, 8],
+  // Four times today's default at most: enough headroom for a stronger
+  // future default, not enough to exhaust memory or stall for minutes.
+  argonMemoryKiB: [19 * 1024, 256 * 1024],
+  argonIterations: [1, 6],
+  argonParallelism: [1, 4],
 } as const;
 
 function within(value: unknown, [min, max]: readonly [number, number]): value is number {

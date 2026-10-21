@@ -1,0 +1,126 @@
+name: Security scans
+
+# Free security checks beside CI (audit M5 and the RustSec finding):
+#   - rust-advisories: cargo-deny against the RustSec advisory database
+#     (deny.toml) — a vulnerable Rust crate fails;
+#   - workflow-lint: actionlint (workflow syntax, expressions, and shellcheck
+#     on every run: block) and zizmor (GitHub Actions security: template
+#     injection, permissions, credential persistence, cache poisoning,
+#     known-vulnerable or impostor action pins…), plus a check that Node and
+#     Rust versions come only from .nvmrc and rust-toolchain.toml;
+#   - dependency-review: new vulnerable dependencies in a pull request. It
+#     needs the dependency graph's review API, which GitHub offers for free
+#     only on PUBLIC repositories — skipped while this repository is private
+#     (DEPLOYMENT.md, "Security scanning"). CodeQL lives in codeql.yml.
+#
+# Every tool is pinned: cargo-deny and actionlint by version and SHA-256 of
+# the release archive, zizmor by version, the one action by commit SHA.
+# Weekly runs catch advisories published after the last push.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: "23 5 * * 1" # Mondays 05:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust-advisories:
+    name: Rust advisories (cargo-deny, RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # cargo-deny resolves the dependency graph with `cargo metadata`.
+      - name: Set up Rust
+        run: bash scripts/setup-rust.sh
+
+      - name: Install cargo-deny 0.20.2 (checksum-pinned)
+        env:
+          VERSION: 0.20.2
+          SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+        run: |
+          set -euo pipefail
+          name="cargo-deny-${VERSION}-x86_64-unknown-linux-musl"
+          archive="$RUNNER_TEMP/${name}.tar.gz"
+          curl -fsSL --retry 3 -o "$archive" "https://github.com/EmbarkStudios/cargo-deny/releases/download/${VERSION}/${name}.tar.gz"
+          echo "${SHA256}  ${archive}" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/cargo-deny-unpacked" "$RUNNER_TEMP/cargo-deny-bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/cargo-deny-unpacked"
+          binary=$(find "$RUNNER_TEMP/cargo-deny-unpacked" -type f -name cargo-deny | head -n 1)
+          install -m 0755 "$binary" "$RUNNER_TEMP/cargo-deny-bin/cargo-deny"
+
+      # Until src-tauri/Cargo.lock is committed, cargo resolves the newest
+      # compatible versions here (the result is what a fresh build would get).
+      - name: cargo deny check advisories
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/cargo-deny-bin:$PATH"
+          if [ ! -f src-tauri/Cargo.lock ]; then
+            echo "::warning::src-tauri/Cargo.lock is not committed — checking freshly resolved versions (audit S-3)."
+          fi
+          cargo deny --manifest-path src-tauri/Cargo.toml check advisories
+
+  workflow-lint:
+    name: Workflow lint (actionlint, zizmor)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # The [v] / [r] / [t] brackets keep the pattern from matching this very
+      # line (it lives in .github/workflows too); they match the same text.
+      - name: One Node and one Rust version, from .nvmrc and rust-toolchain.toml
+        run: |
+          set -euo pipefail
+          if grep -rnE 'node-[v]ersion:|dtolnay/[r]ust-toolchain|^[[:space:]]*[t]oolchain:' .github/workflows .github/actions; then
+            echo "::error::Workflows take Node from .nvmrc (node-version-file) and Rust from rust-toolchain.toml (scripts/setup-rust.sh) — don't pin a version in a workflow."
+            exit 1
+          fi
+
+      # shellcheck (preinstalled on the runner) checks every run: block;
+      # warnings and errors fail, style and info notes don't.
+      - name: actionlint 1.7.12 (checksum-pinned)
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          SHELLCHECK_OPTS: --severity=warning
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/actionlint.tar.gz"
+          curl -fsSL --retry 3 -o "$archive" "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "${SHA256}  ${archive}" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/actionlint"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/actionlint"
+          "$RUNNER_TEMP/actionlint/actionlint" -color
+
+      # Regular persona; accepted findings are listed, with reasons, in
+      # .github/zizmor.yml. The token enables the online audits (impostor
+      # commits, known-vulnerable actions) and reads public data only.
+      - name: zizmor 1.30.1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pipx run --spec zizmor==1.30.1 zizmor --config .github/zizmor.yml .
+
+  dependency-review:
+    name: Dependency review (public repository only)
+    if: ${{ github.event_name == 'pull_request' && !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Review new dependencies
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: low

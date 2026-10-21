@@ -98,6 +98,10 @@ Rules:
 
 - A `url` of `"#"` renders the button as "not yet published" (marked
   `aria-disabled`). Replace it with a real **HTTPS** link to enable the download.
+- `microsoftStore.productId` (the 12-character Store ID from Partner Center)
+  adds *Get it from Microsoft Store* to the Windows card, above the `.exe`.
+  Leave it `""` until the listing is live: every Store mention stays hidden.
+  See DEPLOYMENT.md → *Microsoft Store*.
 - The `data-os` attribute on each card in `index.html`
   (`windows` / `macos` / `linux`) must match the keys in `platforms`.
 - `main.js` auto-fills the version label, footer year, release link, and

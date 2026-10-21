@@ -19,7 +19,7 @@
 //! that the frontend maps to messages. Provider responses are never echoed.
 
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -29,6 +29,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine as _;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::{StatusCode, Url};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -60,8 +61,24 @@ const FILE_PREFIXES: [&str; 2] = ["coretools-authenticator-", "coretools-credman
 const FILE_FIELDS: &str = "id,name,createdTime,size,md5Checksum,appProperties";
 /// Backups are a few KiB; anything near this is not ours.
 const MAX_BACKUP_BYTES: usize = 5 * 1024 * 1024;
+/// One page of the file list (≤ 100 entries of a few hundred bytes).
+const MAX_LIST_BYTES: usize = 1024 * 1024;
+/// Token responses, upload results and error bodies.
+const MAX_SMALL_BODY_BYTES: usize = 64 * 1024;
+/// The list follows `nextPageToken` at most this many times.
+const MAX_LIST_PAGES: usize = 20;
 /// How long to wait for the user to finish signing in in the browser.
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(300);
+/// Longest one loopback connection may take to deliver its request; a
+/// client that connects and stalls can't hold the sign-in up (audit L5).
+const CONNECTION_DEADLINE: Duration = Duration::from_secs(10);
+/// Each blocking read waits at most this long, so a cancel or the sign-in
+/// deadline ends even a read from a silent connection promptly.
+const READ_SLICE: Duration = Duration::from_millis(250);
+/// Longest an access token is cached, whatever `expires_in` says (audit L6).
+const MAX_TOKEN_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
+/// Disconnecting waits at most this long for Google to revoke the grant.
+const REVOKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 // ---- state ---------------------------------------------------------------------
 
@@ -89,13 +106,11 @@ impl CloudState {
     }
 
     fn set_token(&self, token: String, expires_in: u64) {
+        let Some(expires_at) = Instant::now().checked_add(token_lifetime(expires_in)) else {
+            return; // not cached: the next request refreshes it
+        };
         if let Ok(mut guard) = self.access.lock() {
-            // Treat it as expired a minute early so no request races expiry.
-            let lifetime = Duration::from_secs(expires_in.saturating_sub(60).max(1));
-            *guard = Some(AccessToken {
-                token,
-                expires_at: Instant::now() + lifetime,
-            });
+            *guard = Some(AccessToken { token, expires_at });
         }
     }
 
@@ -125,6 +140,9 @@ pub struct RemoteFile {
     md5_checksum: String,
     device_id: String,
     device_label: String,
+    /// How many entries the backup holds, as its uploader declared
+    /// (audit D-5) — shown before restoring. None for older backups.
+    records: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -158,9 +176,21 @@ struct DriveFile {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct FileList {
     #[serde(default)]
     files: Vec<DriveFile>,
+    #[serde(default)]
+    next_page_token: Option<String>,
+}
+
+/// The `records` app property: a plain decimal count, or None.
+fn parse_records(value: Option<&str>) -> Option<u32> {
+    let value = value?.trim();
+    if value.is_empty() || value.len() > 10 || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
 }
 
 impl From<DriveFile> for RemoteFile {
@@ -173,6 +203,7 @@ impl From<DriveFile> for RemoteFile {
                 .get("deviceLabel")
                 .cloned()
                 .unwrap_or_default(),
+            records: parse_records(file.app_properties.get("records").map(String::as_str)),
             id: file.id,
             name: file.name,
             created_time: file.created_time,
@@ -194,20 +225,91 @@ fn client_secret() -> Option<&'static str> {
     CLIENT_SECRET.filter(|secret| !secret.trim().is_empty())
 }
 
+fn client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .https_only(true)
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(60))
+        .user_agent(concat!("CoreTools/", env!("CARGO_PKG_VERSION")))
+}
+
 /// The one HTTPS client (rustls, https-only); also used by the update check.
+/// Trusts the bundled Mozilla roots plus the OS trust store, so networks
+/// that inspect TLS with a root the OS trusts work (audit L11). Should the
+/// OS store be unreadable, it falls back to the bundled roots alone.
 pub(crate) fn http() -> Result<&'static reqwest::Client, String> {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
     if let Some(client) = CLIENT.get() {
         return Ok(client);
     }
-    let built = reqwest::Client::builder()
-        .https_only(true)
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(60))
-        .user_agent(concat!("CoreTools/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|_| "cloud_network".to_string())?;
+    let built = match client_builder().build() {
+        Ok(client) => client,
+        Err(_) => {
+            crate::diagnostics::record("cloud", "OS trust store unusable; bundled roots only");
+            client_builder()
+                .tls_built_in_native_certs(false)
+                .build()
+                .map_err(|_| "cloud_network".to_string())?
+        }
+    };
     Ok(CLIENT.get_or_init(|| built))
+}
+
+/// Why a size-capped body read stopped.
+pub(crate) enum BodyError {
+    TooLarge,
+    Network(reqwest::Error),
+}
+
+/// Append `chunk` unless that would make `body` exceed `cap`.
+fn append_capped(body: &mut Vec<u8>, chunk: &[u8], cap: usize) -> bool {
+    if body.len().saturating_add(chunk.len()) > cap {
+        return false;
+    }
+    body.extend_from_slice(chunk);
+    true
+}
+
+/// Read a response body chunk by chunk, refusing as soon as it exceeds
+/// `cap` — never buffering an oversized body first (audit L3).
+pub(crate) async fn read_capped(
+    mut response: reqwest::Response,
+    cap: usize,
+) -> Result<Vec<u8>, BodyError> {
+    if response.content_length().is_some_and(|length| length > cap as u64) {
+        return Err(BodyError::TooLarge);
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(BodyError::Network)? {
+        if !append_capped(&mut body, &chunk, cap) {
+            return Err(BodyError::TooLarge);
+        }
+    }
+    Ok(body)
+}
+
+/// A capped JSON body; None (recorded in diagnostics) when it can't be read.
+async fn read_json<T: DeserializeOwned>(response: reqwest::Response, cap: usize) -> Option<T> {
+    let parsed = match read_capped(response, cap).await {
+        Ok(body) => serde_json::from_slice(&body).ok(),
+        Err(BodyError::TooLarge) => None,
+        Err(BodyError::Network(error)) => {
+            crate::diagnostics::record("cloud", &error_class(&error));
+            None
+        }
+    };
+    if parsed.is_none() {
+        crate::diagnostics::record("cloud", "unreadable response body");
+    }
+    parsed
+}
+
+/// A capped error body as text (empty when unreadable).
+async fn read_error_text(response: reqwest::Response) -> String {
+    read_capped(response, MAX_SMALL_BODY_BYTES)
+        .await
+        .map(|body| String::from_utf8_lossy(&body).into_owned())
+        .unwrap_or_default()
 }
 
 /// URL-safe random string from the OS CSPRNG (PKCE verifier, CSRF state…).
@@ -415,7 +517,7 @@ async fn access_token(state: &CloudState) -> Result<String, String> {
         .map_err(net_error)?;
     let status = response.status();
     if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
+        let body = read_error_text(response).await;
         // invalid_grant: access revoked, password changed, or token aged out.
         return Err(if body.contains("invalid_grant") {
             "cloud_auth_revoked".into()
@@ -425,12 +527,18 @@ async fn access_token(state: &CloudState) -> Result<String, String> {
             status_error(status, &body)
         });
     }
-    let tokens: TokenResponse = response
-        .json()
+    let tokens: TokenResponse = read_json(response, MAX_SMALL_BODY_BYTES)
         .await
-        .map_err(|_| "cloud_unavailable".to_string())?;
+        .ok_or("cloud_unavailable")?;
     state.set_token(tokens.access_token.clone(), tokens.expires_in.unwrap_or(3600));
     Ok(tokens.access_token)
+}
+
+/// How long to cache an access token: a minute short of `expires_in`, so
+/// no request races expiry, and never more than a day — a huge value from
+/// the server can't overflow `Instant` arithmetic (audit L6).
+fn token_lifetime(expires_in: u64) -> Duration {
+    Duration::from_secs(expires_in.saturating_sub(60).max(1)).min(MAX_TOKEN_LIFETIME)
 }
 
 /// Send a Drive request with the current access token, refreshing it once
@@ -451,7 +559,7 @@ where
         if status.is_success() {
             return Ok(response);
         }
-        let body = response.text().await.unwrap_or_default();
+        let body = read_error_text(response).await;
         return Err(status_error(status, &body));
     }
     Err("cloud_auth_revoked".into())
@@ -524,19 +632,56 @@ enum Redirect {
     Ignored,
 }
 
-fn handle_redirect(mut stream: TcpStream, expected_state: &str) -> Redirect {
-    // Accepted sockets can inherit non-blocking mode (Windows); read with a
-    // timeout instead so a silent client can't stall the flow.
+/// When one connection must have delivered its request: `CONNECTION_DEADLINE`
+/// from now, but never after the sign-in itself times out.
+fn connection_deadline(now: Instant, sign_in_deadline: Instant) -> Instant {
+    now.checked_add(CONNECTION_DEADLINE)
+        .map_or(sign_in_deadline, |deadline| deadline.min(sign_in_deadline))
+}
+
+/// The request head of one loopback connection, or None when the client
+/// stalled past its deadline or the sign-in was canceled meanwhile.
+fn read_request_head(
+    stream: &mut TcpStream,
+    cancel: &AtomicBool,
+    sign_in_deadline: Instant,
+) -> Option<Vec<u8>> {
+    // Accepted sockets can inherit non-blocking mode (Windows); read in
+    // short timed slices instead, so a silent or trickling client is dropped
+    // at its deadline and a cancel is noticed mid-read.
     let _ = stream.set_nonblocking(false);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_read_timeout(Some(READ_SLICE));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    let deadline = connection_deadline(Instant::now(), sign_in_deadline);
     let mut buffer = Vec::with_capacity(2048);
     let mut chunk = [0u8; 1024];
     while buffer.len() < 16 * 1024 && !buffer.windows(4).any(|w| w == b"\r\n\r\n") {
+        if cancel.load(Ordering::SeqCst) || Instant::now() >= deadline {
+            return None;
+        }
         match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
             Ok(n) => buffer.extend_from_slice(&chunk[..n]),
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) => {}
+            Err(_) => break,
         }
     }
+    Some(buffer)
+}
+
+fn handle_redirect(
+    mut stream: TcpStream,
+    expected_state: &str,
+    cancel: &AtomicBool,
+    sign_in_deadline: Instant,
+) -> Redirect {
+    let Some(buffer) = read_request_head(&mut stream, cancel, sign_in_deadline) else {
+        return Redirect::Ignored; // dropped without an answer
+    };
 
     let request = String::from_utf8_lossy(&buffer);
     let target = request.lines().next().and_then(|line| {
@@ -592,12 +737,12 @@ fn wait_for_code(
             return Err("oauth_timeout".into());
         }
         match listener.accept() {
-            Ok((stream, _)) => match handle_redirect(stream, expected_state) {
+            Ok((stream, _)) => match handle_redirect(stream, expected_state, cancel, deadline) {
                 Redirect::Code(code) => return Ok(code),
                 Redirect::Denied => return Err("oauth_denied".into()),
                 Redirect::Ignored => {}
             },
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(100));
             }
             Err(e) => return Err(format!("oauth_listen_failed: {e}")),
@@ -666,10 +811,9 @@ async fn sign_in(state: &CloudState, client_id: &'static str) -> Result<CloudAcc
     if !status.is_success() {
         return Err(format!("oauth_exchange_failed: {}", status.as_u16()));
     }
-    let tokens: TokenResponse = response
-        .json()
+    let tokens: TokenResponse = read_json(response, MAX_SMALL_BODY_BYTES)
         .await
-        .map_err(|_| "oauth_exchange_failed".to_string())?;
+        .ok_or("oauth_exchange_failed")?;
 
     // Google's granular consent lets the user untick Drive access; without
     // it nothing can be backed up, so refuse instead of failing later.
@@ -734,50 +878,96 @@ pub fn cloud_cancel_connect(state: tauri::State<'_, CloudState>) {
     state.cancel.store(true, Ordering::SeqCst);
 }
 
-/// Forget the credential locally, then revoke it at Google (best effort —
-/// offline or already revoked is fine; the local copy is gone either way).
+/// Ask Google to revoke the grant. True when it is gone: revoked now, or
+/// already invalid (Google answers 400 `invalid_token`).
+async fn revoke_at_google(refresh_token: &str) -> bool {
+    let Ok(client) = http() else { return false };
+    let sent = client
+        .post(REVOKE_ENDPOINT)
+        .timeout(REVOKE_TIMEOUT)
+        .form(&[("token", refresh_token)])
+        .send()
+        .await;
+    match sent {
+        Ok(response) if response.status().is_success() => true,
+        Ok(response) if response.status() == StatusCode::BAD_REQUEST => {
+            read_error_text(response).await.contains("invalid_token")
+        }
+        Ok(response) => {
+            let status = response.status().as_u16();
+            crate::diagnostics::record("cloud", &format!("revoke http {status}"));
+            false
+        }
+        Err(error) => {
+            crate::diagnostics::record("cloud", &format!("revoke {}", error_class(&error)));
+            false
+        }
+    }
+}
+
+/// Revoke the grant at Google first (best effort, a few seconds at most),
+/// then forget the credential locally — always, whether or not revoking
+/// worked. Returns whether Google confirmed the revocation; when it
+/// didn't (offline, Google unreachable), the UI should tell the user to
+/// remove CoreTools' access at myaccount.google.com.
 #[tauri::command]
-pub async fn cloud_disconnect(state: tauri::State<'_, CloudState>) -> Result<(), String> {
+pub async fn cloud_disconnect(state: tauri::State<'_, CloudState>) -> Result<bool, String> {
     let credential = load_credential().ok().flatten();
+    let revoked = match &credential {
+        Some(credential) => revoke_at_google(&credential.refresh_token).await,
+        None => true, // nothing stored, nothing to revoke
+    };
+    if !revoked {
+        crate::diagnostics::record("cloud", "revoke failed; local sign-in removed anyway");
+    }
     state.clear_token();
     delete_credential()?;
-    if let (Some(credential), Ok(client)) = (credential, http()) {
-        let _ = client
-            .post(REVOKE_ENDPOINT)
-            .form(&[("token", credential.refresh_token.as_str())])
-            .send()
-            .await;
-    }
-    Ok(())
+    Ok(revoked)
 }
 
-/// List the backup versions in the app-data folder (newest first).
+/// List the backup versions in the app-data folder (newest first),
+/// following `nextPageToken` (audit L7) up to `MAX_LIST_PAGES` pages.
 #[tauri::command]
 pub async fn cloud_list(state: tauri::State<'_, CloudState>) -> Result<Vec<RemoteFile>, String> {
-    let fields = format!("files({FILE_FIELDS})");
-    let response = drive_send(state.inner(), |client, token| {
-        client.get(FILES_ENDPOINT).bearer_auth(token).query(&[
-            ("spaces", "appDataFolder"),
-            ("q", "trashed = false"),
-            ("orderBy", "createdTime desc"),
-            ("pageSize", "100"),
-            ("fields", fields.as_str()),
-        ])
-    })
-    .await?;
-    let list: FileList = response
-        .json()
-        .await
-        .map_err(|_| "cloud_unavailable".to_string())?;
-    Ok(list
-        .files
-        .into_iter()
-        .filter(|file| is_backup_name(&file.name))
-        .map(RemoteFile::from)
-        .collect())
+    let fields = format!("nextPageToken,files({FILE_FIELDS})");
+    let mut files = Vec::new();
+    let mut page_token: Option<String> = None;
+    for _ in 0..MAX_LIST_PAGES {
+        let response = drive_send(state.inner(), |client, token| {
+            let request = client.get(FILES_ENDPOINT).bearer_auth(token).query(&[
+                ("spaces", "appDataFolder"),
+                ("q", "trashed = false"),
+                ("orderBy", "createdTime desc"),
+                ("pageSize", "100"),
+                ("fields", fields.as_str()),
+            ]);
+            match page_token.as_deref() {
+                Some(page) => request.query(&[("pageToken", page)]),
+                None => request,
+            }
+        })
+        .await?;
+        let list: FileList = read_json(response, MAX_LIST_BYTES)
+            .await
+            .ok_or("cloud_unavailable")?;
+        files.extend(
+            list.files
+                .into_iter()
+                .filter(|file| is_backup_name(&file.name))
+                .map(RemoteFile::from),
+        );
+        match list.next_page_token {
+            Some(next) if !next.is_empty() => page_token = Some(next),
+            _ => return Ok(files),
+        }
+    }
+    crate::diagnostics::record("cloud", "backup list truncated at the page limit");
+    Ok(files)
 }
 
-/// Upload one (already end-to-end encrypted) backup version.
+/// Upload one (already end-to-end encrypted) backup version. `records` is
+/// how many entries it holds, kept in the file's `appProperties` so the
+/// version list can show it without downloading (audit D-5).
 #[tauri::command]
 pub async fn cloud_upload(
     state: tauri::State<'_, CloudState>,
@@ -785,6 +975,7 @@ pub async fn cloud_upload(
     content: String,
     device_id: String,
     device_label: String,
+    records: u32,
 ) -> Result<RemoteFile, String> {
     validate_name(&name)?;
     if content.is_empty() || content.len() > MAX_BACKUP_BYTES {
@@ -798,6 +989,7 @@ pub async fn cloud_upload(
             "kind": "coretools-authenticator-backup",
             "deviceId": clean_label(&device_id, 64),
             "deviceLabel": clean_label(&device_label, 100),
+            "records": records.to_string(),
         },
     });
     let boundary = format!("coretools-{}", random_token(18)?);
@@ -819,10 +1011,9 @@ pub async fn cloud_upload(
             .body(body.clone())
     })
     .await?;
-    let file: DriveFile = response
-        .json()
+    let file: DriveFile = read_json(response, MAX_SMALL_BODY_BYTES)
         .await
-        .map_err(|_| "cloud_unavailable".to_string())?;
+        .ok_or("cloud_unavailable")?;
     Ok(RemoteFile::from(file))
 }
 
@@ -841,17 +1032,13 @@ pub async fn cloud_download(
             .query(&[("alt", "media")])
     })
     .await?;
-    if response
-        .content_length()
-        .is_some_and(|length| length > MAX_BACKUP_BYTES as u64)
-    {
-        return Err("cloud_too_large".into());
-    }
-    let bytes = response.bytes().await.map_err(net_error)?;
-    if bytes.len() > MAX_BACKUP_BYTES {
-        return Err("cloud_too_large".into());
-    }
-    String::from_utf8(bytes.to_vec()).map_err(|_| "cloud_corrupt".to_string())
+    let bytes = read_capped(response, MAX_BACKUP_BYTES)
+        .await
+        .map_err(|error| match error {
+            BodyError::TooLarge => "cloud_too_large".to_string(),
+            BodyError::Network(error) => net_error(error),
+        })?;
+    String::from_utf8(bytes).map_err(|_| "cloud_corrupt".to_string())
 }
 
 /// Delete one backup version. Already-gone counts as success.
@@ -908,6 +1095,78 @@ mod tests {
         assert!(validate_id("1AbC_d-9").is_ok());
         assert!(validate_id("../files").is_err());
         assert!(validate_id("").is_err());
+    }
+
+    #[test]
+    fn reads_record_counts_defensively() {
+        assert_eq!(parse_records(Some("12")), Some(12));
+        assert_eq!(parse_records(Some(" 0 ")), Some(0));
+        assert_eq!(parse_records(Some("4294967295")), Some(u32::MAX));
+        for bad in ["", "-1", "+5", "1.5", "abc", "4294967296", "99999999999"] {
+            assert_eq!(parse_records(Some(bad)), None, "{bad}");
+        }
+        assert_eq!(parse_records(None), None);
+    }
+
+    #[test]
+    fn maps_drive_files_with_and_without_record_counts() {
+        let json = br#"{"files":[
+            {"id":"a","name":"coretools-authenticator-1.json","size":"10",
+             "appProperties":{"deviceId":"d","deviceLabel":"PC","records":"7"}},
+            {"id":"b","name":"coretools-credmanager-1.json"}],
+            "nextPageToken":"page-2"}"#;
+        let list: FileList = serde_json::from_slice(json).unwrap();
+        assert_eq!(list.next_page_token.as_deref(), Some("page-2"));
+        let files: Vec<RemoteFile> = list.files.into_iter().map(RemoteFile::from).collect();
+        assert_eq!(files[0].records, Some(7));
+        assert_eq!(files[0].size, 10);
+        assert_eq!(files[1].records, None);
+        let last: FileList = serde_json::from_slice(br#"{"files":[]}"#).unwrap();
+        assert!(last.next_page_token.is_none());
+    }
+
+    #[test]
+    fn caps_token_lifetimes() {
+        assert_eq!(token_lifetime(3600), Duration::from_secs(3540));
+        assert_eq!(token_lifetime(0), Duration::from_secs(1));
+        assert_eq!(token_lifetime(u64::MAX), MAX_TOKEN_LIFETIME);
+        // The cache must never overflow, whatever the server sent.
+        assert!(Instant::now().checked_add(token_lifetime(u64::MAX)).is_some());
+        let state = CloudState::default();
+        state.set_token("t".into(), u64::MAX);
+        assert_eq!(state.cached_token().as_deref(), Some("t"));
+    }
+
+    #[test]
+    fn caps_bodies_while_reading() {
+        let mut body = Vec::new();
+        assert!(append_capped(&mut body, &[1; 6], 10));
+        assert!(append_capped(&mut body, &[2; 4], 10));
+        assert!(!append_capped(&mut body, &[3], 10));
+        assert_eq!(body.len(), 10);
+    }
+
+    #[test]
+    fn loopback_connections_get_a_bounded_deadline() {
+        let now = Instant::now();
+        let far = now + Duration::from_secs(300);
+        assert_eq!(connection_deadline(now, far), now + CONNECTION_DEADLINE);
+        let near = now + Duration::from_secs(2);
+        assert_eq!(connection_deadline(now, near), near);
+    }
+
+    #[test]
+    fn a_stalled_loopback_client_is_dropped_on_cancel() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        // Connects and never sends anything.
+        let _client = TcpStream::connect(address).unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        let cancel = AtomicBool::new(true);
+        let started = Instant::now();
+        let far = started + Duration::from_secs(300);
+        assert!(read_request_head(&mut stream, &cancel, far).is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

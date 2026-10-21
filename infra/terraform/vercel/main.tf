@@ -2,8 +2,8 @@
 #
 # vercel.json in the repository is what actually drives each build; the
 # commands below mirror it so the project settings say the same thing. Keep
-# the two in step. Headers, the CSP and `git.deploymentEnabled.master: false`
-# live in vercel.json only.
+# the two in step. Headers, the CSPs and `git.deploymentEnabled` (no
+# deployments of `master` or `dependabot/**` branches) live in vercel.json only.
 #
 # The settings this file exists for: Production Branch = `production`
 # (DEPLOYMENT.md §1), Framework Preset = Other, Root Directory = repo root.

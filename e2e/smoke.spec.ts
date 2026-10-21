@@ -208,3 +208,54 @@ test("JSON-Studio doesn't keep a recovery copy of credentials", async ({ page })
   await page.keyboard.type('{"aws":"AKIAIOSFODNN7EXAMPLE"}');
   await expect(page.getByText(/not saved: contains an AWS access key/)).toBeVisible({ timeout: 10_000 });
 });
+
+async function addAccount(page: Page, issuer: string) {
+  await page.getByRole("button", { name: "+ Add" }).click();
+  await page.getByRole("button", { name: "Manual entry" }).click();
+  await page.getByPlaceholder("GitHub").fill(issuer);
+  await page.getByPlaceholder("user@example.com").fill("e2e@example.com");
+  await page.getByPlaceholder("JBSW Y3DP EHPK 3PXP").fill("JBSWY3DPEHPK3PXP");
+  await page.getByRole("button", { name: "Add account" }).last().click();
+  await expect(page.getByText(issuer)).toBeVisible();
+}
+
+test("vault: a deleted account can be undone", async ({ page }) => {
+  await createVault(page);
+  await addAccount(page, "Undo Me");
+  await page.getByRole("button", { name: "Edit" }).click();
+  await page.getByRole("button", { name: "Delete", exact: true }).click();
+  await page.getByRole("button", { name: "Delete account" }).click();
+  await expect(page.getByText("Undo Me")).toHaveCount(0);
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(page.getByText("Undo Me")).toBeVisible();
+});
+
+test("vault: exporting asks to confirm it's you", async ({ page }) => {
+  await createVault(page);
+  await addAccount(page, "Export Me");
+  await page.getByRole("button", { name: "Export", exact: true }).click();
+  await expect(page.getByText("Enter your master password to export your accounts.")).toBeVisible();
+  await page.getByPlaceholder("Master password").fill(PASSWORD);
+  await page.getByRole("button", { name: "Confirm" }).click();
+  await expect(page.getByRole("dialog", { name: "Export backup" })).toBeVisible({ timeout: 20_000 });
+});
+
+test("vault: a change in another tab locks this one instead of being overwritten", async ({ page, context }) => {
+  await createVault(page);
+  await addAccount(page, "First Tab");
+
+  const other = await context.newPage();
+  await other.goto("./");
+  await openTab(other, "Authenticator");
+  await other.getByPlaceholder("Encryption password").fill(PASSWORD);
+  await other.getByRole("button", { name: "Unlock" }).click();
+  await expect(other.getByText("First Tab")).toBeVisible({ timeout: 20_000 });
+  await addAccount(other, "Second Tab");
+
+  // The first tab held a now-stale copy: it locks and reloads rather than writing over it.
+  await expect(page.getByText("The vault was changed in another window")).toBeVisible({ timeout: 10_000 });
+  await page.getByPlaceholder("Encryption password").fill(PASSWORD);
+  await page.getByRole("button", { name: "Unlock" }).click();
+  await expect(page.getByText("Second Tab")).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText("First Tab")).toBeVisible();
+});

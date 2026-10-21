@@ -6,6 +6,7 @@
   import { describeKdf, LEGACY_PBKDF2_ITERATIONS } from "../core/authenticator/kdf";
   import { copyText } from "../secure-clipboard";
   import { getPlatform } from "../platform";
+  import { sessionFailures } from "../diagnostics";
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -27,7 +28,11 @@
       : vault?.encrypted
         ? `${describeKdf({ name: "PBKDF2-SHA256", iterations: vault.iterations ?? LEGACY_PBKDF2_ITERATIONS })} (upgrades at next password unlock)`
         : "none";
-    const log = (await platform.diagnostics?.report().catch(() => "")) || "(empty)";
+    // The desktop keeps a log file; the browser build only this session's record.
+    const log =
+      (platform.diagnostics
+        ? await platform.diagnostics.report().catch(() => sessionFailures())
+        : sessionFailures()) || "(empty)";
     const report = [
       `CoreTools ${__APP_VERSION__} · ${platform.kind === "tauri" ? "desktop" : "browser"}`,
       `User agent: ${navigator.userAgent}`,
@@ -99,13 +104,19 @@
   {/if}
 
   <section>
-    <h3>Diagnostics</h3>
+    <h3>Report a problem</h3>
     <p class="muted small">
-      If something goes wrong, copy a report to include in a support request:
-      versions, settings states and recent error causes — never your accounts,
-      logins or any secret.
+      Copy a diagnostics report and email it to
+      <strong>coretools.works@gmail.com</strong>: versions, settings states and
+      recent error causes — never your accounts, logins or any secret.
+      CoreTools sends nothing by itself.
     </p>
-    <button onclick={copyDiagnostics}>Copy diagnostics</button>
+    <div class="row">
+      <button onclick={copyDiagnostics}>Copy diagnostics</button>
+      <button onclick={() => copyText("coretools.works@gmail.com").then(() => (copied = "Email address copied."))}>
+        Copy email address
+      </button>
+    </div>
     {#if copied}<p class="small" role="status">{copied}</p>{/if}
   </section>
 </Modal>
@@ -113,6 +124,11 @@
 <style>
   section + section {
     margin-top: 16px;
+  }
+  .row {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
   }
   h3 {
     margin: 0 0 8px;

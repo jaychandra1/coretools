@@ -1,9 +1,10 @@
 name: Generate Cargo.lock
 
-# One-off / on demand (audit F-05): resolves the Rust dependency graph and
-# pushes src-tauri/Cargo.lock to the `chore/cargo-lock` branch for review.
-# Merge it through a pull request; from then on CI and releases verify the
-# lockfile (`cargo metadata --locked`) and Dependabot proposes updates to it.
+# One-off / on demand (audit F-05 / S-3): resolves the Rust dependency graph
+# and pushes src-tauri/Cargo.lock to the `chore/cargo-lock` branch for
+# review. Merge it through a pull request; from then on CI and releases
+# verify the lockfile (`cargo metadata --locked`) and Dependabot proposes
+# updates to it. The Release workflow refuses to run until it is merged.
 #
 # Run: Actions → "Generate Cargo.lock" → Run workflow.
 
@@ -11,20 +12,22 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # pushes the review branch only
+  contents: read
 
 jobs:
   lock:
     name: Generate src-tauri/Cargo.lock
     runs-on: ubuntu-22.04
+    permissions:
+      contents: write # pushes the chore/cargo-lock review branch only
     steps:
+      # Credentials stay in the checkout: the last step pushes with them.
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
+      # The toolchain pinned in rust-toolchain.toml resolves the lockfile.
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned master
-        with:
-          toolchain: stable
+        run: bash scripts/setup-rust.sh
 
       # Resolution only — nothing is compiled, so no system libraries needed.
       # The lockfile covers every target (Windows, macOS, Linux).

@@ -10,40 +10,59 @@ name: Release
 #   - every release is versioned, listed, and permanently downloadable.
 #
 # In jaychandra1/artifacts (shared by several apps) each version becomes:
-#   - release `coretools-v<version>` — kept forever;
-#   - release `coretools-latest` — same files, replaced on every newer
+#   - release `coretools-v<version>` — published once, never overwritten
+#     (a re-run with the same files leaves it alone; different files fail
+#     unless the overwrite-versioned-release input says otherwise);
+#   - release `coretools-latest` — the same files, replaced on every newer
 #     release, so the website's links never change:
 #       https://github.com/jaychandra1/artifacts/releases/download/coretools-latest/CoreTools-Windows-Setup.exe
-#   - a regenerated index in coretools/releases/ (README, latest.json).
+#   - a regenerated index in coretools/releases/ (README, latest.json, and
+#     the in-app update manifest updater.json).
 # Publishing needs the ARTIFACTS_REPO_TOKEN secret — see DEPLOYMENT.md §2.
+# Rolling coretools-latest back, or widening a staged rollout, never rebuilds:
+# Actions → "Promote or roll back latest" (promote-latest.yml).
 #
 # How a run starts — every mode runs on a v* tag ref or on master, so
 # github.ref / github.sha, the checkout, the tag check, the "on master"
 # check and the Sigstore identity (release.yml@refs/tags/v… or @…/master)
 # always describe the commit being released:
-#   1. Release pull request (audit F-26): Actions → "Prepare release" opens a
-#      PR that bumps the version and dates CHANGELOG.md. Merging it makes CI
-#      (ci.yml → tag-release) tag the merge commit and start THIS workflow
-#      with workflow_dispatch on that tag. (A tag pushed with GITHUB_TOKEN
-#      triggers no `push` workflows; workflow_dispatch is GitHub's documented
-#      exception, and dispatching on the tag ref keeps every check below
-#      identical to a pushed tag.)
-#   2. Manual tag push (still supported):
+#   1. Release pull request (audit F-26, the preferred way): Actions →
+#      "Prepare release" opens a PR that bumps the version and dates
+#      CHANGELOG.md. Merging it makes CI (ci.yml → tag-release) tag the merge
+#      commit and start THIS workflow with workflow_dispatch on that tag. (A
+#      tag pushed with GITHUB_TOKEN triggers no `push` workflows;
+#      workflow_dispatch is GitHub's documented exception, and dispatching on
+#      the tag ref keeps every check below identical to a pushed tag.)
+#   2. Manual tag push (still supported where master accepts pushes):
 #        npm version 0.3.0 -m "release: v%s"
 #        git push origin HEAD --follow-tags
 #      (its package.json hooks also move the CHANGELOG notes into the
 #      release commit, and refuse when there are none).
 #   3. Re-publish package.json's version from master without a new tag:
 #      Actions → Release → Run workflow on master (same gates; the
-#      tag-match check is skipped).
+#      tag-match check is skipped). Only where the `release` environment
+#      admits master — infra/terraform/github's release_branch_patterns,
+#      empty by default, so its policy takes v* tags only. Otherwise the
+#      quality job refuses the run in seconds instead of letting the
+#      environment refuse it after every platform was built: release a new
+#      version (Actions → Prepare release), or run this workflow on the
+#      version's v* tag.
+# A run started from Actions → Release → Run workflow can also set a staged
+# rollout and an update-check back-off (inputs below; DEPLOYMENT.md
+# "Rollback, staged rollout and update back-off"). Tag pushes and CI's
+# tag-release take the rollout from the optional RELEASE_ROLLOUT repository
+# variable (unset = everyone) and the app's own check schedule.
 #
 # GitHub runs the workflow as it exists IN THE TAGGED COMMIT. Commit every
 # change first, then tag: a tag on an older commit runs that commit's
 # (possibly outdated) release steps.
 #
 # Every release ships CoreTools-sbom.cdx.json (CycloneDX: npm + Rust
-# dependencies, audit F-30), listed in SHA256SUMS.txt so the Sigstore
-# signature covers it.
+# dependencies, audit F-30). SHA256SUMS.txt lists every published file —
+# installers, SBOM, and with in-app updates the macOS update archive, the
+# *.sig files and updater.json — so the Sigstore signature covers all of
+# them. src-tauri/Cargo.lock must be committed and current (audit S-3 / H2):
+# without it the release refuses to run.
 #
 # Code signing (audit F-01) switches on per platform once all of that
 # platform's credentials exist (DEPLOYMENT.md §3); without them the
@@ -56,33 +75,70 @@ name: Release
 #   - Linux: the AppImage stays unsigned; the signed SHA256SUMS.txt covers it.
 # A signed platform compiles first with no signing credentials in the
 # environment (`tauri build --no-bundle`), then bundles and signs in a
-# separate step (`tauri bundle`) — so npm scripts and crate build scripts
-# never see the signing secrets.
+# separate step (`tauri bundle`), so build scripts don't receive the signing
+# secrets as environment variables. That is not a security boundary: the
+# steps share one runner and user, and the bundling step itself runs
+# node_modules/.bin/tauri. The OS signing services (Azure, Apple) are only
+# reachable from that step's short-lived credentials, though; the updater key
+# below is the one secret that signs offline, so it gets its own job.
 #
-# In-app updates switch on once the updater key exists (TAURI_SIGNING_PRIVATE_KEY
-# secret + TAURI_UPDATER_PUBKEY variable, DEPLOYMENT.md "In-app updates"): the
-# public key is compiled in, every platform bundles in its own step with the
-# private key (writing a minisign .sig beside each update file), and the
-# publish job adds updater.json — the manifest installed copies poll.
+# In-app updates (audit S-2 / H1) switch on with the TAURI_UPDATER_PUBKEY
+# repository variable (DEPLOYMENT.md "In-app updates"): the build jobs compile
+# that public key into the app and bundle WITHOUT Tauri's
+# createUpdaterArtifacts (which would need the private key at bundle time),
+# so no build job ever holds the updater's private key. The separate
+# `sign-updates` job — ubuntu, no build, `npm ci --ignore-scripts`, in the
+# `release` environment — downloads the finished update files, signs
+# version-named copies (CoreTools_<version>_<target>.<ext>, the name installed
+# copies require in the signature) with `tauri signer sign`, verifies them
+# against the public key, and hands only the .sig files to the publish job,
+# which writes updater.json — the manifest installed copies poll.
+#
+# No build cache is restored in this workflow: a cache written by an
+# ordinary CI run (or a pull request) must never feed a release build.
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      rollout:
+        description: Staged rollout — percent of installed copies offered this update (1–100). Empty = the RELEASE_ROLLOUT variable, else everyone.
+        required: false
+        default: ""
+        type: string
+      check-after-hours:
+        description: Ask installed copies to check for updates at most every N hours (1–168). Empty = the app's default.
+        required: false
+        default: ""
+        type: string
+      overwrite-versioned-release:
+        description: Replace the files of an already published coretools-v<version> release (a rebuild changes every checksum). Leave off.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
-# Never cancel a release mid-publish. A pushed tag and a dispatch on the same
-# tag share this group, so they can never publish concurrently.
+# One release at a time, whatever the ref (tags, master, promote-latest.yml
+# share the group), and never cancelled mid-publish. GitHub keeps at most one
+# run waiting per group: starting a third replaces the waiting one, which is
+# then cancelled — so start releases one by one. A release paused for the
+# `release` environment's approval still holds the group, so a rollback
+# (promote-latest.yml) queues behind it: reject or cancel that release first
+# (docs/runbooks/bad-release.md). stop-updates.yml stays outside the group.
 concurrency:
-  group: release-${{ github.ref }}
+  group: coretools-release
   cancel-in-progress: false
 
 jobs:
   quality:
     name: Gate — tests, types, audit, version match
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # reads the `release` environment's deployment policy (master runs)
     outputs:
       version: ${{ steps.version.outputs.value }}
       sign-windows: ${{ steps.signing.outputs.windows }}
@@ -100,6 +156,73 @@ jobs:
               exit 1
               ;;
           esac
+
+      # Mode 3 (re-publish from master) reaches sign-updates and publish only
+      # if the `release` environment admits master. Its deployment policy
+      # (infra/terraform/github: v* tags, plus release_branch_patterns —
+      # empty by default) would otherwise refuse the run after every
+      # platform was built; refuse it here instead. Settings that can't be
+      # read don't block: the environment still enforces its own policy.
+      - name: The release environment admits master
+        if: github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="repos/${GITHUB_REPOSITORY}/environments/release"
+          if ! custom=$(gh api "$api" --jq '.deployment_branch_policy.custom_branch_policies // false' 2>"$RUNNER_TEMP/env.err"); then
+            if grep -q 'HTTP 404' "$RUNNER_TEMP/env.err"; then
+              echo "No \`release\` environment yet — nothing restricts a master run."
+            else
+              echo "::warning::Couldn't read the \`release\` environment's deployment policy ($(head -n 1 "$RUNNER_TEMP/env.err")) — continuing; the environment enforces it anyway."
+            fi
+            exit 0
+          fi
+          if [ "$custom" != "true" ]; then
+            echo "The \`release\` environment has no custom branch/tag policy — not restricted to v* tags."
+            exit 0
+          fi
+          if ! branches=$(gh api --paginate "${api}/deployment-branch-policies" \
+              --jq '.branch_policies[] | select((.type // "branch") == "branch") | .name'); then
+            echo "::warning::Couldn't list the \`release\` environment's deployment policies — continuing; the environment enforces them anyway."
+            exit 0
+          fi
+          mapfile -t patterns <<< "$branches"
+          for pattern in "${patterns[@]}"; do
+            # shellcheck disable=SC2053 # a deployment policy name is a glob
+            if [[ master == $pattern ]]; then
+              echo "The \`release\` environment admits master (policy \"${pattern}\")."
+              exit 0
+            fi
+          done
+          echo "::error::The \`release\` environment's deployment policy doesn't admit master, so this run would build every platform and then be refused before signing or publishing. Release a new version (Actions → Prepare release), or run Release on the version's v* tag. To allow master runs, add \"master\" to release_branch_patterns (infra/terraform/github)."
+          exit 1
+
+      # Fail in seconds, not after the platform builds.
+      - name: Rollout inputs are valid
+        env:
+          ROLLOUT: ${{ inputs.rollout || vars.RELEASE_ROLLOUT }}
+          CHECK_AFTER_HOURS: ${{ inputs.check-after-hours }}
+        run: |
+          set -euo pipefail
+          valid() { # <value> <max>: empty, or a whole number 1..max
+            [ -z "$1" ] || { printf '%s' "$1" | grep -Eq '^[0-9]+$' && [ "$1" -ge 1 ] && [ "$1" -le "$2" ]; }
+          }
+          if ! valid "$ROLLOUT" 100; then
+            echo "::error::rollout must be empty or a whole number from 1 to 100 (got \"${ROLLOUT}\")."
+            exit 1
+          fi
+          if ! valid "$CHECK_AFTER_HOURS" 168; then
+            echo "::error::check-after-hours must be empty or a whole number from 1 to 168 (got \"${CHECK_AFTER_HOURS}\")."
+            exit 1
+          fi
+          checks="the app's default schedule"
+          if [ -n "$CHECK_AFTER_HOURS" ]; then checks="at most every ${CHECK_AFTER_HOURS} h"; fi
+          {
+            echo "### Rollout"
+            echo "- Offered to: ${ROLLOUT:-100}% of installed copies"
+            echo "- Update checks: ${checks}"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Fail in seconds, not after the ~20-minute platform builds: the
       # publish job needs a working token for the public artifacts repo.
@@ -167,35 +290,58 @@ jobs:
           platforms=$(IFS=,; echo "${signed[*]:-}")
           echo "platforms=${platforms}" >> "$GITHUB_OUTPUT"
 
-      # In-app updates: the build signs its update files with the updater's
-      # private key (minisign) and compiles in the matching public key, which
-      # installed copies verify every update against. Both or neither: half a
-      # setup would publish updates no installed copy can verify.
+      # In-app updates: the build compiles in the updater's public key (the
+      # TAURI_UPDATER_PUBKEY repository variable, which switches updates on)
+      # and the sign-updates job signs with the private key. Both or neither:
+      # half a setup would publish updates no installed copy can verify. This
+      # job can see the private key only while it is a repository secret; once
+      # it lives in the `release` environment (DEPLOYMENT.md), sign-updates
+      # checks it there — and that it matches the public key — before
+      # anything is published.
       - name: In-app update signing
         id: updater
         env:
-          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+          HAS_REPO_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
           HAS_PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY != '' }}
         run: |
-          if [ "$HAS_KEY" = "true" ] && [ "$HAS_PUBKEY" = "true" ]; then
+          if [ "$HAS_PUBKEY" = "true" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
-            echo "- In-app updates: **signed** — installed copies update themselves" >> "$GITHUB_STEP_SUMMARY"
-          elif [ "$HAS_KEY" = "false" ] && [ "$HAS_PUBKEY" = "false" ]; then
+            echo "- In-app updates: **signed** by the sign-updates job — installed copies update themselves" >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$HAS_REPO_KEY" = "false" ]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             echo "- In-app updates: off (no updater key) — the app downloads installers instead (DEPLOYMENT.md, In-app updates)" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "::error::In-app update signing is half-configured: set both the TAURI_SIGNING_PRIVATE_KEY secret and the TAURI_UPDATER_PUBKEY variable, or neither (DEPLOYMENT.md, In-app updates)."
+            echo "::error::In-app update signing is half-configured: set both the TAURI_SIGNING_PRIVATE_KEY secret and the TAURI_UPDATER_PUBKEY repository variable, or neither (DEPLOYMENT.md, In-app updates)."
             exit 1
           fi
 
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # Audit S-3 / H2: a release builds exactly the reviewed dependency set.
+      # (CI on ordinary pushes only warns until the lockfile is committed.)
+      - name: Cargo.lock is committed
+        run: |
+          if [ ! -f src-tauri/Cargo.lock ]; then
+            echo "::error::src-tauri/Cargo.lock is not committed — releases need it (audit S-3). Run Actions → 'Generate Cargo.lock', merge its pull request, then release."
+            exit 1
+          fi
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: npm
+
+      # Fail in seconds, not after the builds compiled a malformed key into
+      # every installer (sign-updates would then refuse it). Same parser as
+      # sign-updates' check; Node's crypto only, no packages needed.
+      - name: Updater public key is well-formed
+        if: steps.updater.outputs.enabled == 'true'
+        env:
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: node scripts/verify-update-signature.mjs --pubkey "$PUBKEY" --check-key
 
       - name: Install dependencies (lockfile-exact)
         run: npm ci
@@ -206,8 +352,41 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      # Shipped dependencies only: an advisory in a dev-only tool (test
+      # runner, bundler) must not block a hotfix. CI reports those.
       - name: Production dependency audit
         run: npm audit --omit=dev --audit-level=low
+
+      # The Rust side of the same gate: a RustSec advisory against a crate in
+      # the committed lockfile stops the release (deny.toml decides what
+      # counts). security.yml runs the same check on pushes and weekly.
+      - name: Set up Rust
+        run: bash scripts/setup-rust.sh
+
+      # Same version and checksum as security.yml — bump both together.
+      - name: Install cargo-deny 0.20.2 (checksum-pinned)
+        env:
+          VERSION: 0.20.2
+          SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+        run: |
+          set -euo pipefail
+          name="cargo-deny-${VERSION}-x86_64-unknown-linux-musl"
+          archive="$RUNNER_TEMP/${name}.tar.gz"
+          curl -fsSL --retry 3 -o "$archive" "https://github.com/EmbarkStudios/cargo-deny/releases/download/${VERSION}/${name}.tar.gz"
+          echo "${SHA256}  ${archive}" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/cargo-deny-unpacked" "$RUNNER_TEMP/cargo-deny-bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/cargo-deny-unpacked"
+          binary=$(find "$RUNNER_TEMP/cargo-deny-unpacked" -type f -name cargo-deny | head -n 1)
+          install -m 0755 "$binary" "$RUNNER_TEMP/cargo-deny-bin/cargo-deny"
+
+      # `cargo metadata --locked` first: the advisories are checked against
+      # exactly the committed Cargo.lock, never a freshly resolved graph.
+      - name: Rust dependency advisories (cargo-deny, RustSec)
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/cargo-deny-bin:$PATH"
+          (cd src-tauri && cargo metadata --locked --format-version 1 > /dev/null)
+          cargo deny --manifest-path src-tauri/Cargo.toml check advisories
 
       - name: Version strings in sync
         run: node scripts/sync-version.mjs --check
@@ -216,6 +395,19 @@ jobs:
       - name: Resolve version
         id: version
         run: echo "value=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # Installed copies accept only plain x.y.z versions — in latest.json
+      # (update notifications) and in updater.json (src-tauri/src/updates.rs)
+      # — so a pre-release would break every installed copy's update check.
+      # Prepare release and CI's tag-release refuse one too.
+      - name: Version is x.y.z
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::package.json's version ${VERSION} isn't x.y.z — installed copies accept no other version (src-tauri/src/updates.rs). Release a plain x.y.z version."
+            exit 1
+          fi
 
       # Tag push and dispatch-on-tag alike: github.ref is the tag.
       - name: Tag matches package version
@@ -257,29 +449,32 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # args: for both `tauri build` and `tauri bundle`. bundles: what to
+          # package. Only the published installer is bundled: tauri.conf.json's
+          # "targets" lists one per platform (plus macOS's .app, which the
+          # DMG and the update archive are made from), and --bundles keeps it
+          # that way should that list ever grow (an MSI, .deb or .rpm would
+          # never be published).
           - platform: windows-latest
             args: ""
+            bundles: "--bundles nsis"
+            rust_targets: ""
             glob: "src-tauri/target/release/bundle/nsis/*-setup.exe"
             out: CoreTools-Windows-Setup.exe
-            # In-app updates install the setup itself (as an update: /UPDATE).
-            updater_glob: "src-tauri/target/release/bundle/nsis/*-setup.exe"
-            updater_out: CoreTools-Windows-Setup.exe
           - platform: macos-latest
             args: "--target universal-apple-darwin"
+            bundles: ""
+            rust_targets: "aarch64-apple-darwin x86_64-apple-darwin"
             glob: "src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg"
             out: CoreTools-macOS.dmg
-            # In-app updates replace the .app from this archive.
-            updater_glob: "src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz"
-            updater_out: CoreTools-macOS.app.tar.gz
-          # Only the AppImage is published, so skip the .deb/.rpm bundles.
           # --verbose makes Tauri print linuxdeploy's own output, which is
           # otherwise reduced to "failed to run linuxdeploy".
           - platform: ubuntu-22.04
-            args: "--bundles appimage --verbose"
+            args: "--verbose"
+            bundles: "--bundles appimage"
+            rust_targets: ""
             glob: "src-tauri/target/release/bundle/appimage/*.AppImage"
             out: CoreTools-Linux.AppImage
-            updater_glob: "src-tauri/target/release/bundle/appimage/*.AppImage"
-            updater_out: CoreTools-Linux.AppImage
 
     runs-on: ${{ matrix.platform }}
 
@@ -289,29 +484,29 @@ jobs:
       # "GPG-sign the AppImage" when it is set at all — even to "false" — and
       # then aborts for want of a key (the v1.2.0 Linux release failure).
       CODE_SIGN: ${{ (matrix.platform == 'windows-latest' && needs.quality.outputs.sign-windows == 'true') || (matrix.platform == 'macos-latest' && needs.quality.outputs.sign-macos == 'true') }}
-      # In-app updates are signed (decided by the quality job).
+      # In-app updates are on (decided by the quality job): compile in the
+      # public key; on macOS also produce the .app.tar.gz the updater installs.
       UPDATER: ${{ needs.quality.outputs.updater }}
+      TAURI_ARGS: ${{ matrix.args }}
+      TAURI_BUNDLES: ${{ matrix.bundles }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
-          cache: npm
 
+      # The version pinned in rust-toolchain.toml, with the runner's rustup.
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned master
-        with:
-          toolchain: stable
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
-
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          workspaces: "./src-tauri -> target"
+        shell: bash
+        env:
+          RUST_TARGETS: ${{ matrix.rust_targets }}
+        run: bash scripts/setup-rust.sh $RUST_TARGETS
 
       - name: Install Linux system dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -332,31 +527,24 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      # Reproducible builds (audit F-05): with Cargo.lock committed, the
-      # release builds exactly the reviewed dependency set or fails.
+      # Reproducible builds (audit F-05 / S-3): the release builds exactly the
+      # committed dependency set or fails.
       - name: Cargo.lock is committed and current
         working-directory: src-tauri
         shell: bash
         run: |
-          if [ -f Cargo.lock ]; then
-            cargo metadata --locked --format-version 1 > /dev/null
-          else
-            echo "::warning::src-tauri/Cargo.lock is not committed — this build resolved dependencies freshly (audit F-05)."
+          if [ ! -f Cargo.lock ]; then
+            echo "::error::src-tauri/Cargo.lock is not committed (audit S-3)."
+            exit 1
           fi
+          cargo metadata --locked --format-version 1 > /dev/null
 
       - name: Generate app icons
         run: npm run icon
 
-      # The Google OAuth "Desktop app" client for Authenticator cloud backup
-      # is compiled in (see DEPLOYMENT.md §Cloud backup). When these secrets
-      # are absent the build still succeeds and the feature reports itself
-      # as not configured. On a code-signed platform this step only compiles
-      # (--no-bundle); bundling + signing follow in their own step, the only
-      # one that holds signing credentials.
-      # In-app updates: the public key is compiled in, and the bundle step
-      # writes a signature beside each update file. Both live in config files
+      # In-app updates: the public key is compiled in from a config file
       # passed with --config, so tauri.conf.json — and local builds — carry
-      # no updater key.
+      # no updater key. Nothing here needs the private key.
       - name: Updater configuration
         if: env.UPDATER == 'true'
         shell: bash
@@ -367,18 +555,24 @@ jobs:
           node -e '
             const fs = require("fs");
             const path = require("path");
-            const dir = process.env.RUNNER_TEMP;
             const pubkey = process.argv[1].trim();
-            fs.writeFileSync(path.join(dir, "tauri.updater.json"), JSON.stringify({ plugins: { updater: { pubkey } } }));
-            fs.writeFileSync(path.join(dir, "tauri.updater-bundle.json"), JSON.stringify({ bundle: { createUpdaterArtifacts: true } }));
+            fs.writeFileSync(path.join(process.env.RUNNER_TEMP, "tauri.updater.json"), JSON.stringify({ plugins: { updater: { pubkey } } }));
           ' "$PUBKEY"
 
+      # The Google OAuth "Desktop app" client for Authenticator cloud backup
+      # is compiled in (see DEPLOYMENT.md §Cloud backup). When these secrets
+      # are absent the build still succeeds and the feature reports itself
+      # as not configured. On a code-signed platform this step only compiles
+      # (--no-bundle); bundling + signing follow in their own step, the only
+      # one that holds signing credentials. Everything after `--` goes to
+      # `cargo build`: --locked builds exactly the committed Cargo.lock (the
+      # check above already refused a stale one; this keeps cargo from ever
+      # resolving anew mid-build).
       - name: Build the desktop app
         shell: bash
         env:
           CORETOOLS_GOOGLE_CLIENT_ID: ${{ secrets.CORETOOLS_GOOGLE_CLIENT_ID }}
           CORETOOLS_GOOGLE_CLIENT_SECRET: ${{ secrets.CORETOOLS_GOOGLE_CLIENT_SECRET }}
-          TAURI_ARGS: ${{ matrix.args }}
           # AppImage bundling (Linux only; ignored elsewhere): linuxdeploy and
           # its plugins are themselves AppImages — extract and run them rather
           # than mounting through FUSE, so a runner-image change can't break it.
@@ -389,29 +583,14 @@ jobs:
           args=()
           if [ -n "$TAURI_ARGS" ]; then read -r -a args <<< "$TAURI_ARGS"; fi
           if [ "$UPDATER" = "true" ]; then args+=(--config "$(cfg "$RUNNER_TEMP/tauri.updater.json")"); fi
-          # Bundling waits for its own step whenever it needs a secret.
-          if [ "$CODE_SIGN" = "true" ] || [ "$UPDATER" = "true" ]; then args+=(--no-bundle); fi
-          npm run tauri build -- "${args[@]}"
-
-      # Unsigned platforms with in-app updates bundle here — the only step
-      # holding the updater's private key (TAURI_SIGNING_PRIVATE_KEY makes
-      # `tauri bundle` write a .sig beside each update file).
-      - name: Bundle with update signatures
-        if: env.UPDATER == 'true' && env.CODE_SIGN != 'true'
-        shell: bash
-        env:
-          TAURI_ARGS: ${{ matrix.args }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: |
-          set -eo pipefail
-          cfg() { if command -v cygpath >/dev/null 2>&1; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
-          args=()
-          if [ -n "$TAURI_ARGS" ]; then read -r -a args <<< "$TAURI_ARGS"; fi
-          npm run tauri bundle -- "${args[@]}" \
-            --config "$(cfg "$RUNNER_TEMP/tauri.updater.json")" \
-            --config "$(cfg "$RUNNER_TEMP/tauri.updater-bundle.json")"
+          if [ "$CODE_SIGN" = "true" ]; then
+            # Bundling waits for its own step, which holds the signing credentials.
+            args+=(--no-bundle)
+          elif [ -n "$TAURI_BUNDLES" ]; then
+            read -r -a bundles <<< "$TAURI_BUNDLES"
+            args+=("${bundles[@]}")
+          fi
+          npm run tauri build -- "${args[@]}" -- --locked
 
       # Windows signing: Azure Artifact Signing (formerly Trusted Signing) via
       # artifact-signing-cli, which runs signtool with Microsoft's signing
@@ -462,15 +641,13 @@ jobs:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -eo pipefail
-          extra=()
-          if [ "$UPDATER" = "true" ]; then
-            extra=(--config "$(cygpath -w "$RUNNER_TEMP/tauri.updater.json")" --config "$(cygpath -w "$RUNNER_TEMP/tauri.updater-bundle.json")")
-          fi
-          npm run tauri bundle -- --config "$(cygpath -w "$RUNNER_TEMP/tauri.windows-signing.json")" "${extra[@]}"
+          args=(--config "$(cygpath -w "$RUNNER_TEMP/tauri.windows-signing.json")")
+          if [ -n "$TAURI_ARGS" ]; then read -r -a more <<< "$TAURI_ARGS"; args+=("${more[@]}"); fi
+          if [ -n "$TAURI_BUNDLES" ]; then read -r -a more <<< "$TAURI_BUNDLES"; args+=("${more[@]}"); fi
+          if [ "$UPDATER" = "true" ]; then args+=(--config "$(cygpath -w "$RUNNER_TEMP/tauri.updater.json")"); fi
+          npm run tauri bundle -- "${args[@]}"
 
       # macOS signing: Tauri imports APPLE_CERTIFICATE (base64 .p12) into a
       # temporary keychain, signs with the Developer ID identity, notarizes
@@ -488,34 +665,26 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          TAURI_ARGS: ${{ matrix.args }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -eo pipefail
           if [ -n "$SIGNING_IDENTITY" ]; then export APPLE_SIGNING_IDENTITY="$SIGNING_IDENTITY"; fi
           unset SIGNING_IDENTITY
           read -r -a args <<< "$TAURI_ARGS"
-          if [ "$UPDATER" = "true" ]; then
-            args+=(--config "$RUNNER_TEMP/tauri.updater.json" --config "$RUNNER_TEMP/tauri.updater-bundle.json")
-          fi
+          if [ "$UPDATER" = "true" ]; then args+=(--config "$RUNNER_TEMP/tauri.updater.json"); fi
           npm run tauri bundle -- "${args[@]}"
 
       - name: Collect the installer under its stable asset name
         shell: bash
+        env:
+          GLOB: ${{ matrix.glob }}
+          OUT: ${{ matrix.out }}
         run: |
-          set -e
+          set -eo pipefail
           mkdir -p staging
-          src=$(ls ${{ matrix.glob }} | head -n1)
+          # GLOB comes from the matrix above; left unquoted so it expands.
+          src=$(ls $GLOB | head -n 1)
           echo "Found installer: $src"
-          cp "$src" "staging/${{ matrix.out }}"
-          if [ "$UPDATER" = "true" ]; then
-            update=$(ls ${{ matrix.updater_glob }} | head -n1)
-            test -f "$update.sig" || { echo "::error::No update signature beside $update"; exit 1; }
-            [ "${{ matrix.updater_out }}" = "${{ matrix.out }}" ] || cp "$update" "staging/${{ matrix.updater_out }}"
-            cp "$update.sig" "staging/${{ matrix.updater_out }}.sig"
-            echo "Update file: $update (+ signature)"
-          fi
+          cp "$src" "staging/$OUT"
 
       # A signed platform must really be signed before anything is uploaded.
       - name: Verify the Authenticode signature (Windows)
@@ -535,16 +704,43 @@ jobs:
         if: matrix.platform == 'macos-latest' && env.CODE_SIGN == 'true'
         run: |
           set -euo pipefail
-          app=$(ls -d src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app | head -n1)
+          app=$(ls -d src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app | head -n 1)
           codesign --verify --deep --strict --verbose=2 "$app"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=4 "$app"
 
+      # In-app updates on macOS replace the .app from a .tar.gz of the bundle
+      # (Windows installs the NSIS setup itself, as an update; Linux replaces
+      # the AppImage — both are already staged). Tauri only makes this
+      # archive with createUpdaterArtifacts, which needs the private key, so
+      # it is made here and signed by the sign-updates job. Layout as Tauri's:
+      # one top-level CoreTools.app/ directory (the updater strips the first
+      # path component), symlinks kept, no AppleDouble (._*) files.
+      - name: Update archive (macOS)
+        if: matrix.platform == 'macos-latest' && env.UPDATER == 'true'
+        run: |
+          set -euo pipefail
+          app=$(ls -d src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app | head -n 1)
+          name=$(basename "$app")
+          archive=staging/CoreTools-macOS.app.tar.gz
+          COPYFILE_DISABLE=1 tar -C "$(dirname "$app")" -czf "$archive" "$name"
+          if tar -tzf "$archive" | awk -v top="$name" 'index($0, top) != 1 || /(^|\/)\._/ { bad = 1 } END { exit !bad }'; then
+            echo "::error::$archive has entries outside $name/ or AppleDouble files."
+            exit 1
+          fi
+          if [ "$CODE_SIGN" = "true" ]; then
+            check=$(mktemp -d)
+            tar -xzf "$archive" -C "$check"
+            codesign --verify --deep --strict "$check/$name"
+            echo "The archived app's signature survives extraction."
+          fi
+          ls -l "$archive"
+
       - name: Upload installer artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.out }}
-          # The installer, plus (with in-app updates) the update file and its signature.
+          # The installer, plus (macOS, with in-app updates) the update archive.
           path: staging/
           if-no-files-found: error
           retention-days: 30
@@ -560,38 +756,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned master
-        with:
-          toolchain: stable
+        run: bash scripts/setup-rust.sh
 
       # Pinned version, built from crates.io with its locked dependencies.
       - name: Install cargo-cyclonedx
         run: cargo install cargo-cyclonedx --version 0.5.9 --locked
 
-      # Until Cargo.lock is committed (audit F-05) there is no exact record of
-      # the Rust dependency set: resolve one now and say so in the SBOM
-      # (property coretools:cargo-lock = resolved-at-release).
+      # The committed lockfile is the exact Rust dependency set (the quality
+      # job already refused a release without one).
       - name: Rust dependency set
         id: lock
         working-directory: src-tauri
         run: |
           set -euo pipefail
-          if [ -f Cargo.lock ]; then
-            cargo metadata --locked --format-version 1 > /dev/null
-            echo "source=committed" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::src-tauri/Cargo.lock is not committed — the SBOM's Rust part is resolved now and may differ slightly from what each platform build resolved (audit F-05)."
-            cargo generate-lockfile
-            echo "source=resolved-at-release" >> "$GITHUB_OUTPUT"
-          fi
+          cargo metadata --locked --format-version 1 > /dev/null
+          echo "source=committed" >> "$GITHUB_OUTPUT"
 
       - name: Rust SBOM (all target platforms)
         working-directory: src-tauri
@@ -612,19 +801,142 @@ jobs:
             --cargo-lock "$CARGO_LOCK" --out staging/CoreTools-sbom.cdx.json
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: CoreTools-sbom.cdx.json
           path: staging/CoreTools-sbom.cdx.json
           if-no-files-found: error
           retention-days: 30
 
+  sign-updates:
+    # Audit S-2 / H1: the ONLY job that holds the updater's private key — the
+    # key that makes every installed copy install a file. It builds nothing
+    # and runs no install scripts: `npm ci --ignore-scripts` unpacks the
+    # lockfile-pinned, integrity-checked packages, and the only package code
+    # that runs is the Tauri CLI's own `tauri signer sign`. It signs
+    # version-named copies, so each signature's trusted comment says
+    # `file:CoreTools_<version>_<target>.<ext>` — installed copies refuse a
+    # signed name without `_<version>_`, so an old file can't be replayed as
+    # an update — and checks every signature against the public key the
+    # builds compiled in. Only the .sig files leave this job.
+    name: Sign in-app updates
+    needs: [quality, build]
+    if: needs.quality.outputs.updater == 'true'
+    runs-on: ubuntu-latest
+    # The signing secrets can live here (DEPLOYMENT.md, "Manual steps"); with
+    # required reviewers this job — like publish — waits for an approval.
+    environment:
+      name: release
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.quality.outputs.version }}
+    steps:
+      - name: Checkout (package-lock.json + scripts)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Install the Tauri CLI (lockfile-exact, no install scripts)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Download the Windows installer
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: CoreTools-Windows-Setup.exe
+          path: incoming
+
+      - name: Download the macOS update archive
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: CoreTools-macOS.dmg
+          path: incoming
+
+      - name: Download the Linux AppImage
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: CoreTools-Linux.AppImage
+          path: incoming
+
+      - name: The private key is configured
+        env:
+          HAS_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY != '' }}
+        run: |
+          if [ "$HAS_KEY" != "true" ]; then
+            echo "::error::TAURI_UPDATER_PUBKEY is set but the TAURI_SIGNING_PRIVATE_KEY secret is missing (repository or \`release\` environment). Add it, or delete the variable to release without in-app updates (DEPLOYMENT.md, In-app updates)."
+            exit 1
+          fi
+
+      - name: Stage version-named copies
+        run: |
+          set -euo pipefail
+          mkdir -p sign
+          cp incoming/CoreTools-Windows-Setup.exe "sign/CoreTools_${VERSION}_windows-x86_64-setup.exe"
+          cp incoming/CoreTools-macOS.app.tar.gz "sign/CoreTools_${VERSION}_darwin-universal.app.tar.gz"
+          cp incoming/CoreTools-Linux.AppImage "sign/CoreTools_${VERSION}_linux-x86_64.AppImage"
+          ls -l sign
+
+      # Residual risk (accepted for now): the signer is the @tauri-apps/cli
+      # npm package — lockfile-pinned, integrity-checked, no install scripts,
+      # but still third-party code holding the private key. A dependency-free
+      # Node-crypto signer beside scripts/verify-update-signature.mjs would
+      # remove it.
+      - name: Sign the update files
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for file in sign/CoreTools_*; do
+            case "$file" in *.sig) continue ;; esac
+            node_modules/.bin/tauri signer sign "$file" < /dev/null
+          done
+
+      # The key pair must match: a private key that isn't the compiled-in
+      # public key's partner would publish updates no installed copy accepts.
+      - name: Verify the signatures against the compiled-in public key
+        env:
+          PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
+        run: |
+          node scripts/verify-update-signature.mjs --pubkey "$PUBKEY" --version "$VERSION" \
+            "sign/CoreTools_${VERSION}_windows-x86_64-setup.exe" \
+            "sign/CoreTools_${VERSION}_darwin-universal.app.tar.gz" \
+            "sign/CoreTools_${VERSION}_linux-x86_64.AppImage"
+
+      # Published under the stable asset names (the signature covers the
+      # bytes; only its trusted comment carries the versioned name).
+      - name: Signatures under the published file names
+        run: |
+          set -euo pipefail
+          mkdir -p signatures
+          cp "sign/CoreTools_${VERSION}_windows-x86_64-setup.exe.sig" signatures/CoreTools-Windows-Setup.exe.sig
+          cp "sign/CoreTools_${VERSION}_darwin-universal.app.tar.gz.sig" signatures/CoreTools-macOS.app.tar.gz.sig
+          cp "sign/CoreTools_${VERSION}_linux-x86_64.AppImage.sig" signatures/CoreTools-Linux.AppImage.sig
+
+      - name: Upload the signatures
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: CoreTools-updater-signatures
+          path: signatures/
+          if-no-files-found: error
+          retention-days: 30
+
   publish:
     name: Publish to jaychandra1/artifacts
-    # A release is all-or-nothing: if any platform (or the SBOM) failed,
-    # nothing ships and nothing is overwritten. No mixed-version download
-    # sets, ever.
-    needs: [quality, build, sbom]
+    # A release is all-or-nothing: if any platform, the SBOM or (with in-app
+    # updates) the signing failed, nothing ships and nothing is overwritten.
+    # No mixed-version download sets, ever. sign-updates is skipped exactly
+    # when in-app updates are off; any other outcome stops the release.
+    needs: [quality, build, sbom, sign-updates]
+    if: >-
+      needs.quality.result == 'success' && needs.build.result == 'success' && needs.sbom.result == 'success'
+      && (needs.sign-updates.result == 'success' || (needs.sign-updates.result == 'skipped' && needs.quality.outputs.updater != 'true'))
+      && !cancelled()
     runs-on: ubuntu-latest
     # Publishing pauses here for a required reviewer once the `release`
     # environment has protection rules (DEPLOYMENT.md §2 · audit F-03): no
@@ -642,15 +954,17 @@ jobs:
       id-token: write
     steps:
       - name: Checkout (publish script + changelog)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
 
-      - name: Download all built installers and the SBOM
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: Download the installers, the SBOM and the update signatures
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: incoming
           merge-multiple: true
@@ -666,7 +980,9 @@ jobs:
       # In-app updates: the manifest installed copies poll (published with the
       # release, so the stable coretools-latest link always serves the newest).
       # Its signatures are verified against the key compiled into the app, so
-      # it needs no other protection. Nothing is written without the updater key.
+      # it needs no other protection; the script also refuses a signature
+      # whose signed name lacks _<version>_. Nothing is written without the
+      # updater key.
       - name: Updater manifest
         env:
           VERSION: ${{ needs.quality.outputs.version }}
@@ -680,15 +996,27 @@ jobs:
             --base-url "https://github.com/jaychandra1/artifacts/releases/download/coretools-v${VERSION}" \
             --notes-file "$RUNNER_TEMP/notes.md" "${extra[@]}"
 
-      # The SBOM is listed too, so the signature below covers it.
+      # EVERY file in incoming/ is published, so every one is listed — the
+      # installers, the SBOM and, with in-app updates, the macOS update
+      # archive, the *.sig files and updater.json — and the signature below
+      # covers them all. promote-latest.yml re-publishes only files listed
+      # here, and the publish action refuses any file that isn't. (The
+      # Sigstore bundle, made from this file next, is the one exception.)
       - name: Generate SHA-256 checksums
+        working-directory: incoming
         run: |
-          cd incoming
-          sha256sum CoreTools-Windows-Setup.exe CoreTools-macOS.dmg CoreTools-Linux.AppImage CoreTools-sbom.cdx.json > SHA256SUMS.txt
+          set -euo pipefail
+          if find . -mindepth 1 ! -type f | grep -q .; then
+            echo "::error::incoming/ holds something other than files:"
+            find . -mindepth 1 ! -type f
+            exit 1
+          fi
+          mapfile -t files < <(LC_ALL=C ls | grep -vx -e 'SHA256SUMS.txt' -e 'SHA256SUMS.txt.sigstore.json')
+          sha256sum -- "${files[@]}" > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
       # Keyless Sigstore signature over the checksum file (which pins every
-      # installer and the SBOM). The certificate names this repository +
+      # published file). The certificate names this repository +
       # workflow + ref, so someone holding only ARTIFACTS_REPO_TOKEN can
       # replace the files but cannot produce a signature that verifies (audit
       # F-03). The signature is recorded in Sigstore's public transparency log.
@@ -718,3 +1046,11 @@ jobs:
           signer: https://github.com/${{ github.repository }}/.github/workflows/release.yml
           # Which installers the build signed (empty = all unsigned).
           code-signed: ${{ needs.quality.outputs.code-signed }}
+          # Staged rollout / update-check back-off. Runs started without
+          # inputs (tag push, CI's tag-release) take the RELEASE_ROLLOUT
+          # repository variable, if set — so the usual release-PR flow can
+          # be staged too.
+          rollout: ${{ inputs.rollout || vars.RELEASE_ROLLOUT }}
+          check-after-hours: ${{ inputs.check-after-hours }}
+          # A published coretools-v<version> is replaced only on request.
+          allow-overwrite: ${{ inputs.overwrite-versioned-release && 'true' || 'false' }}

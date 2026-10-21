@@ -1,11 +1,15 @@
 name: Publish to the public artifacts repository
 description: >
   Publish installers as GitHub Releases of a public artifacts repository —
-  <app>-v<version> (kept forever) plus <app>-latest (stable links, moved only
-  by the newest version) — and update the generated <app>/releases/ index.
-  Expects the caller to have checked out this repo (for scripts/) and placed
-  the installers + SHA256SUMS.txt in `assets-dir` (plus any other files
-  SHA256SUMS.txt lists, e.g. the SBOM, and the optional Sigstore bundle).
+  <app>-v<version> (published once, never overwritten) plus <app>-latest
+  (stable links, moved only by the newest version) — and update the generated
+  <app>/releases/ index. Expects the caller to have checked out this repo (for
+  scripts/) and placed the installers + SHA256SUMS.txt in `assets-dir` (plus
+  any other files SHA256SUMS.txt lists, e.g. the SBOM and the optional in-app
+  update files: updater.json, *.sig, the macOS .app.tar.gz; and the optional
+  Sigstore bundle over SHA256SUMS.txt). Every file in `assets-dir` is
+  uploaded, so every one except SHA256SUMS.txt and its Sigstore bundle must
+  be listed in SHA256SUMS.txt — the first step refuses otherwise.
 
 inputs:
   app:
@@ -24,10 +28,10 @@ inputs:
     description: Token with Contents read/write on the artifacts repository
     required: true
   assets-dir:
-    description: Directory with the installers and SHA256SUMS.txt
+    description: Directory with the installers and SHA256SUMS.txt (which must list every other file in it, bar its Sigstore bundle)
     required: true
   date:
-    description: Release date (YYYY-MM-DD) for the index; defaults to today
+    description: Release date (YYYY-MM-DD) for the index; defaults to the version's existing date, else today
     required: false
     default: ""
   summary:
@@ -48,6 +52,38 @@ inputs:
       of warning that all of them are unsigned.
     required: false
     default: ""
+  allow-overwrite:
+    description: >
+      "true" replaces the files of an already published <app>-v<version>
+      release whose SHA256SUMS.txt differs from this one (a rebuild). Off by
+      default: a published version is never overwritten — identical files
+      (a re-run, or a promote/rollback of the original files) are left as
+      they are, different ones fail the publish before anything changes.
+    required: false
+    default: "false"
+  rollout:
+    description: Staged rollout percentage (1–100) written to latest.json as `rollout`; empty = everyone
+    required: false
+    default: ""
+  check-after-hours:
+    description: Update-check back-off (1–168 hours) written to latest.json as `checkAfterHours`; empty = the app's default
+    required: false
+    default: ""
+  withdraw:
+    description: Comma-separated versions to drop from the index first (rollback)
+    required: false
+    default: ""
+  require-newest:
+    description: >
+      "true" fails before changing the index or <app>-latest unless this
+      version ends up the newest one (promote/rollback runs).
+    required: false
+    default: "false"
+
+outputs:
+  is-newest:
+    description: '"true" when this version is the newest in the index and <app>-latest now serves it'
+    value: ${{ steps.index.outputs.is_newest }}
 
 runs:
   using: composite
@@ -87,6 +123,10 @@ runs:
           --out "$RUNNER_TEMP/release-notes.md" \
           --latest-out "$RUNNER_TEMP/latest-notes.md"
 
+    # The token never appears in a URL, in .git/config or on a command line:
+    # git reads it from GIT_CONFIG_* environment variables (an http
+    # extraheader, as actions/checkout uses), set only in the steps that talk
+    # to the remote, and the base64 form is masked in the log.
     - name: Clone the artifacts repository
       shell: bash
       env:
@@ -94,8 +134,12 @@ runs:
         ARTIFACTS_REPO: ${{ inputs.artifacts-repo }}
       run: |
         set -euo pipefail
+        auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+        echo "::add-mask::${auth}"
+        export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+        export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth}"
         dir="$RUNNER_TEMP/artifacts-repo"
-        git clone "https://x-access-token:${GH_TOKEN}@github.com/${ARTIFACTS_REPO}.git" "$dir"
+        git clone "https://github.com/${ARTIFACTS_REPO}.git" "$dir"
         cd "$dir"
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -108,6 +152,14 @@ runs:
           git push origin main
         fi
 
+    # A published version is never overwritten (audit H3): its files are what
+    # its SHA256SUMS.txt, Sigstore signature and update signatures describe.
+    # An existing release with the very same SHA256SUMS.txt is left alone (a
+    # re-run, or promote-latest.yml re-publishing the original files); one
+    # with different files fails here — before the index or <app>-latest
+    # change — unless allow-overwrite says this rebuild should replace it.
+    # Once immutable releases are on in the artifacts repository, GitHub
+    # refuses the overwrite itself.
     - name: Publish the versioned release
       shell: bash
       working-directory: ${{ inputs.assets-dir }}
@@ -117,25 +169,53 @@ runs:
         APP_NAME: ${{ inputs.app-name }}
         VERSION: ${{ inputs.version }}
         ARTIFACTS_REPO: ${{ inputs.artifacts-repo }}
+        ALLOW_OVERWRITE: ${{ inputs.allow-overwrite }}
       run: |
         set -euo pipefail
         tag="${APP}-v${VERSION}"
         # Installers first, checksums last.
-        mapfile -t files < <(ls | grep -v '^SHA256SUMS.txt$'; echo SHA256SUMS.txt)
-        if gh release view "$tag" --repo "$ARTIFACTS_REPO" >/dev/null 2>&1; then
-          echo "Release $tag exists — replacing its files (re-run)."
-          gh release upload "$tag" "${files[@]}" --repo "$ARTIFACTS_REPO" --clobber
-          gh release edit "$tag" --repo "$ARTIFACTS_REPO" --notes-file "$RUNNER_TEMP/release-notes.md"
-        else
+        mapfile -t files < <(ls | grep -vx 'SHA256SUMS.txt'; echo SHA256SUMS.txt)
+        existing="$RUNNER_TEMP/existing-assets.txt"
+        if ! gh release view "$tag" --repo "$ARTIFACTS_REPO" --json assets --jq '.assets[].name' > "$existing" 2>/dev/null; then
           gh release create "$tag" "${files[@]}" --repo "$ARTIFACTS_REPO" \
             --target main --title "$APP_NAME v$VERSION" \
             --notes-file "$RUNNER_TEMP/release-notes.md" --latest=false
+          exit 0
         fi
+        if [ ! -s "$existing" ]; then
+          echo "Release $tag exists without files — uploading them."
+          gh release upload "$tag" "${files[@]}" --repo "$ARTIFACTS_REPO"
+          gh release edit "$tag" --repo "$ARTIFACTS_REPO" --notes-file "$RUNNER_TEMP/release-notes.md"
+          exit 0
+        fi
+        published="$RUNNER_TEMP/published-SHA256SUMS.txt"
+        rm -f "$published"
+        if grep -qx 'SHA256SUMS.txt' "$existing" \
+          && gh release download "$tag" --repo "$ARTIFACTS_REPO" --pattern SHA256SUMS.txt --output "$published" \
+          && cmp -s "$published" SHA256SUMS.txt; then
+          echo "Release $tag already holds exactly these files (identical SHA256SUMS.txt) — left unchanged."
+          exit 0
+        fi
+        if [ "$ALLOW_OVERWRITE" = "true" ]; then
+          echo "::warning::Replacing the files of the already published release $tag (allow-overwrite). Its SHA-256 sums change — say so in its notes."
+          gh release upload "$tag" "${files[@]}" --repo "$ARTIFACTS_REPO" --clobber
+          gh release edit "$tag" --repo "$ARTIFACTS_REPO" --notes-file "$RUNNER_TEMP/release-notes.md"
+          exit 0
+        fi
+        echo "::error::$tag is already published with different files. Published versions are never overwritten: release a new version, or re-run with the overwrite input if replacing them is really intended (docs/runbooks/bad-release.md)."
+        exit 1
 
-    - name: Update the release index
+    # The index (latest.json, index.json, READMEs, updater.json) is committed
+    # BEFORE <app>-latest moves, and whether this version is the newest is
+    # decided by the regeneration that is finally pushed: if another publish
+    # landed first, the index is regenerated on top of it (the shared root
+    # README would conflict on a rebase) and is_newest recomputed, so a
+    # concurrent newer version can never leave <app>-latest holding older files.
+    - name: Update and commit the release index
       id: index
       shell: bash
       env:
+        GH_TOKEN: ${{ inputs.token }}
         APP: ${{ inputs.app }}
         APP_NAME: ${{ inputs.app-name }}
         VERSION: ${{ inputs.version }}
@@ -143,16 +223,64 @@ runs:
         ASSETS: ${{ inputs.assets-dir }}
         DATE: ${{ inputs.date }}
         SIGNER: ${{ inputs.signer }}
+        ROLLOUT: ${{ inputs.rollout }}
+        CHECK_AFTER_HOURS: ${{ inputs.check-after-hours }}
+        WITHDRAW: ${{ inputs.withdraw }}
+        REQUIRE_NEWEST: ${{ inputs.require-newest }}
       run: |
         set -euo pipefail
+        assets="$(realpath "$ASSETS")" # resolve before leaving the workspace
+        auth=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+        echo "::add-mask::${auth}"
+        export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+        export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic ${auth}"
+        cd "$RUNNER_TEMP/artifacts-repo"
         extra=()
-        if [ -n "$DATE" ]; then extra=(--date "$DATE"); fi
+        if [ -n "$DATE" ]; then extra+=(--date "$DATE"); fi
         if [ -n "$SIGNER" ]; then extra+=(--signer "$SIGNER"); fi
-        node "$GITHUB_WORKSPACE/scripts/artifacts-release.mjs" index \
-          --app "$APP" --name "$APP_NAME" --version "$VERSION" \
-          --artifacts-repo "$ARTIFACTS_REPO" --assets-dir "$ASSETS" \
-          --repo-dir "$RUNNER_TEMP/artifacts-repo" "${extra[@]}"
+        if [ -n "$ROLLOUT" ]; then extra+=(--rollout "$ROLLOUT"); fi
+        if [ -n "$CHECK_AFTER_HOURS" ]; then extra+=(--check-after-hours "$CHECK_AFTER_HOURS"); fi
+        if [ -n "$WITHDRAW" ]; then extra+=(--withdraw "$WITHDRAW"); fi
+        if [ "$REQUIRE_NEWEST" = "true" ]; then extra+=(--require-newest true); fi
+        result="$RUNNER_TEMP/index-result.txt"
+        regenerate() {
+          : > "$result"
+          GITHUB_OUTPUT="$result" node "$GITHUB_WORKSPACE/scripts/artifacts-release.mjs" index \
+            --app "$APP" --name "$APP_NAME" --version "$VERSION" \
+            --artifacts-repo "$ARTIFACTS_REPO" --assets-dir "$assets" \
+            --repo-dir "$RUNNER_TEMP/artifacts-repo" "${extra[@]}"
+        }
+        regenerate
+        pushed=false
+        for attempt in 1 2 3 4 5; do
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Index already up to date."
+            pushed=true
+            break
+          fi
+          git commit -q -m "$APP_NAME v$VERSION"
+          if git push -q origin HEAD:main; then
+            pushed=true
+            break
+          fi
+          echo "Push rejected (attempt $attempt); regenerating on the latest main."
+          git fetch -q origin main
+          git reset -q --hard origin/main
+          regenerate
+        done
+        if [ "$pushed" != "true" ]; then
+          echo "::error::Could not push the release index after 5 attempts."
+          exit 1
+        fi
+        grep '^is_newest=' "$result" | tail -n 1 >> "$GITHUB_OUTPUT"
 
+    # <app>-latest mirrors the newest version exactly. Files that version
+    # doesn't have are deleted FIRST — after a rollback that is the withdrawn
+    # build's updater.json, update signatures, SBOM or Sigstore bundle, which
+    # must not keep being served. Then updater.json (installed copies poll
+    # it), the installers, and the checksum file last, so it never describes
+    # files not yet live. Only this release is ever replaced in place.
     - name: Move the stable "latest" links
       if: steps.index.outputs.is_newest == 'true'
       shell: bash
@@ -166,55 +294,30 @@ runs:
       run: |
         set -euo pipefail
         tag="${APP}-latest"
-        mapfile -t files < <(ls | grep -v '^SHA256SUMS.txt$'; echo SHA256SUMS.txt)
+        files=()
+        if [ -f updater.json ]; then files+=(updater.json); fi
+        mapfile -t -O "${#files[@]}" files < <(ls | grep -vx -e 'SHA256SUMS.txt' -e 'updater.json'; echo SHA256SUMS.txt)
         if gh release view "$tag" --repo "$ARTIFACTS_REPO" >/dev/null 2>&1; then
-          # Each file is swapped in place (a few seconds per file); the
-          # checksum file goes last so it never describes files not yet live.
+          mapfile -t current < <(gh release view "$tag" --repo "$ARTIFACTS_REPO" --json assets --jq '.assets[].name')
+          for name in "${current[@]}"; do
+            keep=false
+            for file in "${files[@]}"; do
+              if [ "$file" = "$name" ]; then keep=true; break; fi
+            done
+            if [ "$keep" = "false" ]; then
+              echo "Removing $name from $tag (v$VERSION doesn't have it)."
+              gh release delete-asset "$tag" "$name" --repo "$ARTIFACTS_REPO" --yes
+            fi
+          done
           gh release upload "$tag" "${files[@]}" --repo "$ARTIFACTS_REPO" --clobber
         else
+          # Created once. Never delete it: installed copies poll its
+          # updater.json, and once immutable releases are on in the artifacts
+          # repository a re-created <app>-latest could no longer be updated
+          # (DEPLOYMENT.md, "Immutable releases").
           gh release create "$tag" "${files[@]}" --repo "$ARTIFACTS_REPO" \
             --target main --latest=false --notes-file "$RUNNER_TEMP/latest-notes.md"
         fi
         gh release edit "$tag" --repo "$ARTIFACTS_REPO" \
           --title "$APP_NAME — latest (v$VERSION)" \
           --notes-file "$RUNNER_TEMP/latest-notes.md"
-
-    - name: Commit the release index
-      shell: bash
-      env:
-        APP: ${{ inputs.app }}
-        APP_NAME: ${{ inputs.app-name }}
-        VERSION: ${{ inputs.version }}
-        ARTIFACTS_REPO: ${{ inputs.artifacts-repo }}
-        ASSETS: ${{ inputs.assets-dir }}
-        DATE: ${{ inputs.date }}
-        SIGNER: ${{ inputs.signer }}
-      run: |
-        set -euo pipefail
-        assets="$(realpath "$ASSETS")" # resolve before leaving the workspace
-        cd "$RUNNER_TEMP/artifacts-repo"
-        extra=()
-        if [ -n "$DATE" ]; then extra=(--date "$DATE"); fi
-        if [ -n "$SIGNER" ]; then extra+=(--signer "$SIGNER"); fi
-        for attempt in 1 2 3 4 5; do
-          git add -A
-          if git diff --cached --quiet; then
-            echo "Index already up to date."
-            exit 0
-          fi
-          git commit -q -m "$APP_NAME v$VERSION"
-          if git push -q origin HEAD:main; then
-            exit 0
-          fi
-          # Another app published meanwhile. Regenerate on top of its commit
-          # instead of rebasing — the root README is shared and would conflict.
-          echo "Push rejected (attempt $attempt); regenerating on the latest main."
-          git fetch -q origin main
-          git reset -q --hard origin/main
-          node "$GITHUB_WORKSPACE/scripts/artifacts-release.mjs" index \
-            --app "$APP" --name "$APP_NAME" --version "$VERSION" \
-            --artifacts-repo "$ARTIFACTS_REPO" --assets-dir "$assets" \
-            --repo-dir "$RUNNER_TEMP/artifacts-repo" "${extra[@]}"
-        done
-        echo "::error::Could not push the release index after 5 attempts."
-        exit 1

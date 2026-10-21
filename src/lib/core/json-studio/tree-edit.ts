@@ -5,6 +5,7 @@
  */
 
 import type { JsonPathSegments, JsonValue } from "./types";
+import { hasOwn, setOwn } from "../own";
 
 function isContainer(v: JsonValue): v is JsonValue[] | { [k: string]: JsonValue } {
   return v !== null && typeof v === "object";
@@ -28,7 +29,7 @@ export function getAtPath(
       }
       current = current[segment];
     } else {
-      if (typeof segment !== "string" || !(segment in current)) return undefined;
+      if (typeof segment !== "string" || !hasOwn(current, segment)) return undefined;
       current = current[segment];
     }
   }
@@ -53,10 +54,10 @@ export function setAtPath(
     }
     copy[head] = setAtPath(copy[head], rest, value);
   } else {
-    if (typeof head !== "string" || !(head in copy)) {
+    if (typeof head !== "string" || !hasOwn(copy, head)) {
       throw new Error(`No such key: ${String(head)}`);
     }
-    copy[head] = setAtPath(copy[head], rest, value);
+    setOwn(copy, head, setAtPath(copy[head], rest, value));
   }
   return copy;
 }
@@ -77,7 +78,7 @@ export function deleteAtPath(root: JsonValue, path: JsonPathSegments): JsonValue
     }
     copy.splice(last, 1);
   } else {
-    if (typeof last !== "string" || !(last in copy)) {
+    if (typeof last !== "string" || !hasOwn(copy, last)) {
       throw new Error(`No such key: ${String(last)}`);
     }
     delete copy[last];
@@ -100,11 +101,11 @@ export function renameKey(
   if (parent === undefined || parent === null || typeof parent !== "object" || Array.isArray(parent)) {
     throw new Error("Parent is not an object");
   }
-  if (!(oldKey in parent)) throw new Error(`No such key: ${oldKey}`);
-  if (newKey in parent) throw new Error(`Key already exists: ${newKey}`);
+  if (!hasOwn(parent, oldKey)) throw new Error(`No such key: ${oldKey}`);
+  if (hasOwn(parent, newKey)) throw new Error(`Key already exists: ${newKey}`);
   const renamed: { [k: string]: JsonValue } = {};
   for (const key of Object.keys(parent)) {
-    renamed[key === oldKey ? newKey : key] = parent[key];
+    setOwn(renamed, key === oldKey ? newKey : key, parent[key]);
   }
   return setAtPath(root, parentPath, renamed);
 }
@@ -132,8 +133,8 @@ export function insertChild(
   } else {
     const key = options.key;
     if (!key) throw new Error("Object entries need a key");
-    if (key in copy) throw new Error(`Key already exists: ${key}`);
-    copy[key] = value;
+    if (hasOwn(copy, key)) throw new Error(`Key already exists: ${key}`);
+    setOwn(copy, key, value);
   }
   return setAtPath(root, path, copy);
 }

@@ -15,6 +15,103 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+### Security
+
+- **Updates can't be swapped for an older build.** The in-app updater now
+  installs only the build published for that exact version, after you
+  confirm "Install and restart" in a dialog of the app itself.
+- **Links ask before leaving the app.** A link to a site that isn't one of
+  CoreTools' own or Google's account pages opens only after you confirm a
+  dialog that names the site (once per site per session), and the app's
+  window can no longer be pointed at another site.
+- **Files you pick are used only as you picked them.** A file chosen to open
+  can't be written, and one chosen to save can't be read; saves are written
+  safely (a crash never leaves half a file).
+- **Lowering a protection asks for your password.** Turning off the reveal
+  check or clipboard clearing, lengthening auto-lock, exporting accounts,
+  rolling back to a snapshot and wiping the vault now ask for your master
+  password — or Windows Hello, if you turned it on for the vault — every
+  time. These settings are also sealed in the vault, so values planted on
+  disk can't weaken them; if their sealed copy is missing or damaged, the
+  stricter of the stored values and the defaults applies (a vault from
+  before this version may find a lowered setting back at its default once).
+- **Stronger exports.** The password-protected export now uses the vault's
+  own key derivation (Argon2id) and ties each account's name to its secret,
+  needs a strong password, and is the default. The extension-compatible
+  format is labelled as the weak protection it is.
+- **Imported accounts are checked.** QR codes, links and files with code
+  settings no authenticator uses (say, 200 million digits) are refused.
+- **Tamper-proofing the activity log.** A record planted into the log is
+  reported instead of being sealed in, removed early records are detected,
+  and changing the password records that a tampered log was restarted.
+- Encrypted fields are now bound to their record, the unsalted hash of each
+  2FA secret is no longer stored, the camera works only while the QR scanner
+  is open, and backup files are refused before they could exhaust memory.
+- **Every downloadable file is covered by the signed checksums.** A
+  release's `SHA256SUMS.txt` — signed by the release workflow — now also
+  lists the in-app update files and their signatures, not just the
+  installers and the SBOM, so `sha256sum --check` verifies everything a
+  release publishes.
+
+### Added
+
+- **Undo for a deleted 2FA account**, and **local snapshots**: before a
+  password change or a restore, CoreTools keeps a copy of the vault (the
+  last five) that Settings can roll back to.
+- **After a password change**, Settings offers to delete the older cloud
+  backups and snapshots that still open with the old password.
+- **Report a problem** in About: copy the diagnostics and the support address.
+
+### Fixed
+
+- **Two windows or browser tabs can't overwrite each other's changes.** When
+  one window saves, the others read the vault again and stay unlocked
+  (they lock only after a password change or rollback elsewhere); a change
+  prepared from an out-of-date copy is refused with "try again" instead of
+  being written. The desktop app runs only once (a second launch brings it
+  to the front).
+- **One damaged record no longer locks you out.** It is set aside and
+  reported; the rest of the vault opens, and a password change keeps it.
+- **Rolling back to a snapshot can't lock you out.** One from before a
+  password change asks for the password it had then before changing
+  anything, keeps your current settings, and the oldest snapshot can be
+  restored too.
+- **Undoing a deletion sticks**, even after the deletion reached a backup.
+- **"Delete older copies" after a password change** backs up first without
+  overriding another device's newer backup, and deletes nothing if that
+  backup didn't go through.
+- Opening a workbook with cells beyond Excel's last column, or scanning a
+  document built to slow the secret check down, no longer hangs JSON-Studio.
+- If the local data can't be opened (say, an older CoreTools is still open
+  in another tab), the message says so and offers **Try again**.
+- **Merging a backup keeps the newest version** of a login instead of the one
+  already here, so a password changed on another device isn't reverted.
+- **Deleting every account now protects the last full backup**, and a
+  deletion and its record are written together.
+- The browser version asks to keep its data and warns when the browser may
+  clear it; copied secrets are cleared from the clipboard by default.
+- A lock during a backup is no longer reported as an error; an over-large
+  backup says so; update checks spread out and follow the release index's
+  own pace.
+
+- **A correct password is no longer called wrong.** When unlocking fails for
+  another reason — the device running short of memory while deriving the
+  key, say — CoreTools now reports that error instead of "Wrong password".
+- **Recovered failures leave a trace.** Problems CoreTools works around on
+  its own now appear under *About → Copy diagnostics* instead of
+  disappearing. Examples: a saved order it can't read, an old backup
+  version it couldn't delete, an activity-log entry it couldn't write.
+  As before, the log holds error types only, never content.
+- Undoing *Move to trash* now says so if the login couldn't be restored.
+
+### Changed
+
+- Internal clean-up, no change in behaviour:
+  - The Credential Manager screen is split into smaller components.
+  - Backup-merge and record-sealing rules are shared, tested modules.
+  - Drag-to-reorder is one implementation for space tabs, logins and 2FA
+    accounts.
+
 ## [1.2.6] — 2026-10-16
 
 ### Added

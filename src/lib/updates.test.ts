@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const { bridge, openExternal, record } = vi.hoisted(() => ({
   bridge: { check: vi.fn(), install: vi.fn() },
   openExternal: vi.fn(),
-  record: vi.fn(),
+  record: vi.fn(() => Promise.resolve()),
 }));
 vi.mock("./platform", () => ({
   getPlatform: () => ({ updates: bridge, openExternal, diagnostics: { record } }),
@@ -21,9 +21,16 @@ vi.stubGlobal("localStorage", {
   removeItem: (key: string) => storage.delete(key),
 });
 
-const { UpdateController, compareVersions, CHECK_EVERY_MS, RETRY_AFTER_MS, TICK_MS } = await import(
-  "./updates.svelte"
-);
+const {
+  UpdateController,
+  compareVersions,
+  inRollout,
+  isReleaseLink,
+  CHECK_EVERY_MS,
+  CHECK_JITTER_MS,
+  RETRY_AFTER_MS,
+  TICK_MS,
+} = await import("./updates.svelte");
 
 const HOUR = 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 9, 14, 9, 0);
@@ -35,6 +42,8 @@ function release(version: string, extra: Record<string, unknown> = {}) {
     releaseUrl: `https://github.com/jaychandra1/artifacts/releases/tag/coretools-v${version}`,
     notice: null,
     security: false,
+    rollout: null,
+    checkAfterHours: null,
     downloadUrl: `https://github.com/jaychandra1/artifacts/releases/download/coretools-v${version}/CoreTools-Windows-Setup.exe`,
     ...extra,
   };
@@ -81,7 +90,8 @@ describe("update notifications", () => {
 
     await vi.advanceTimersByTimeAsync(CHECK_EVERY_MS - TICK_MS);
     expect(bridge.check).toHaveBeenCalledTimes(1); // not due yet
-    await vi.advanceTimersByTimeAsync(2 * TICK_MS);
+    // Each install adds up to CHECK_JITTER_MS so copies don't poll in lockstep.
+    await vi.advanceTimersByTimeAsync(CHECK_JITTER_MS + 2 * TICK_MS);
     expect(bridge.check).toHaveBeenCalledTimes(2); // a release published meanwhile is found
   });
 
@@ -94,6 +104,57 @@ describe("update notifications", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(bridge.check).not.toHaveBeenCalled();
     expect(updates.available?.version).toBe("1.2.2");
+  });
+
+  it("accepts only links that stay inside the release repository (S-6)", () => {
+    const prefix = "https://github.com/jaychandra1/artifacts/releases/download/";
+    expect(isReleaseLink(`${prefix}coretools-v1.2.2/CoreTools-Windows-Setup.exe`, prefix)).toBe(true);
+    expect(isReleaseLink(`${prefix}../../../../evil/x/releases/download/v1/a.exe`, prefix)).toBe(false);
+    expect(isReleaseLink(`${prefix}%2e%2e/%2e%2e/evil/a.exe`, prefix)).toBe(false);
+    expect(isReleaseLink("https://evil.example/a.exe", prefix)).toBe(false);
+  });
+
+  it("offers a staged release to its share of installs; asking by hand always shows it", async () => {
+    expect(inRollout(null, 99)).toBe(true);
+    expect(inRollout(10, 5)).toBe(true);
+    expect(inRollout(10, 50)).toBe(false);
+
+    bridge.check.mockResolvedValue(release("1.2.2", { rollout: 10 }));
+    const updates = started({ "coretools.updates": "on", "coretools.updates.bucket": "50" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(updates.available).toBeNull();
+    await updates.check(true);
+    expect(updates.available?.version).toBe("1.2.2");
+  });
+
+  it("checks no more often than the release index asks", async () => {
+    bridge.check.mockResolvedValue(release("1.2.1", { checkAfterHours: 24 }));
+    started({ "coretools.updates": "on" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(bridge.check).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(12 * HOUR);
+    expect(bridge.check).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(13 * HOUR);
+    expect(bridge.check).toHaveBeenCalledTimes(2);
+  });
+
+  it("caps how long the release index can postpone checks", async () => {
+    bridge.check.mockResolvedValue(release("1.2.1", { checkAfterHours: 10_000_000 }));
+    started({ "coretools.updates": "on" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(bridge.check).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(7 * 24 * HOUR + 2 * HOUR);
+    expect(bridge.check).toHaveBeenCalledTimes(2);
+  });
+
+  it("does nothing when the user declines the install confirmation", async () => {
+    bridge.check.mockResolvedValue(release("1.2.2"));
+    bridge.install.mockRejectedValue("update_canceled");
+    const updates = started({ "coretools.updates": "on" });
+    await vi.advanceTimersByTimeAsync(0);
+    await updates.update();
+    expect(updates.installError).toBe("");
+    expect(openExternal).not.toHaveBeenCalled();
   });
 
   it("ignores a remembered release that points outside the release repository", () => {

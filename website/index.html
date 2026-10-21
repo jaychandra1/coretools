@@ -202,7 +202,10 @@
           <div class="section-head reveal">
             <p class="eyebrow">Download</p>
             <h2>Get CoreTools</h2>
-            <p>Free and lightweight. Downloads are served over HTTPS from GitHub.</p>
+            <p>
+              Free and lightweight. Downloads are served over HTTPS from GitHub<span data-store-only hidden>,
+              and on Windows from the Microsoft Store too</span>.
+            </p>
           </div>
 
           <div class="download-grid" data-download-grid>
@@ -214,9 +217,18 @@
               </div>
               <h3>Windows</h3>
               <p class="os-note" data-os-note>Windows 10 / 11 (64-bit)</p>
-              <a class="btn btn-primary btn-block" data-download-link href="#">
-                <span class="dl-label">Download</span> <span class="dl-ext" data-os-ext>.exe</span>
-              </a>
+              <div class="dl-actions">
+                <a class="btn btn-primary btn-block" data-store-link href="#" rel="noopener" hidden>
+                  <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M4 7h16l-1 13H5z" />
+                    <path d="M9 10V6a3 3 0 0 1 6 0v4" />
+                  </svg>
+                  Get it from Microsoft Store
+                </a>
+                <a class="btn btn-primary btn-block" data-download-link href="#">
+                  <span class="dl-label">Download</span> <span class="dl-ext" data-os-ext>.exe</span>
+                </a>
+              </div>
               <p class="os-meta"><span data-os-size>—</span></p>
             </article>
 
@@ -280,6 +292,12 @@
             you have verified against the release's <code>SHA256SUMS.txt</code>;
             if you can't verify it, or would rather skip the warning entirely,
             use the in-browser app below — same tools, no installer.
+            <span data-store-only hidden>
+              On Windows you can also
+              <a data-store-link href="#" rel="noopener">get CoreTools from the Microsoft Store</a>:
+              Microsoft certifies apps before listing them, and installing from
+              the Store skips the browser-download warning.
+            </span>
           </p>
 
           <p class="download-foot muted reveal">

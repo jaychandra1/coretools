@@ -100,6 +100,7 @@ const tauriCloud: CloudBridge = {
       content: file.content,
       deviceId: file.deviceId,
       deviceLabel: file.deviceLabel,
+      records: file.records,
     });
   },
 
@@ -167,7 +168,13 @@ export const tauriPlatform: Platform = {
 
   async openExternal(url: string): Promise<void> {
     const { invoke } = await import("@tauri-apps/api/core");
+    // Rust asks before opening an unfamiliar site (S-7); "canceled" if the user says no.
     await invoke("open_external_url", { url });
+  },
+
+  async armCamera(armed: boolean): Promise<void> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    await invoke("qr_camera_armed", { armed });
   },
 
   // Dialogs are opened in RUST (`pick_open_path` / `pick_save_path`), which
@@ -205,8 +212,12 @@ export const tauriPlatform: Platform = {
     });
     if (typeof path !== "string") return false;
 
-    // Tauri v2 serializes Vec<u8> command args efficiently from number[].
-    await invoke("write_binary_file", { path, contents: Array.from(bytes) });
+    // The bytes travel as the raw IPC body, not a JSON number array (L3);
+    // the path rides in a header, base64 so any file name survives.
+    const pathBytes = new TextEncoder().encode(path);
+    let binary = "";
+    for (const byte of pathBytes) binary += String.fromCharCode(byte);
+    await invoke("write_binary_file", bytes, { headers: { "x-path": btoa(binary) } });
     return true;
   },
 };

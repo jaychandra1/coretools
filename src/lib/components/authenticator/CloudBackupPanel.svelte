@@ -220,10 +220,10 @@
         <li>{@render check()}<span><strong>Restore anywhere</strong> — new device or reinstall, just sign in</span></li>
       </ul>
 
-      {#if cloudBackup.needsReconnect && cloudBackup.config?.email}
+      {#if cloudBackup.needsReconnect && cloudBackup.config?.accountHash}
         <div class="callout warn">
-          Backups to <strong>{cloudBackup.config.email}</strong> stopped because
-          Google access was lost. Reconnect to resume.
+          Backups to your Google Drive stopped because Google access was lost.
+          Reconnect with the same account to resume.
         </div>
       {/if}
       {#if !authStore.encrypted}

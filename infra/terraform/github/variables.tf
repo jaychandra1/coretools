@@ -88,13 +88,42 @@ variable "release_reviewers" {
 }
 
 variable "required_secrets" {
-  description = "Repository Actions secrets the workflows read. Terraform only checks that they exist; values are never managed here."
+  description = <<-EOT
+    Actions secrets the workflows read. Terraform only checks that they exist;
+    values are never managed here. The updater signing secrets
+    (TAURI_SIGNING_PRIVATE_KEY, TAURI_SIGNING_PRIVATE_KEY_PASSWORD) are
+    expected as repository secrets, or in the `release` environment once
+    updater_signing_secrets_in_release_environment is true.
+  EOT
   type        = list(string)
   default = [
     "ARTIFACTS_REPO_TOKEN",
     "CORETOOLS_GOOGLE_CLIENT_ID",
     "CORETOOLS_GOOGLE_CLIENT_SECRET",
+    "TAURI_SIGNING_PRIVATE_KEY",
+    "TAURI_SIGNING_PRIVATE_KEY_PASSWORD",
   ]
+}
+
+variable "updater_signing_secrets_in_release_environment" {
+  description = <<-EOT
+    true once TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+    have been moved from repository secrets into the `release` environment
+    (audit S-2). Then only jobs that run in that environment — release.yml's
+    sign-updates — can read them, and only for runs the environment's v*
+    deployment policy admits. GitHub Free can configure environments (their
+    secrets and policies) only for PUBLIC repositories; a private repository
+    needs GitHub Pro. Until then the secrets stay repository secrets and this
+    stays false (DEPLOYMENT.md, "Manual steps").
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "required_variables" {
+  description = "Repository Actions variables (vars.*) that must exist. TAURI_UPDATER_PUBKEY switches in-app updates on and must be a REPOSITORY variable: the build jobs, which run outside the `release` environment, compile it in."
+  type        = list(string)
+  default     = ["TAURI_UPDATER_PUBKEY"]
 }
 
 variable "artifacts_token_max_age_days" {

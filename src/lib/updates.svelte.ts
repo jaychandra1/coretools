@@ -11,6 +11,8 @@
  */
 
 import { getPlatform } from "./platform";
+import { readSetting, writeSetting } from "./local-setting";
+import { noteFailure } from "./diagnostics";
 import type { UpdateInfo, UpdateProgress } from "./platform/types";
 
 const PREF_KEY = "coretools.updates";
@@ -19,6 +21,8 @@ const CHECKED_KEY = "coretools.updates.checkedAt";
 const LATEST_KEY = "coretools.updates.latest";
 /** The version whose banner was dismissed with "Later". */
 const DISMISSED_KEY = "coretools.updates.dismissed";
+/** This install's place (0–99) in a staged rollout: random, kept, never sent anywhere. */
+const BUCKET_KEY = "coretools.updates.bucket";
 
 /**
  * How old the last successful check may get before the next one. Releases
@@ -26,10 +30,17 @@ const DISMISSED_KEY = "coretools.updates.dismissed";
  * is nothing.
  */
 export const CHECK_EVERY_MS = 60 * 60 * 1000;
+/** The longest the release index can ask automatic checks to wait (`checkAfterHours`). */
+export const MAX_CHECK_AFTER_HOURS = 7 * 24;
 /** After a failed check (offline, GitHub down), wait this long to retry. */
 export const RETRY_AFTER_MS = 30 * 60 * 1000;
 /** How often an open app looks whether a check is due (cheap: no request). */
 export const TICK_MS = 5 * 60 * 1000;
+/**
+ * Each install waits up to this much longer than CHECK_EVERY_MS, at random,
+ * so a fleet of copies doesn't poll the release index in lockstep.
+ */
+export const CHECK_JITTER_MS = 15 * 60 * 1000;
 
 /** Same rules as the Rust side (updates.rs): only links into the public release repo. */
 const RELEASE_PREFIX = "https://github.com/jaychandra1/artifacts/releases/";
@@ -48,43 +59,51 @@ export function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-function read(key: string): string | null {
+/**
+ * A link that stays inside the public release repository: https, under
+ * `prefix`, and unchanged by URL normalization — so "/../" or "%2e%2e"
+ * segments that would resolve elsewhere are refused (S-6).
+ */
+export function isReleaseLink(url: unknown, prefix: string): url is string {
+  if (typeof url !== "string" || !url.startsWith(prefix)) return false;
   try {
-    return localStorage.getItem(key);
+    return new URL(url).href === url;
   } catch {
-    return null;
-  }
-}
-
-function write(key: string, value: string | null): void {
-  try {
-    if (value === null) localStorage.removeItem(key);
-    else localStorage.setItem(key, value);
-  } catch {
-    // Private mode / storage disabled: the preference just isn't remembered.
+    return false;
   }
 }
 
 /** A remembered release, only if it still looks like one the Rust side accepted. */
 function restoreLatest(): UpdateInfo | null {
   try {
-    const info = JSON.parse(read(LATEST_KEY) ?? "null") as UpdateInfo | null;
-    if (
-      info &&
-      /^\d+\.\d+\.\d+$/.test(info.version) &&
-      typeof info.releaseUrl === "string" &&
-      info.releaseUrl.startsWith(RELEASE_PREFIX)
-    ) {
-      const downloadUrl =
-        typeof info.downloadUrl === "string" && info.downloadUrl.startsWith(DOWNLOAD_PREFIX)
-          ? info.downloadUrl
-          : null;
-      return { ...info, downloadUrl };
+    const info = JSON.parse(readSetting(LATEST_KEY) ?? "null") as UpdateInfo | null;
+    if (info && /^\d+\.\d+\.\d+$/.test(info.version) && isReleaseLink(info.releaseUrl, RELEASE_PREFIX)) {
+      return {
+        ...info,
+        downloadUrl: isReleaseLink(info.downloadUrl, DOWNLOAD_PREFIX) ? info.downloadUrl : null,
+        rollout: typeof info.rollout === "number" ? info.rollout : null,
+        checkAfterHours: typeof info.checkAfterHours === "number" ? info.checkAfterHours : null,
+      };
     }
   } catch {
     // Unreadable: the next check fills it in again.
   }
   return null;
+}
+
+/** This install's rollout bucket, 0–99: random, kept, never sent anywhere. */
+function rolloutBucket(): number {
+  const stored = readSetting(BUCKET_KEY);
+  const bucket = Number(stored);
+  if (stored !== null && Number.isInteger(bucket) && bucket >= 0 && bucket < 100) return bucket;
+  const fresh = Math.floor(Math.random() * 100);
+  writeSetting(BUCKET_KEY, String(fresh));
+  return fresh;
+}
+
+/** A release staged to `rollout` percent includes this install. */
+export function inRollout(rollout: number | null, bucket: number): boolean {
+  return rollout === null || bucket < rollout;
 }
 
 export class UpdateController {
@@ -111,6 +130,10 @@ export class UpdateController {
 
   #started = false;
   #lastFailureAt = 0;
+  /** This install's share of the jitter, fixed for the session. */
+  readonly #jitter = Math.floor(Math.random() * CHECK_JITTER_MS);
+  /** The release index's own minimum interval, from the last check. */
+  #serverInterval = 0;
 
   /**
    * Load the preference and what earlier checks found, check now if one is
@@ -120,11 +143,11 @@ export class UpdateController {
   start(): void {
     if (this.#started || !this.supported) return;
     this.#started = true;
-    const pref = read(PREF_KEY);
+    const pref = readSetting(PREF_KEY);
     this.pref = pref === "on" || pref === "off" ? pref : null;
-    const checked = Number(read(CHECKED_KEY));
+    const checked = Number(readSetting(CHECKED_KEY));
     this.lastCheckedAt = Number.isFinite(checked) && checked > 0 ? checked : null;
-    this.dismissed = read(DISMISSED_KEY);
+    this.dismissed = readSetting(DISMISSED_KEY);
     if (this.pref === "on") this.#adopt(restoreLatest());
 
     this.tick();
@@ -144,14 +167,15 @@ export class UpdateController {
   /** Check when one is due: on, and the last success (or failure) is old enough. */
   tick(now = Date.now()): void {
     if (this.pref !== "on" || this.checking) return;
-    if (now - (this.lastCheckedAt ?? 0) < CHECK_EVERY_MS) return;
+    const interval = Math.max(CHECK_EVERY_MS + this.#jitter, this.#serverInterval);
+    if (now - (this.lastCheckedAt ?? 0) < interval) return;
     if (now - this.#lastFailureAt < RETRY_AFTER_MS) return;
     void this.check(false);
   }
 
   setPref(pref: "on" | "off"): void {
     this.pref = pref;
-    write(PREF_KEY, pref);
+    writeSetting(PREF_KEY, pref);
     if (pref === "on") void this.check(false);
     else this.#adopt(null);
   }
@@ -160,7 +184,7 @@ export class UpdateController {
   dismiss(): void {
     if (!this.available) return;
     this.dismissed = this.available.version;
-    write(DISMISSED_KEY, this.dismissed);
+    writeSetting(DISMISSED_KEY, this.dismissed);
   }
 
   /** Ask the release index. `manual` reports "up to date" / failures. */
@@ -172,13 +196,17 @@ export class UpdateController {
     try {
       const latest = await bridge.check();
       this.lastCheckedAt = Date.now();
-      write(CHECKED_KEY, String(this.lastCheckedAt));
-      this.#adopt(latest);
+      writeSetting(CHECKED_KEY, String(this.lastCheckedAt));
+      // The release index can only slow checks down, and never past a week.
+      this.#serverInterval = Math.min(Math.max(latest.checkAfterHours ?? 0, 0), MAX_CHECK_AFTER_HOURS) * 60 * 60 * 1000;
+      // A staged release reaches automatic checks gradually; asking by hand
+      // always shows it.
+      this.#adopt(manual || inRollout(latest.rollout, rolloutBucket()) ? latest : null);
       if (this.available) this.message = `CoreTools ${latest.version} is available.`;
       else if (manual) this.message = `You're up to date (CoreTools ${__APP_VERSION__}).`;
     } catch (e) {
       this.#lastFailureAt = Date.now();
-      void getPlatform().diagnostics?.record("updates", typeof e === "string" ? e : "check failed");
+      noteFailure("updates", typeof e === "string" ? e : "check failed", e);
       if (manual) {
         this.message = "Couldn't reach the release page. Check your connection and try again.";
       }
@@ -191,7 +219,7 @@ export class UpdateController {
   #adopt(latest: UpdateInfo | null): void {
     const newer = latest && compareVersions(latest.version, __APP_VERSION__) > 0 ? latest : null;
     this.available = newer;
-    write(LATEST_KEY, newer ? JSON.stringify(newer) : null);
+    writeSetting(LATEST_KEY, newer ? JSON.stringify(newer) : null);
   }
 
   /**
@@ -221,7 +249,8 @@ export class UpdateController {
     } catch (e) {
       this.installing = null;
       const code = typeof e === "string" ? e : "update_failed";
-      void getPlatform().diagnostics?.record("updates", code);
+      if (code === "update_canceled") return; // the user said no in the confirmation
+      noteFailure("updates", code, e);
       if (code === "update_unavailable" || code === "update_none") {
         await this.download();
       } else if (code === "update_network") {

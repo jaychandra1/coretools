@@ -6,6 +6,13 @@
 
 /.github/                           @jaychandra1
 /scripts/artifacts-release.mjs      @jaychandra1
+/scripts/updater-manifest.mjs       @jaychandra1
+/scripts/verify-update-signature.mjs @jaychandra1
+/scripts/setup-rust.sh              @jaychandra1
+/rust-toolchain.toml                @jaychandra1
+/deny.toml                          @jaychandra1
+/vercel.json                        @jaychandra1
+/infra/                             @jaychandra1
 /src-tauri/                         @jaychandra1
 /src/lib/core/authenticator/        @jaychandra1
 /src/lib/core/credentials/          @jaychandra1

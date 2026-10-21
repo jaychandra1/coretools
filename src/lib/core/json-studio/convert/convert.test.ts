@@ -4,6 +4,7 @@ import { jsonToXml, xmlToJson } from "./xml";
 import { jsonToYaml, yamlToJson } from "./yaml";
 import { columnRef, jsonToXlsx, xlsxToJson } from "./xlsx";
 import type { JsonValue } from "./../types";
+import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 
 const RECORDS: JsonValue = [
   { id: 1, name: "Alice", active: true, address: { city: "Oslo" } },
@@ -157,5 +158,17 @@ describe("XLSX", () => {
   it("rejects non-zip bytes and empty arrays", () => {
     expect(xlsxToJson(new Uint8Array([1, 2, 3])).ok).toBe(false);
     expect(jsonToXlsx([]).ok).toBe(false);
+  });
+
+  it("refuses cell references past Excel's last column instead of building huge rows", () => {
+    const bytes = jsonToXlsx([{ id: 1 }]);
+    if (!bytes.ok) throw new Error("export failed");
+    const files = unzipSync(bytes.value);
+    const sheet = Object.keys(files).find((f) => f.startsWith("xl/worksheets/"))!;
+    for (const ref of ["ZZZZZZZZ1", "XFE1"]) {
+      const crafted = strFromU8(files[sheet]).replace(/r="A1"/, `r="${ref}"`);
+      const back = xlsxToJson(zipSync({ ...files, [sheet]: strToU8(crafted) }));
+      expect(back.ok, ref).toBe(false);
+    }
   });
 });

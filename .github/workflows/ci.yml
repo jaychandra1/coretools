@@ -21,9 +21,16 @@ on:
 permissions:
   contents: read
 
-# Pull requests: a new push supersedes the running check. master: every run
-# finishes, in order, so the commit that bumped the version is the one that
-# gets tagged and `production` never moves backwards.
+# Pull requests: a new push supersedes the running check. master: a running
+# CI is never cancelled, so a started tag-release or promote-web finishes,
+# and runs never overlap, so `production` never moves backwards. This does
+# NOT mean every master push gets its own run: GitHub keeps one pending run
+# per group and a newer push cancels the pending one, so only the running
+# and the newest commit are checked. Consequence for releases: if another
+# pull request is merged while a merged release PR's run is still queued,
+# the release commit's run is cancelled and tag-release tags the NEWER
+# commit (which carries the same version) — the release then includes that
+# change too. Merge nothing else until the release is tagged.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -34,10 +41,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -63,6 +72,15 @@ jobs:
       - name: Production dependency audit (must be clean)
         run: npm audit --omit=dev --audit-level=low
 
+      # Dev-only tools (test runner, bundler, type checker) don't ship, so an
+      # advisory there doesn't block merges or releases — but it is reported
+      # on every run, so it gets fixed in a normal pull request.
+      - name: Dev dependency audit (reported, not blocking)
+        run: |
+          if ! npm audit --audit-level=low; then
+            echo "::warning::npm audit reports advisories in dev-only dependencies (they don't ship). Update them in a normal pull request."
+          fi
+
       - name: Version strings in sync
         run: node scripts/sync-version.mjs --check
 
@@ -79,10 +97,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -101,16 +121,17 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned master
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          toolchain: stable
-          components: clippy, rustfmt
+          persist-credentials: false
+
+      # The version pinned in rust-toolchain.toml (with rustfmt and clippy),
+      # installed with the runner's rustup.
+      - name: Set up Rust
+        run: bash scripts/setup-rust.sh
 
       - name: Cache Rust build
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: "./src-tauri -> target"
 
@@ -126,13 +147,15 @@ jobs:
             libdbus-1-dev \
             pkg-config
 
-      # Reproducible builds (audit F-05): once Cargo.lock is committed, any
-      # change that would need it updated fails here instead of drifting.
+      # Reproducible builds (audit F-05 / S-3): once Cargo.lock is committed,
+      # any change that would need it updated fails here instead of drifting.
+      # Until then CI only warns, so development isn't blocked — but the
+      # Release workflow refuses to run without the lockfile.
       - name: Cargo.lock is committed and current
         working-directory: src-tauri
         run: |
           if [ ! -f Cargo.lock ]; then
-            echo "::warning::src-tauri/Cargo.lock is not committed — builds are not reproducible. Run Actions → 'Generate Cargo.lock' and merge its branch (audit F-05)."
+            echo "::warning::src-tauri/Cargo.lock is not committed — builds are not reproducible and RELEASES ARE BLOCKED until it is. Run Actions → 'Generate Cargo.lock' and merge its pull request (audit S-3)."
           else
             cargo metadata --locked --format-version 1 > /dev/null
           fi
@@ -142,9 +165,9 @@ jobs:
       - name: Stub frontend dist
         run: mkdir -p dist && touch dist/index.html
 
-      - name: Format check (advisory)
+      # Run `cargo fmt` in src-tauri before pushing.
+      - name: Format check
         working-directory: src-tauri
-        continue-on-error: true
         run: cargo fmt --check
 
       - name: Clippy (deny warnings)
@@ -168,7 +191,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Compare with the PR base, or with the commit before the push. When
       # that can't be determined (manual run, new branch, force-push), run.
@@ -194,7 +217,7 @@ jobs:
           if [ -z "$base" ] || [ -z "${base//0/}" ]; then run_check "no base commit to compare with"; fi
           if ! git fetch --no-tags --depth=1 origin "$base"; then run_check "base ${base} is not fetchable"; fi
           if ! files=$(git diff --name-only "$base" HEAD); then run_check "could not diff against ${base}"; fi
-          if printf '%s\n' "$files" | grep -Eq '^(src-tauri/|Cargo\.(toml|lock)$|rust-toolchain(\.toml)?$|\.cargo/|\.github/workflows/ci\.yml$)'; then
+          if printf '%s\n' "$files" | grep -Eq '^(src-tauri/|Cargo\.(toml|lock)$|rust-toolchain(\.toml)?$|\.cargo/|scripts/setup-rust\.sh$|\.github/workflows/ci\.yml$)'; then
             run_check "Rust-related files changed since ${base:0:12}"
           fi
           echo "rust=false" >> "$GITHUB_OUTPUT"
@@ -225,14 +248,12 @@ jobs:
 
       - name: Set up Rust
         if: steps.changes.outputs.rust == 'true' || steps.installer.outputs.installer == 'true'
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # pinned master
-        with:
-          toolchain: stable
-          components: clippy
+        shell: bash
+        run: bash scripts/setup-rust.sh
 
       - name: Cache Rust build
         if: steps.changes.outputs.rust == 'true' || steps.installer.outputs.installer == 'true'
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: "./src-tauri -> target"
 
@@ -255,11 +276,11 @@ jobs:
         working-directory: src-tauri
         run: cargo check --all-targets
 
-      # Advisory until the Windows-only code has a clean clippy baseline.
-      - name: Clippy (advisory)
+      # Windows-only code (hello.rs, webview_permissions.rs, the secure
+      # clipboard) is linted only here; same bar as the Linux job.
+      - name: Clippy (deny warnings)
         if: steps.changes.outputs.rust == 'true'
         working-directory: src-tauri
-        continue-on-error: true
         run: cargo clippy --all-targets -- -D warnings
 
       # installer/hooks.nsh forgets the Google sign-in only when "Delete the
@@ -303,7 +324,7 @@ jobs:
       # what's under test) and check it was made from our patched template.
       - name: Set up Node (installer build)
         if: steps.installer.outputs.installer == 'true'
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
           cache: npm
@@ -379,10 +400,10 @@ jobs:
       actions: write # starts release.yml on that tag
     steps:
       - name: Checkout
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
 
@@ -400,12 +421,25 @@ jobs:
           fi
 
       # The same checks release.yml applies, before a tag that rulesets make
-      # hard to move or delete exists.
-      - name: Version strings and release notes are ready
+      # hard to move or delete exists: a release PR merged before
+      # src-tauri/Cargo.lock would otherwise tag a version whose release
+      # refuses to run. (The rust jobs this job needs already proved a
+      # committed lockfile current.) Untagged here, the version is tagged by
+      # the first green master run after the lockfile is merged.
+      - name: Version strings, release notes and Cargo.lock are ready
         if: steps.version.outputs.new == 'true'
         env:
           TAG: ${{ steps.version.outputs.tag }}
         run: |
+          set -euo pipefail
+          test -f src-tauri/Cargo.lock || {
+            echo "::error::src-tauri/Cargo.lock is not committed, so ${TAG} is not tagged — its release would refuse to run (audit S-3). Run Actions → 'Generate Cargo.lock' and merge its pull request; CI on master then tags ${TAG}."
+            exit 1
+          }
+          if ! printf '%s' "${TAG#v}" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::${TAG} isn't vX.Y.Z — installed copies accept no other version (src-tauri/src/updates.rs), and the release would refuse it."
+            exit 1
+          fi
           node scripts/sync-version.mjs --check
           node scripts/changelog.mjs check "${TAG#v}"
 

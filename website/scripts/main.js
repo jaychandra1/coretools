@@ -2,7 +2,8 @@
    CoreTools — main.js
    Dependency-free progressive enhancement:
      1. Populate download cards from CORETOOLS_DOWNLOADS and
-        verify each installer is actually served (same-origin).
+        verify each installer is actually served (same-origin);
+        offer the Microsoft Store on Windows once it's configured.
      2. Detect the visitor's OS to recommend a build.
      3. Load SHA-256 checksums for download verification.
      4. Reveal-on-scroll micro-animations (reduced-motion aware).
@@ -133,6 +134,38 @@
     });
   }
 
+  /* ---------------------- Microsoft Store ---------------------- */
+
+  /**
+   * The Store listing, once `microsoftStore.productId` is set in
+   * downloads.js; null until then. Store IDs are 12 letters and digits.
+   * `mode=direct` opens the Store app on Windows and the web listing
+   * elsewhere.
+   */
+  function storeUrl() {
+    var id = String((cfg.microsoftStore || {}).productId || "").trim().toUpperCase();
+    if (!/^[0-9A-Z]{12}$/.test(id)) return null;
+    return "https://apps.microsoft.com/detail/" + id + "?mode=direct";
+  }
+
+  /** Offer the Store on the Windows card (first), the .exe second. */
+  function showStore() {
+    var url = storeUrl();
+    if (!url) return;
+    document.querySelectorAll("[data-store-link]").forEach(function (a) {
+      a.setAttribute("href", url);
+      a.hidden = false;
+    });
+    document.querySelectorAll("[data-store-only]").forEach(function (el) {
+      el.hidden = false;
+    });
+    var exe = document.querySelector('[data-os="windows"] [data-download-link]');
+    if (exe) {
+      exe.classList.remove("btn-primary");
+      exe.classList.add("btn-ghost");
+    }
+  }
+
   /* ------------------------ checksums ------------------------ */
 
   /**
@@ -259,6 +292,7 @@
     var detected = detectOS();
     updateMeta(detected);
     populateDownloads(detected);
+    showStore();
     syncWithPublishedRelease();
     loadChecksums();
     initReveal();

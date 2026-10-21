@@ -36,4 +36,15 @@ describe("findSecret", () => {
   it("checks every text given", () => {
     expect(findSecret("{}", "", '{"api_key":"abcdef123"}')).toMatch(/token field/);
   });
+
+  it("stays fast on text built to make the patterns backtrack (N9)", () => {
+    const started = performance.now();
+    for (const text of ["a.".repeat(100_000), "x://" + "a".repeat(200_000), "a".repeat(200_000), "-".repeat(200_000)]) {
+      expect(findSecret(text)).toBeNull();
+    }
+    expect(performance.now() - started).toBeLessThan(2_000);
+    // Still found where it matters.
+    expect(findSecret("db: postgres://admin:hunter22@db.internal/app")).toMatch(/URL/);
+    expect(findSecret("  DB_PASSWORD=hunter22-and-more")).toMatch(/setting/);
+  });
 });
