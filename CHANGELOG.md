@@ -67,6 +67,8 @@ changing anything when `## [Unreleased]` is empty.
   the installer and the AppImage themselves, so the support for Tauri v1's
   zipped update bundles — and the `zip` library with three known
   vulnerabilities (RUSTSEC-2026-0367, -0368, -0369) — is gone.
+- The desktop app's async runtime is updated to Tokio 1.54.1, which fixes
+  a race condition in Tokio 1.54.0's timers (RUSTSEC-2026-0384).
 - **Every downloadable file is covered by the signed checksums.** A
   release's `SHA256SUMS.txt` — signed by the release workflow — now also
   lists the in-app update files and their signatures, not just the
