@@ -15,6 +15,8 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-10-27
+
 ### Added
 
 - **A real grammar checker in the Grammar-Polisher.** Spelling, grammar and
