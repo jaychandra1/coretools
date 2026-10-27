@@ -681,32 +681,61 @@ Store shows. Once the app is live:
 The Windows card then offers *Get it from Microsoft Store* first and the
 `.exe` second, and the download notes and privacy policy mention the Store.
 
-Getting listed:
+Getting listed: CoreTools goes into the Store as an **MSIX app**, which costs
+nothing. The Store signs MSIX packages itself during certification. An
+EXE/MSI listing would need an installer signed with a certificate from a CA
+in Microsoft's Trusted Root Program, served from a download link that doesn't
+redirect, and GitHub release links always redirect. Tauri builds no MSIX, so
+the release packs the same Windows binary into one with the Windows SDK's
+`makeappx` (`scripts/msix.mjs`, manifest `src-tauri/msix/AppxManifest.xml`).
 
-1. **Partner Center.** Register a developer account and reserve the name
-   *CoreTools* (*Apps and games → New product*). Check Partner Center for
-   the current registration terms.
-2. **Choose how to submit.** This is the decision that matters:
+1. **Partner Center product.** Register a developer account, then *Apps and
+   games → New product → MSIX or PWA app* and reserve **CoreTools**. The name
+   must match `DisplayName` in the manifest. A name held by an earlier,
+   unpublished EXE/MSI product is freed by deleting that product.
+2. **Identity → repository variables.** The product's *Product management →
+   Product identity* page lists three values. Set each as a repository
+   variable (*Settings → Secrets and variables → Actions → Variables*),
+   copied exactly (they are case-sensitive):
 
-   | Route | What the Store needs | Fits CoreTools today? |
-   | --- | --- | --- |
-   | **EXE/MSI app** | An HTTPS link to the installer for that exact version; the `coretools-v<version>` release asset fits. A silent-install switch (`/S` for the NSIS installer). The installer **signed with a certificate from a CA in Microsoft's Trusted Root Program** | Not yet: needs Windows code signing first. Azure Artifact Signing above is already wired |
-   | **MSIX package** | An MSIX built from the app. The Store signs it during certification, so no certificate of your own is needed | Needs MSIX packaging added to the release; Tauri doesn't produce MSIX |
+   | Repository variable | Partner Center field |
+   | --- | --- |
+   | `MSIX_IDENTITY_NAME` | Package/Identity/Name |
+   | `MSIX_PUBLISHER` | Package/Identity/Publisher (`CN=…`) |
+   | `MSIX_PUBLISHER_DISPLAY_NAME` | Package/Properties/PublisherDisplayName |
 
-   The EXE route is the better fit once Windows signing is on. One signed
-   installer serves the website and the Store, and signing also ends the
-   SmartScreen warning on direct downloads.
-3. **Updates.**
-   - EXE/MSI listing: submit each release's new versioned link in Partner
-     Center. Copies keep CoreTools' own update check.
-   - MSIX: the Store updates the app, so a Store build must ship with the
-     in-app updater switched off.
-
-   Read the current Microsoft Store Policies before submitting either way.
-4. **Listing details.** The privacy policy URL is
-   `https://coretools-chi.vercel.app/privacy.html`; it already covers Store
-   installs. You also need screenshots, a description, the age-rating
-   questionnaire, and the support contact `coretools.works@gmail.com`.
+   All three or none: the release's first job refuses half a setup or a
+   malformed value. Check them locally with
+   `MSIX_IDENTITY_NAME=… MSIX_PUBLISHER=… MSIX_PUBLISHER_DISPLAY_NAME=… node scripts/msix.mjs check --print-manifest yes`.
+3. **Test the packaging.** *Actions → Release dry run* packs an MSIX under a
+   throwaway identity on every run (artifact `microsoft-store-msix`).
+4. **Every release.** With the variables set, the Windows build also packs
+   `CoreTools_<version>_x64.msix` (package version `x.y.z.0`) and keeps it as
+   the run's `microsoft-store-msix` artifact for 30 days. Download it from
+   the Release run's summary page, unzip it, and upload the `.msix` in
+   Partner Center (*the submission → Packages*). It is never published to the
+   artifacts repository: unsigned, it installs only through the Store.
+5. **What differs in a Store copy.**
+   - **Updates come from the Store.** When the app runs from its package it
+     registers no updater and shows no update prompt, setting or banner
+     (`src-tauri/src/updates.rs`). Submit each release's MSIX to keep Store
+     copies current.
+   - **WebView2 isn't installed by the package.** Windows 11 includes it and
+     supported Windows 10 versions get it through Windows Update; the package
+     requires Windows 10 1809 or later.
+   - **Uninstalling deletes the data.** Windows removes a package's data with
+     it, so a Store copy's vault goes on uninstall. Say so in the listing;
+     users should back up first.
+6. **Submission details.**
+   - Partner Center asks why the package uses the restricted capability
+     `runFullTrust`: "CoreTools is a desktop (Win32) app packaged as MSIX;
+     it needs full trust to run." It also declares `internetClient` (Google
+     Drive backup) and `webcam` (the QR scanner).
+   - The privacy policy URL is
+     `https://coretools-chi.vercel.app/privacy.html`; it already covers Store
+     installs. You also need screenshots, a description, the age-rating
+     questionnaire, and the support contact `coretools.works@gmail.com`.
+   - Read the current Microsoft Store Policies before submitting.
 
 ## 4. Cloud backup: Google sign-in setup
 

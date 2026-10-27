@@ -39,6 +39,10 @@ be audited rather than taken on faith.
     can't get an update installed. On Windows it installs as an update
     (`/UPDATE`), which keeps the vault. Builds without the key (local builds)
     have no updater and download the installer for the user to run instead.
+  - **Microsoft Store copies have neither.** The Store updates them. When the
+    app runs from its MSIX package (`GetCurrentPackageFullName`,
+    `src-tauri/src/updates.rs`), it registers no updater and draws no update
+    prompt, setting or banner, so it never reads the release repository.
 
   Every other tool — Diff-Checker, YML-Validator, Grammar-Polisher,
   JSON-Studio — has no network path whatsoever.
@@ -343,7 +347,10 @@ database. This section specifies exactly what that means.
   (the WebView2 profile directory in the packaged app; per-origin browser
   storage in the web preview). It is never transmitted as-is. The only copy
   that ever leaves the device is the optional, end-to-end encrypted Google
-  Drive backup described below.
+  Drive backup described below. Uninstalling the website's installer keeps
+  it unless you confirm deleting app data; uninstalling a **Microsoft Store**
+  copy deletes it, because Windows removes a package's data with the
+  package. Back up first.
 - With an encryption password set, **everything identifying is encrypted**:
   each secret in its own **AES-256-GCM** blob, and the issuer and account
   name sealed together in a `meta` blob (the plaintext fields are stored
@@ -474,14 +481,15 @@ The desktop build can optionally unlock the vault with Windows Hello
   pauses until the password is typed once — so it isn't forgotten (it's what
   restores a backup on a new device), and a stolen Hello session can't be
   used indefinitely.
-- **Same-user processes (stated plainly).** The app is an unpackaged Win32
-  binary, so its Hello key is identified by name, not by package identity;
+- **Same-user processes (stated plainly).** The website's installer installs
+  an unpackaged Win32 binary, so its Hello key is identified by name, not by package identity;
   another program running as the same Windows user could ask Windows to show
   a genuine Hello prompt for it. Approving that prompt is required, and
   same-user malware can already read the app's memory while it's unlocked,
-  so this doesn't add a new way in — but true per-app isolation needs MSIX
-  packaging, which is the planned path. The 14-day password requirement
-  bounds how long a wrapped key alone is useful.
+  so this doesn't add a new way in — but true per-app isolation needs package
+  identity. The Microsoft Store copy runs from an MSIX package; until its
+  Hello key's scoping is verified, treat it the same. The 14-day password
+  requirement bounds how long a wrapped key alone is useful.
 - In the browser build the feature is absent (`hello_available` is
   Windows-desktop only); nothing is degraded.
 

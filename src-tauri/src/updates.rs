@@ -26,7 +26,8 @@
 //! reads it — line 3 of the four-line signature file, by the same parser the
 //! updater uses — never from the unsigned first line (audit N1). Builds
 //! without a public key (local builds) have no updater; the UI then
-//! downloads the installer instead.
+//! downloads the installer instead. Microsoft Store installs have neither:
+//! the Store updates them (`store_install`).
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
@@ -220,6 +221,41 @@ pub async fn check_for_update() -> Result<UpdateInfo, String> {
 /// Whether this build carries an updater public key (release builds do).
 pub struct UpdaterEnabled(pub bool);
 
+/// Whether this copy runs from an MSIX package — a Microsoft Store install.
+/// The Store keeps those up to date itself (a package's files can't be
+/// replaced in place anyway), so they get neither the in-app updater nor
+/// update notifications. The same binary installed from the website's
+/// installer runs unpackaged and keeps both.
+pub fn store_install() -> bool {
+    #[cfg(windows)]
+    {
+        use windows::core::PWSTR;
+        use windows::Win32::Foundation::APPMODEL_ERROR_NO_PACKAGE;
+        use windows::Win32::Storage::Packaging::Appx::GetCurrentPackageFullName;
+
+        let mut length = 0u32;
+        // With no buffer this only writes the length the package's full
+        // name would need: a packaged process gets "insufficient buffer",
+        // any other one APPMODEL_ERROR_NO_PACKAGE.
+        let status = unsafe { GetCurrentPackageFullName(&mut length, PWSTR::null()) };
+        status != APPMODEL_ERROR_NO_PACKAGE
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Tells the page it runs in a Microsoft Store install before any of its
+/// own scripts do, so no update prompt, setting or banner is ever drawn
+/// there (src/lib/platform/tauri.ts reads it). Registered only in Store
+/// installs.
+pub fn store_marker<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("store-install")
+        .js_init_script("Object.defineProperty(window, \"__CORETOOLS_STORE__\", { value: true });")
+        .build()
+}
+
 /// The updater plugin needs a public key to verify against; without one
 /// (local builds) it isn't registered at all.
 pub fn updater_configured(config: &tauri::Config) -> bool {
@@ -359,6 +395,13 @@ mod tests {
     use super::*;
 
     const RELEASE: &str = "https://github.com/jaychandra1/artifacts/releases/download/coretools-v";
+
+    #[test]
+    fn tests_run_outside_a_store_package() {
+        // The check itself works (no panic, no false positive): cargo test
+        // runs unpackaged, like a copy installed from the website.
+        assert!(!store_install());
+    }
 
     fn latest(version: &str, url: &str) -> LatestJson {
         LatestJson {

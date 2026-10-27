@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Microsoft Store package (MSIX) manifest. scripts/msix.mjs fills in the
+  {{…}} fields: the identity Partner Center reserved for CoreTools (the
+  app → Product management → Product identity, set as repository
+  variables), the version from package.json (x.y.z.0) and the app binary's
+  file name. See DEPLOYMENT.md, "Microsoft Store".
+
+  The package holds the same binary the website's installer ships, as a
+  full-trust desktop app (runFullTrust). Inside a package the app turns its
+  own updater off (src-tauri/src/updates.rs): the Store updates it.
+  DisplayName must stay a name reserved in Partner Center.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="{{IDENTITY_NAME}}"
+    Publisher="{{PUBLISHER}}"
+    Version="{{VERSION}}"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>CoreTools</DisplayName>
+    <PublisherDisplayName>{{PUBLISHER_DISPLAY_NAME}}</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <!-- Windows 10 1809 or later. The app draws its window with WebView2,
+       which Windows 11 includes and supported Windows 10 versions receive
+       through Windows Update; a package can't install it the way the NSIS
+       installer can. -->
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="CoreTools" Executable="{{EXECUTABLE}}" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="CoreTools"
+        Description="Offline toolkit: file diff, Kubernetes YAML, JSON, grammar checks, an authenticator and a password vault."
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+    </Application>
+  </Applications>
+
+  <!-- internetClient: the optional Google Drive backup. webcam: the
+       Authenticator's QR scanner (a packaged app gets the camera only when
+       it declares it). -->
+  <Capabilities>
+    <Capability Name="internetClient" />
+    <rescap:Capability Name="runFullTrust" />
+    <DeviceCapability Name="webcam" />
+  </Capabilities>
+</Package>

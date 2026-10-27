@@ -15,6 +15,16 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+### Added
+
+- **Getting ready for the Microsoft Store.** Releases can now also build a
+  Microsoft Store package (MSIX) of the Windows app, once the Store listing's
+  identity is set up (DEPLOYMENT.md, "Microsoft Store"). A copy installed
+  from the Store is kept up to date by the Store, so it shows no update
+  prompts, settings or banners of its own; About says where its updates come
+  from. Uninstalling a Store copy deletes its data, so back up first. The
+  website's installer works exactly as before.
+
 ## [1.4.0] — 2026-10-27
 
 ### Added

@@ -8,7 +8,8 @@ name: Release dry run
 #   - builds all three platforms with release.yml's build steps (unsigned:
 #     no code-signing credentials, no Google OAuth client — the build then
 #     reports cloud backup as not configured, exactly as release.yml does
-#     without those secrets), with in-app updates switched on;
+#     without those secrets), with in-app updates switched on, and packs the
+#     Windows build as a Microsoft Store MSIX under a throwaway identity;
 #   - generates the CycloneDX SBOM as release.yml does;
 #   - signs the update files with a THROWAWAY updater key generated in this
 #     run (`tauri signer generate --ci`), compiled into these builds and
@@ -54,7 +55,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
 
@@ -126,7 +127,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
 
@@ -210,6 +211,26 @@ jobs:
           echo "Found installer: $src"
           cp "$src" "staging/$OUT"
 
+      # As release.yml's Microsoft Store package, under a throwaway identity:
+      # packing needs no Partner Center values, so every dry run tests it.
+      - name: Microsoft Store package (MSIX, throwaway identity)
+        if: matrix.platform == 'windows-latest'
+        shell: bash
+        env:
+          MSIX_IDENTITY_NAME: CoreTools.DryRun
+          MSIX_PUBLISHER: CN=CoreTools Dry Run
+          MSIX_PUBLISHER_DISPLAY_NAME: CoreTools dry run
+        run: node scripts/msix.mjs pack --exe src-tauri/target/release/coretools.exe --out-dir store
+
+      - name: Upload the Microsoft Store package
+        if: matrix.platform == 'windows-latest'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: microsoft-store-msix
+          path: store/
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Update archive (macOS)
         if: matrix.platform == 'macos-latest'
         run: |
@@ -243,7 +264,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
 
@@ -297,7 +318,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
 

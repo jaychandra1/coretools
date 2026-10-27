@@ -106,8 +106,10 @@ export interface Platform {
   readonly cloud?: CloudBridge;
   /** Clipboard writes kept out of history and cloud sync (F-07). Desktop only. */
   readonly clipboard?: SecureClipboardBridge;
-  /** Opt-in check for a newer release (F-02). Desktop only. */
+  /** Opt-in check for a newer release (F-02). Desktop only, never in a Store install. */
   readonly updates?: UpdateBridge;
+  /** A Microsoft Store install (MSIX), which the Store keeps up to date. Desktop only. */
+  readonly storeInstall?: boolean;
   /** Local diagnostics log (F-16). Desktop only. */
   readonly diagnostics?: DiagnosticsBridge;
   /**

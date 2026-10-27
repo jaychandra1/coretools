@@ -34,7 +34,7 @@
         ? await platform.diagnostics.report().catch(() => sessionFailures())
         : sessionFailures()) || "(empty)";
     const report = [
-      `CoreTools ${__APP_VERSION__} · ${platform.kind === "tauri" ? "desktop" : "browser"}`,
+      `CoreTools ${__APP_VERSION__} · ${platform.kind === "tauri" ? (platform.storeInstall ? "desktop (Microsoft Store)" : "desktop") : "browser"}`,
       `User agent: ${navigator.userAgent}`,
       `Vault: ${vault?.encrypted ? "encrypted" : vault ? "not encrypted" : "not set up"} · KDF ${kdf} · ${authStore.locked ? "locked" : "unlocked"} · Hello ${authStore.helloEnabled ? "on" : "off"}`,
       `Accounts: ${authStore.entries.length}`,
@@ -100,6 +100,11 @@
         <span class="muted small">Last checked: {when(updates.lastCheckedAt)}</span>
       </div>
       {#if updates.message}<p class="small" role="status">{updates.message}</p>{/if}
+    </section>
+  {:else if platform.storeInstall}
+    <section>
+      <h3>Updates</h3>
+      <p class="muted small">This copy comes from the Microsoft Store, which keeps it up to date.</p>
     </section>
   {/if}
 

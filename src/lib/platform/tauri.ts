@@ -149,6 +149,15 @@ const tauriUpdates: UpdateBridge = {
   },
 };
 
+/**
+ * Microsoft Store installs are updated by the Store. Rust marks them before
+ * this page loads (src-tauri/src/updates.rs → store_marker), and they get no
+ * update bridge — so no update prompt, setting or banner.
+ */
+const storeInstall =
+  typeof window !== "undefined" &&
+  (window as { __CORETOOLS_STORE__?: unknown }).__CORETOOLS_STORE__ === true;
+
 const tauriDiagnostics: DiagnosticsBridge = {
   async record(source: string, cause: string): Promise<void> {
     const { invoke } = await import("@tauri-apps/api/core");
@@ -165,7 +174,8 @@ export const tauriPlatform: Platform = {
   hello: tauriHello,
   cloud: tauriCloud,
   clipboard: tauriClipboard,
-  updates: tauriUpdates,
+  updates: storeInstall ? undefined : tauriUpdates,
+  storeInstall,
   diagnostics: tauriDiagnostics,
 
   async openExternal(url: string): Promise<void> {

@@ -64,6 +64,12 @@ name: Release
 # them. src-tauri/Cargo.lock must be committed and current (audit S-3 / H2):
 # without it the release refuses to run.
 #
+# Microsoft Store: once the MSIX_IDENTITY_NAME, MSIX_PUBLISHER and
+# MSIX_PUBLISHER_DISPLAY_NAME repository variables hold Partner Center's
+# identity for CoreTools, the Windows build also packs an MSIX, kept as the
+# run's `microsoft-store-msix` artifact (30 days) for uploading in Partner
+# Center. It is never published here (DEPLOYMENT.md, "Microsoft Store").
+#
 # Code signing (audit F-01) switches on per platform once all of that
 # platform's credentials exist (DEPLOYMENT.md §3); without them the
 # installers are built unsigned, exactly as before:
@@ -96,6 +102,8 @@ name: Release
 #
 # No build cache is restored in this workflow: a cache written by an
 # ordinary CI run (or a pull request) must never feed a release build.
+# For the same reason every setup-node step sets package-manager-cache:
+# false, so setup-node never restores or saves an npm cache here.
 
 on:
   push:
@@ -330,9 +338,10 @@ jobs:
           fi
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       # Fail in seconds, not after the builds compiled a malformed key into
       # every installer (sign-updates would then refuse it). Same parser as
@@ -342,6 +351,20 @@ jobs:
         env:
           PUBKEY: ${{ vars.TAURI_UPDATER_PUBKEY }}
         run: node scripts/verify-update-signature.mjs --pubkey "$PUBKEY" --check-key
+
+      # The Microsoft Store package (built on Windows, see the build job) is
+      # on once Partner Center's identity for CoreTools is set: all three
+      # repository variables or none. A typo fails here, not after the builds.
+      - name: Microsoft Store identity
+        env:
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
+        run: |
+          set -euo pipefail
+          result=$(node scripts/msix.mjs check)
+          echo "$result"
+          echo "- $result" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install dependencies (lockfile-exact)
         run: npm ci
@@ -502,9 +525,10 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       # The version pinned in rust-toolchain.toml, with the runner's rustup.
       - name: Set up Rust
@@ -705,6 +729,32 @@ jobs:
             exit 1
           }
 
+      # Microsoft Store package (MSIX), once Partner Center's identity is set
+      # (the quality job checked it). Tauri makes no MSIX: scripts/msix.mjs
+      # packs the app binary built above with the runner's Windows SDK. The
+      # Store signs the package during certification and updates Store
+      # installs, so the app turns its own updater off inside a package
+      # (src-tauri/src/updates.rs). It is uploaded in Partner Center by hand
+      # and never published here: its artifact name doesn't match the publish
+      # job's CoreTools-* download.
+      - name: Microsoft Store package (MSIX)
+        if: matrix.platform == 'windows-latest' && vars.MSIX_IDENTITY_NAME != ''
+        shell: bash
+        env:
+          MSIX_IDENTITY_NAME: ${{ vars.MSIX_IDENTITY_NAME }}
+          MSIX_PUBLISHER: ${{ vars.MSIX_PUBLISHER }}
+          MSIX_PUBLISHER_DISPLAY_NAME: ${{ vars.MSIX_PUBLISHER_DISPLAY_NAME }}
+        run: node scripts/msix.mjs pack --exe src-tauri/target/release/coretools.exe --out-dir store
+
+      - name: Upload the Microsoft Store package
+        if: matrix.platform == 'windows-latest' && vars.MSIX_IDENTITY_NAME != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: microsoft-store-msix
+          path: store/
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Verify signature and notarization (macOS)
         if: matrix.platform == 'macos-latest' && env.CODE_SIGN == 'true'
         run: |
@@ -766,9 +816,10 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Set up Rust
         run: bash scripts/setup-rust.sh
@@ -843,9 +894,10 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
       - name: Install the Tauri CLI (lockfile-exact, no install scripts)
         run: npm ci --ignore-scripts --no-audit --no-fund
@@ -964,13 +1016,17 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
+          package-manager-cache: false
 
+      # CoreTools-* only: the Microsoft Store package (microsoft-store-msix)
+      # goes to Partner Center, never to the public release.
       - name: Download the installers, the SBOM and the update signatures
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
+          pattern: CoreTools-*
           path: incoming
           merge-multiple: true
 

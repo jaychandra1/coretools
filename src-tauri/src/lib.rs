@@ -69,8 +69,10 @@ fn focus_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 pub fn run() {
     diagnostics::install_panic_hook();
     let context = tauri::generate_context!();
-    // In-app updates only where the release workflow compiled in a public key.
-    let updater_enabled = updates::updater_configured(context.config());
+    // In-app updates only where the release workflow compiled in a public
+    // key, and never in a Microsoft Store install: the Store updates those.
+    let store_install = updates::store_install();
+    let updater_enabled = updates::updater_configured(context.config()) && !store_install;
     // Single instance first: a second launch must exit before anything else
     // starts up.
     let mut builder = tauri::Builder::default()
@@ -81,6 +83,9 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init());
     if updater_enabled {
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+    if store_install {
+        builder = builder.plugin(updates::store_marker());
     }
     builder
         .setup(|app| {
