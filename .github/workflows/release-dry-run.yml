@@ -80,7 +80,7 @@ jobs:
           echo "pubkey=${pubkey}" >> "$GITHUB_OUTPUT"
 
       - name: Hand the throwaway key to the sign job
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dry-run-throwaway-updater-key
           path: ${{ runner.temp }}/dry-run-key/
@@ -224,7 +224,7 @@ jobs:
 
       - name: Upload the Microsoft Store package
         if: matrix.platform == 'windows-latest'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: microsoft-store-msix
           path: store/
@@ -246,7 +246,7 @@ jobs:
           ls -l "$archive"
 
       - name: Upload installer artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ matrix.out }}
           path: staging/
@@ -296,7 +296,7 @@ jobs:
             --cargo-lock committed --out staging/CoreTools-sbom.cdx.json
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: CoreTools-sbom.cdx.json
           path: staging/CoreTools-sbom.cdx.json
@@ -326,14 +326,14 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Download the installers and the SBOM
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: CoreTools-*
           path: incoming
           merge-multiple: true
 
       - name: Download the throwaway key
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: dry-run-throwaway-updater-key
           path: ${{ runner.temp }}/dry-run-key
@@ -448,7 +448,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the assembled metadata
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dry-run-release-metadata
           path: ${{ runner.temp }}/dry-run-output/

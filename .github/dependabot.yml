@@ -39,6 +39,16 @@ updates:
     groups:
       cargo-minor-patch:
         update-types: ["minor", "patch"]
+    ignore:
+      # Paired with tauri (src-tauri/Cargo.toml): webview2-com must be the
+      # version tauri uses, and windows-core the one webview2-com is built
+      # on. Either one bumped alone breaks the Windows build (windows-core
+      # 0.100 did: two copies of its COM types). Move them by hand, together,
+      # when tauri moves; patch releases stay compatible and still come.
+      - dependency-name: webview2-com
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: windows-core
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   - package-ecosystem: github-actions
     directory: /
