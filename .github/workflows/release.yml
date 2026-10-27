@@ -391,6 +391,11 @@ jobs:
       - name: Version strings in sync
         run: node scripts/sync-version.mjs --check
 
+      # Fail in seconds, not in the platform builds: `tauri build` refuses
+      # Rust and npm Tauri packages on different major.minor releases.
+      - name: Tauri packages match (Rust ↔ npm)
+        run: node scripts/tauri-versions.mjs
+
       # package.json is the version source for every trigger mode.
       - name: Resolve version
         id: version
@@ -1011,7 +1016,21 @@ jobs:
             find . -mindepth 1 ! -type f
             exit 1
           fi
-          mapfile -t files < <(LC_ALL=C ls | grep -vx -e 'SHA256SUMS.txt' -e 'SHA256SUMS.txt.sigstore.json')
+          # Every file, in byte order, except the checksum file itself and its
+          # Sigstore bundle. A glob, not `ls | grep` (shellcheck SC2010).
+          export LC_ALL=C
+          shopt -s nullglob
+          files=()
+          for f in *; do
+            case "$f" in
+              SHA256SUMS.txt | SHA256SUMS.txt.sigstore.json) ;;
+              *) files+=("$f") ;;
+            esac
+          done
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::incoming/ holds no files to checksum."
+            exit 1
+          fi
           sha256sum -- "${files[@]}" > SHA256SUMS.txt
           cat SHA256SUMS.txt
 

@@ -84,6 +84,11 @@ jobs:
       - name: Version strings in sync
         run: node scripts/sync-version.mjs --check
 
+      # `tauri build` refuses Rust and npm Tauri packages on different
+      # major.minor releases — and only the release builds, so check here.
+      - name: Tauri packages match (Rust ↔ npm)
+        run: node scripts/tauri-versions.mjs
+
       # The Windows installer template must be exactly Tauri's template for
       # the pinned CLI plus our patches (they keep updates from deleting the
       # vault). A CLI bump fails here until it is regenerated.
