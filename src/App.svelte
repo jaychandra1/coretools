@@ -10,7 +10,7 @@
   // Heavy tools load on first use (audit F-23): JSON-Studio carries the
   // Monaco editor, which alone is most of the bundle.
   const loadYaml = () => import("./lib/components/YamlOptimizer.svelte");
-  const loadPolisher = () => import("./lib/components/SentencePolisher.svelte");
+  const loadPolisher = () => import("./lib/components/GrammarPolisher.svelte");
   const loadJsonStudio = () => import("./lib/components/json-studio/JsonStudio.svelte");
 
   let about = $state(false);

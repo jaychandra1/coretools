@@ -34,6 +34,12 @@ export default defineConfig(({ mode }) => {
       outDir: isWeb ? "dist/app" : "dist",
       emptyOutDir: true,
     },
+    // The writing checker's worker (src/lib/writing/checker.worker.ts) loads
+    // Harper, which splits into chunks: only ES-module workers can.
+    worker: { format: "es" },
+    // Harper finds its WebAssembly file next to its own module
+    // (new URL(..., import.meta.url)); pre-bundling would move the module.
+    optimizeDeps: { exclude: ["harper.js"] },
     server: {
       port: 1420,
       strictPort: true,

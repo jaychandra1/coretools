@@ -1,6 +1,8 @@
 /**
  * Per-device UI choices kept in localStorage: update checks, the All tab,
- * JSON-Studio recovery. Never personal data or anything from the vault.
+ * JSON-Studio recovery, the Grammar-Polisher's dialect and the words the
+ * user added to its dictionary (shown to them as kept on this device).
+ * Never anything from the vault, and never the text being checked.
  *
  * Storage can be unavailable (private windows, blocked site data), so a
  * read falls back to null and a failed write only means the choice isn't

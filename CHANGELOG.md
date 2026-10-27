@@ -15,6 +15,39 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+### Added
+
+- **A real grammar checker in the Grammar-Polisher.** Spelling, grammar and
+  style suggestions appear as you type, underlined in your text (red
+  spelling, blue grammar, amber style), each with a short explanation and
+  one-click fixes. Click an underlined word to jump to its suggestion; **Fix**
+  applies every suggestion that has only one fix, and **Ctrl+Z** undoes any of
+  them. **Ignore** a suggestion, or **add a word to your dictionary** (kept on
+  this device) so names and product terms aren't marked as misspelled.
+  Choose English (US, UK, Canada, Australia or India). The checker is
+  [Harper](https://github.com/Automattic/harper), an open-source engine that
+  runs on your device — nothing you type is sent anywhere. It loads the first
+  time you type (a few seconds), and texts up to 20,000 characters are
+  checked.
+- **Rewrite tone:** Professional, Friendly or Concise, shown with every
+  change highlighted before you use it.
+
+### Changed
+
+- **Email checks are suggestions now.** With "It's an email" on, a missing or
+  casual greeting or sign-off, words in capitals, several exclamation marks
+  and leftover placeholders like `[Name]` are suggested fixes you accept or
+  ignore — nothing is rewritten unasked, and no `[Name]` is added for you.
+- **Rewrites no longer change meaning or break links.** They never touch
+  links, email addresses, code, @mentions or file names, keep line breaks,
+  and no longer swap words for "fancier" ones ("buy more time" stays as it
+  is). The Gen Z and Complete styles are replaced by Friendly and Concise.
+
+### Removed
+
+- The old built-in word lists for spelling and grammar (a few dozen fixed
+  patterns), replaced by the checker above.
+
 ## [1.3.0] — 2026-10-21
 
 ### Security

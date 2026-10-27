@@ -262,3 +262,25 @@ test("vault: a change in another tab shows up here instead of being overwritten"
   await expect(other.getByText("Third Tab")).toBeVisible({ timeout: 10_000 });
   await expect(other.getByText("Second Tab")).toBeVisible();
 });
+
+test("Grammar-Polisher: checks text on the device and applies a fix", async ({ page }) => {
+  await openTab(page, "Grammar-Polisher");
+  const editor = page.getByRole("textbox", { name: "Your text" });
+  await editor.fill("The the report is due tommorow.");
+  // The engine (WebAssembly, in the app's own worker) loads on first use.
+  const tomorrow = page.getByRole("button", { name: "tomorrow", exact: true });
+  await expect(tomorrow).toBeVisible({ timeout: 30_000 });
+  await tomorrow.click();
+  await expect(editor).toHaveValue("The the report is due tomorrow.");
+  await page.getByRole("button", { name: "The", exact: true }).click();
+  await expect(editor).toHaveValue("The report is due tomorrow.");
+});
+
+test("Grammar-Polisher: rewrites in another tone, links untouched", async ({ page }) => {
+  await openTab(page, "Grammar-Polisher");
+  const editor = page.getByRole("textbox", { name: "Your text" });
+  await editor.fill("Basically, we need to meet in order to decide. See https://example.com/basically");
+  await page.getByRole("radio", { name: "Concise" }).click();
+  await page.getByRole("button", { name: "Use this version" }).click();
+  await expect(editor).toHaveValue("We need to meet to decide. See https://example.com/basically");
+});

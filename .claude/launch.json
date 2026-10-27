@@ -12,6 +12,12 @@
       "runtimeExecutable": "npx",
       "runtimeArgs": ["vite", "preview", "--outDir", "dist", "--port", "4173", "--strictPort"],
       "port": 4173
+    },
+    {
+      "name": "csp",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/csp-preview.mjs"],
+      "port": 4174
     }
   ]
 }

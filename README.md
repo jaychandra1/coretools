@@ -9,11 +9,12 @@ It bundles six focused utilities:
    choose which side to keep per-change, and export a merged file.
 2. **YML-Validator** — validate a Kubernetes manifest, strip server-managed and
    redundant fields, and download a clean, apply-ready result.
-3. **Grammar-Polisher** — check grammar (capitalization, spelling,
-   apostrophes, tense, agreement, articles — every fix explained), then
-   rewrite as Professional, Gen Z, or Complete, with one-click copy. Includes
-   an **email mode** that corrects greetings, sign-offs, and tone to corporate
-   standards. Rule-based and fully local.
+3. **Grammar-Polisher** — spelling, grammar and style suggestions as you
+   type, underlined in the text, each with an explanation and one-click
+   fixes (powered by [Harper](https://writewithharper.com), which runs on
+   the device). Plus an optional **rewrite** in a Professional, Friendly or
+   Concise tone, and **email checks** for greetings, sign-offs and tone.
+   Nothing you type leaves the app.
 4. **Authenticator** — a full two-factor code generator compatible with the
    open-source [Authenticator browser extension](https://authenticator.cc):
    TOTP / HOTP / Steam Guard / Blizzard codes, QR scanning, and
@@ -75,12 +76,12 @@ coretools/
 │       │   ├── diff.test.ts
 │       │   ├── yaml-optimizer.ts   # safe K8s parse, validate & clean
 │       │   ├── yaml-optimizer.test.ts
-│       │   ├── polisher.ts         # rule-based sentence rewriting
-│       │   ├── polisher.test.ts
-│       │   ├── grammar.ts          # offline grammar checker
-│       │   ├── grammar.test.ts
-│       │   ├── email.ts            # corporate email correction mode
-│       │   ├── email.test.ts
+│       │   ├── writing/            # Grammar-Polisher engine
+│       │   │   ├── issues.ts           # issues, fixes, Fix all, keeping them in place
+│       │   │   ├── harper-lints.ts     # Harper's lints → issues (dialects)
+│       │   │   ├── email-checks.ts     # greeting / sign-off / tone suggestions
+│       │   │   ├── rewrite.ts          # Professional / Friendly / Concise tones
+│       │   │   └── *.test.ts           # incl. the real Harper engine
 │       │   ├── authenticator/      # 2FA engine (see its README.md)
 │       │   │   ├── base32.ts           # RFC 4648 encode/decode
 │       │   │   ├── otp.ts              # TOTP/HOTP/Steam/Blizzard (WebCrypto HMAC)
@@ -101,6 +102,7 @@ coretools/
 │       │       ├── codegen/            # TS / C# / Java / Python / Go
 │       │       ├── worker/             # large-file Web Worker + client
 │       │       └── *.test.ts           # 97 unit tests
+│       ├── writing/            # the checker's worker (Harper) + its client
 │       ├── platform/           # Host abstraction (I/O boundary)
 │       │   ├── types.ts            # Platform interface
 │       │   ├── tauri.ts            # native dialogs + Rust commands
@@ -111,7 +113,7 @@ coretools/
 │           ├── DiffViewer.svelte
 │           ├── DiffChecker.svelte
 │           ├── YamlOptimizer.svelte
-│           ├── SentencePolisher.svelte
+│           ├── GrammarPolisher.svelte
 │           ├── authenticator/      # Authenticator UI (list, dialogs, lock)
 │           └── json-studio/        # JSON Studio UI (Monaco, panels, store)
 ├── src-tauri/                  # Native shell (Rust)
@@ -265,36 +267,44 @@ Try it with `examples/k8s/messy-deployment.yaml` and
 
 ### Grammar-Polisher
 
-1. Choose the input type — **Sentence** or **Email** — then paste your text.
-2. Pick a rewrite style (**Professional**, **Gen Z**, or **Complete**) and hit
-   **Check & Polish**. Corrections appear itemized beside the output, each
-   with the original text, the fix, and the reason. **Copy** grabs the result.
+Type or paste text (up to 20,000 characters). Suggestions appear as you
+type: problems are underlined in the text — red for spelling, blue for
+grammar and punctuation, amber for style, violet for email conventions —
+and listed beside it with an explanation.
 
-**Grammar rules applied** (deterministic, rule-based — no AI, fully offline):
+- **Fix** — click a suggestion to apply it. Only that word or phrase
+  changes; **Ctrl+Z** undoes it. **Fix N** applies every suggestion that has
+  exactly one possible fix.
+- **Ignore** hides a suggestion (and the same one elsewhere in the text).
+  **Add to dictionary** stops a name or product term from being marked as
+  misspelled; your dictionary is kept on this device only.
+- **Click an underlined word** to jump to its suggestion, or click a
+  suggestion to see where it is.
+- **English (US / UK / Canada / Australia / India)** — spelling and usage
+  follow the chosen dialect.
 
-| Category | Examples |
+The checker is [Harper](https://github.com/Automattic/harper) (Apache-2.0),
+an open-source grammar engine compiled to WebAssembly. It runs in the app's
+own background worker, so typing stays smooth, and loads the first time you
+type (a few seconds; about 8 MB compressed in the browser version).
+
+**Rewrite tone** shows your text rewritten, with every change highlighted,
+and **Use this version** replaces it (one Ctrl+Z undoes it):
+
+| Tone | What changes |
 | --- | --- |
-| Capitalization | sentence starts; standalone `i` → `I` |
-| Spelling | `becuase` → `because`, `definately` → `definitely`, … |
-| Apostrophes | `dont` → `don't`, `im` → `I'm`, `its a` → `it's a` |
-| Tense consistency | `has went` → `has gone`, `didn't went` → `didn't go`, … |
-| Subject–verb agreement | `he don't` → `he doesn't`, `we was` → `we were` |
-| Modal + "of" | `should of` → `should have` |
-| Articles | `a apple` → `an apple` (with `a university`-style exceptions) |
-| Punctuation & spacing | end punctuation, `!!` / `..` collapse, repeated words, extra spaces |
+| Professional | chat shorthand spelled out (`pls` → `please`, `asap` → `as soon as possible`), contractions expanded, casual openers (`hey`) made formal |
+| Friendly | contractions (`do not` → `don't`), plain words for stiff phrases (`at your earliest convenience` → `when you get a chance`) |
+| Concise | filler words cut (`basically`, `really`), wordy phrases shortened (`in order to` → `to`, `due to the fact that` → `because`) |
 
-**Email mode — corporate communication standards** (structural fixes always
-follow professional conventions; the style choice applies to the body):
+Rewrites are deliberately conservative: they never touch links, email
+addresses, `code`, @mentions, file names or line breaks, and never swap a
+word for one that could change the meaning.
 
-- **Greeting**: added if missing (`Hi [Name],`); casual openers (`hey`, `yo`)
-  normalized to `Hi` with the recipient's name capitalized.
-- **Sign-off**: added if missing (`Best regards,` + `[Your Name]`); casual
-  closings (`cheers`, `thx`, `br`) replaced with corporate-standard ones.
-- **Tone**: all-caps shouting softened (business acronyms like `EOD`, `FYI`,
-  `KPI` are preserved); exclamation marks replaced with periods
-  (kept in Gen Z style).
-- **Structure**: greeting / body paragraphs / sign-off separated by blank
-  lines; each paragraph gets the full grammar check and style rewrite.
+**It's an email** adds email conventions to the suggestions: a missing or
+casual greeting or sign-off (`hey` → `Hi`, `cheers` → `Best regards`),
+words in capitals that read as shouting (acronyms like `EOD` and `KPI` are
+fine), several exclamation marks, and placeholders like `[Name]` left in.
 
 ### Authenticator
 
@@ -359,8 +369,9 @@ and [ARCHITECTURE.md](./src/lib/core/json-studio/ARCHITECTURE.md).
 ## Testing
 
 The core logic is covered by unit tests (`npm test`): the diff/merge engine,
-the YAML optimizer, the grammar checker, the sentence polisher, and the email
-correction mode, including validation and safe-parsing edge cases. The
+the YAML optimizer, and the Grammar-Polisher (fixes, Fix all, tone rewrites,
+email checks — and the real Harper engine on correct and incorrect text),
+including validation and safe-parsing edge cases. The
 Authenticator engine is tested against the official RFC 4226/6238 test
 vectors, Google-migration payload fixtures, and full backup round-trips
 (plaintext and encrypted). JSON Studio's engine has 97 tests covering

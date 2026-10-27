@@ -200,12 +200,16 @@ The Kubernetes optimizer (`src/lib/core/yaml-optimizer.ts`) parses with the
 
 ### Grammar checking & rewriting are equally sandboxed
 
-The Grammar-Polisher (`src/lib/core/grammar.ts`, `src/lib/core/polisher.ts`,
-`src/lib/core/email.ts`) is a **deterministic, rule-based engine**: fixed word
-tables and regular expressions, no language-model calls, no external service,
-no `eval`, no dynamic code. This includes the email correction mode — emails
-are analyzed and rewritten entirely in memory and discarded; nothing typed is
-transmitted or stored anywhere.
+The Grammar-Polisher (`src/lib/core/writing/`, `src/lib/writing/`) checks
+text with [Harper](https://github.com/Automattic/harper) (Apache-2.0), an
+open-source grammar engine compiled to WebAssembly and bundled with the app:
+it runs on the device, in the app's own worker script, loaded from the app's
+own files under the existing Content-Security-Policy (no `blob:` workers, no
+remote code). Tone rewrites and email checks are deterministic, rule-based
+code: fixed word tables and regular expressions. No language-model calls, no
+external service, no `eval`. The text is checked in memory and never
+transmitted or written to disk; only the user's own dictionary of accepted
+words (names, product terms) is kept, in the browser storage of this device.
 
 ### JSON Studio is interpreter-only
 
