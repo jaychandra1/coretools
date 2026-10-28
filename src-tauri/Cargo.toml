@@ -43,7 +43,7 @@ serde_json = "1"
 # own store.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
-sha2 = "0.10"
+sha2 = "0.11"
 base64 = "0.22"
 getrandom = "0.2"
 
