@@ -121,7 +121,9 @@ coretools/
 │   ├── src/main.rs
 │   ├── tauri.conf.json         # Window config + strict CSP
 │   ├── capabilities/default.json  # Minimal permission set
+│   ├── msix/AppxManifest.xml   # Microsoft Store package manifest
 │   └── Cargo.toml
+├── microsoftstore/             # Store listing art + screenshots (scripts/generate-store-art.mjs, store-screenshots.mjs)
 └── examples/                   # Demo files
     ├── diff/                   # nginx.original.conf / nginx.modified.conf
     └── k8s/                    # messy-deployment.yaml / multi-document.yaml

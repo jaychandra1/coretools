@@ -735,6 +735,10 @@ the release packs the same Windows binary into one with the Windows SDK's
      `https://coretools-chi.vercel.app/privacy.html`; it already covers Store
      installs. You also need screenshots, a description, the age-rating
      questionnaire, and the support contact `coretools.works@gmail.com`.
+   - Store logos, promotional art and screenshots are in `microsoftstore/`,
+     made by `node scripts/generate-store-art.mjs` and
+     `node scripts/store-screenshots.mjs`; its README maps each file to its
+     Partner Center slot and has a caption for each screenshot.
    - Read the current Microsoft Store Policies before submitting.
 
 ## 4. Cloud backup: Google sign-in setup
