@@ -33,12 +33,15 @@ const PATCHES = [
   {
     // Ask to close CoreTools before replacing it (the passive uninstaller
     // below would close it without asking). Cancel stays on this page.
+    // Since tauri-cli 2.12 the macro finds the app through Windows' Restart
+    // Manager by its full path; $INSTDIR is the previous install's folder
+    // here, as in upstream's own calls and its check just below.
     find: "  reinst_uninstall:\n    HideWindow\n",
     replace:
       "  reinst_uninstall:\n" +
       "    ; CoreTools patch (scripts/installer-template.mjs): close the running app first,\n" +
       "    ; with the user's OK, since the previous version's uninstaller runs passively.\n" +
-      '    !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"\n' +
+      '    !insertmacro CheckIfAppIsRunning "$INSTDIR\\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"\n' +
       "    HideWindow\n",
   },
   {

@@ -15,6 +15,13 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+### Changed
+
+- **Windows installer on Tauri 2.12.3.** Before replacing an installed
+  CoreTools it now finds the running app through Windows' Restart Manager
+  and asks to close it, and it tidies up the previous version's uninstaller
+  afterwards. Updating still always keeps your data.
+
 ## [1.5.0] — 2026-10-28
 
 ### Added
