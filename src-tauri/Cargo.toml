@@ -64,7 +64,7 @@ webview2-com = "0.39"
 # The COM `Interface` trait (`cast`) and string types of the windows-core
 # version webview2-com 0.39 is built on (0.62) — NOT the one the `windows`
 # crate below uses. Bump together with webview2-com.
-windows-core = "0.62"
+windows-core = "0.100"
 # Win32_Storage_Packaging_Appx: GetCurrentPackageFullName, which tells a
 # Microsoft Store (MSIX) install from the website's (src/updates.rs).
 windows = { version = "0.58", features = [
