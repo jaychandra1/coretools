@@ -15,6 +15,8 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+## [1.5.0] — 2026-10-28
+
 ### Added
 
 - **Getting ready for the Microsoft Store.** Releases can now also build a

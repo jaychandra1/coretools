@@ -635,7 +635,7 @@ dependencies = [
 
 [[package]]
 name = "coretools"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "arboard",
  "base64 0.22.1",

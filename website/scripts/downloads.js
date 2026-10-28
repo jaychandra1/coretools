@@ -17,7 +17,7 @@
    ============================================================ */
 window.CORETOOLS_DOWNLOADS = {
   // Current release version, shown across the site (synced from package.json).
-  version: "1.4.0",
+  version: "1.5.0",
 
   // What is ACTUALLY published (written by the release workflow after the
   // installers are live). The page shows this version and these sizes, so the
