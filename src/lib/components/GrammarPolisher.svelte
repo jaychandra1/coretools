@@ -273,11 +273,6 @@
 </script>
 
 <section class="writer">
-  <p class="intro muted">
-    Spelling, grammar and style suggestions as you type — and, if you like, a
-    rewrite in another tone. It all runs on this device; nothing you type is
-    sent anywhere.
-  </p>
 
   <div class="layout">
     <div class="main">
@@ -461,10 +456,6 @@
       --c-grammar: #60a5fa;
       --c-style: #fbbf24;
     }
-  }
-  .intro {
-    margin: 0 0 14px;
-    max-width: 75ch;
   }
   .layout {
     display: grid;

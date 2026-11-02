@@ -493,6 +493,24 @@ jobs:
           VERSION: ${{ steps.version.outputs.value }}
         run: node scripts/changelog.mjs check "$VERSION"
 
+      # A fresh build never reproduces a published release's files byte for
+      # byte, and published versions are never overwritten — so a version
+      # that is already fully out (its SHA256SUMS.txt is up) can only fail at
+      # publishing, after every platform built. Say so now. A half-published
+      # version (no checksums yet) still runs, and the publish job finishes it.
+      - name: Version isn't published yet
+        if: ${{ !inputs.overwrite-versioned-release }}
+        env:
+          GH_TOKEN: ${{ secrets.ARTIFACTS_REPO_TOKEN }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          assets=$(gh release view "coretools-v${VERSION}" --repo jaychandra1/artifacts --json assets --jq '.assets[].name' 2>/dev/null || true)
+          if printf '%s\n' "$assets" | grep -qx 'SHA256SUMS.txt'; then
+            echo "::error::v${VERSION} is already published, and published versions are never replaced. Release a new version: Actions → Prepare release → pick patch, minor or major (or run npm version). To re-publish v${VERSION} anyway, run Release with the overwrite input."
+            exit 1
+          fi
+
       # Only reviewed code may ship (audit F-03/F-04): the commit being
       # released must already be part of master's history. A tag on a side
       # commit — or on anything pushed around branch protection — is refused.

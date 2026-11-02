@@ -122,8 +122,8 @@ that far.
      (`git push --force origin <good sha>:refs/heads/production`). The next
      green push to `master` moves it forward again.
 5. **Fix forward.** Merge the revert or fix through a pull request (CI must
-   pass). Then **Actions → Prepare release → Run workflow** with the next
-   version (higher than X.Y.Z) and merge the release pull request it opens.
+   pass). Then **Actions → Prepare release → Run workflow** (*patch* gives
+   the next version above X.Y.Z) and merge the release pull request it opens.
    CI tags the merge commit and starts the release. Approve the jobs in the
    `release` environment. A version newer than everything in the index
    moves `coretools-latest` by itself, and copies stuck on X.Y.Z are offered

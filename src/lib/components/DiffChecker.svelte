@@ -58,11 +58,6 @@
 </script>
 
 <section>
-  <p class="intro muted">
-    Load or paste two versions of a file, review each difference, choose which side to keep,
-    then export a merged result. All processing happens in memory.
-  </p>
-
   <div class="inputs">
     <FilePanel label="Original (left)" bind:value={leftText} bind:fileName={leftName} />
     <FilePanel label="Modified (right)" bind:value={rightText} bind:fileName={rightName} />
@@ -98,10 +93,6 @@
 </section>
 
 <style>
-  .intro {
-    margin: 0 0 16px;
-    max-width: 70ch;
-  }
   .inputs {
     display: grid;
     grid-template-columns: 1fr 1fr;

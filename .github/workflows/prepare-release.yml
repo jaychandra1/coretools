@@ -2,10 +2,12 @@ name: Prepare release
 
 # Release pull request flow (audit F-26).
 #
-# Run: Actions → "Prepare release" → Run workflow (from master), version
-# x.y.z without the leading v, e.g. 1.2.0 (no pre-releases: installed copies
-# accept only x.y.z). It refuses until src-tauri/Cargo.lock is committed
-# (Actions → "Generate Cargo.lock"). This workflow:
+# Run: Actions → "Prepare release" → Run workflow (from master) and pick
+# what to raise — patch (fixes: 1.5.0 → 1.5.1), minor (new features:
+# → 1.6.0) or major (breaking changes: → 2.0.0); the next version is worked
+# out from package.json. Or type an exact x.y.z version (no pre-releases:
+# installed copies accept only x.y.z). It refuses until src-tauri/Cargo.lock
+# is committed (Actions → "Generate Cargo.lock"). This workflow:
 #   1. bumps package.json + package-lock.json and copies the version into
 #      Cargo.toml, tauri.conf.json, website/scripts/downloads.js (and
 #      src-tauri/Cargo.lock once committed) — scripts/sync-version.mjs;
@@ -27,9 +29,15 @@ name: Prepare release
 on:
   workflow_dispatch:
     inputs:
-      version:
-        description: New version, x.y.z without the leading v (e.g. 1.2.0)
+      bump:
+        description: "What changed: patch = fixes (1.5.0 → 1.5.1), minor = new features (→ 1.6.0), major = breaking changes (→ 2.0.0)"
         required: true
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+      version:
+        description: Or an exact version, x.y.z without the leading v — leave empty to use the choice above
+        required: false
         type: string
 
 permissions:
@@ -48,8 +56,8 @@ jobs:
       pull-requests: write # opens the pull request
       actions: write # starts CI on that branch (see below)
     env:
-      VERSION: ${{ inputs.version }}
-      BRANCH: release/v${{ inputs.version }}
+      BUMP: ${{ inputs.bump }}
+      REQUESTED: ${{ inputs.version }}
     steps:
       - name: Validate the request
         run: |
@@ -61,10 +69,14 @@ jobs:
           # x.y.z only: installed copies accept no other version, in
           # latest.json or updater.json (src-tauri/src/updates.rs), so a
           # pre-release would break their update check.
-          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "::error::The version must be x.y.z without a leading v, e.g. 1.2.0 (got \"${VERSION}\"). Pre-releases can't be published: installed copies accept only x.y.z versions."
+          if [ -n "$REQUESTED" ] && ! printf '%s' "$REQUESTED" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::The version must be x.y.z without a leading v, e.g. 1.2.0 (got \"${REQUESTED}\"). Pre-releases can't be published: installed copies accept only x.y.z versions."
             exit 1
           fi
+          case "$BUMP" in
+            patch | minor | major) ;;
+            *) echo "::error::Unknown bump \"${BUMP}\" (patch, minor or major)."; exit 1 ;;
+          esac
 
       - name: Checkout master
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -84,6 +96,33 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
+
+      # The exact version if one was typed, else package.json's with the
+      # chosen part raised. Every step below uses VERSION and BRANCH.
+      - name: Work out the version
+        run: |
+          set -euo pipefail
+          current=$(node -p "require('./package.json').version")
+          if [ -n "$REQUESTED" ]; then
+            next="$REQUESTED"
+            how="typed"
+          else
+            next=$(node -e '
+              const [current, bump] = process.argv.slice(1);
+              const [major, minor, patch] = current.split("-")[0].split(".").map(Number);
+              const next = { major: [major + 1, 0, 0], minor: [major, minor + 1, 0], patch: [major, minor, patch + 1] }[bump];
+              console.log(next.join("."));
+            ' "$current" "$BUMP")
+            how="$BUMP"
+          fi
+          if ! printf '%s' "$next" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Couldn't work out the next version from ${current} (${how})."
+            exit 1
+          fi
+          echo "VERSION=${next}" >> "$GITHUB_ENV"
+          echo "BRANCH=release/v${next}" >> "$GITHUB_ENV"
+          echo "### v${current} → v${next} (${how})" >> "$GITHUB_STEP_SUMMARY"
+          echo "Releasing v${next} (was v${current}, ${how})."
 
       - name: The version is new
         run: |

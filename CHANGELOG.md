@@ -5,8 +5,9 @@ All notable changes to CoreTools are documented here. The format follows
 [Semantic Versioning](https://semver.org/).
 
 Releases: write notes under `## [Unreleased]` as you go. Then run
-**Actions → Prepare release** with the new version; it moves the notes under
-the version heading, bumps every version string and opens a pull request.
+**Actions → Prepare release** and pick patch, minor or major (or type a
+version); it works out the number, moves the notes under the version
+heading, bumps every version string and opens a pull request.
 Merging it lets CI tag the release, which builds, signs and publishes it.
 Where `master` accepts direct pushes, `npm version X.Y.Z -m "release: v%s"`
 followed by `git push origin HEAD --follow-tags` still works: `npm version`

@@ -341,7 +341,7 @@ try {
     await page.evaluate(() => {
       const badge = document.querySelector("header .mode");
       if (badge) badge.lastChild.textContent = badge.lastChild.textContent.replace("Preview", "Desktop");
-      for (const line of document.querySelectorAll(".codec .intro p")) {
+      for (const line of document.querySelectorAll(".codec .privacy span")) {
         for (const node of line.childNodes) {
           if (node.nodeType === Node.TEXT_NODE) node.textContent = node.textContent.replace("in your browser", "on this device");
         }

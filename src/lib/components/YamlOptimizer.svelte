@@ -67,12 +67,6 @@
 </script>
 
 <section>
-  <p class="intro muted">
-    Load or paste a Kubernetes manifest (single or multi-document). CoreTools validates it
-    against the Kubernetes schema, fills in missing mandatory fields with sensible defaults,
-    strips server-managed and redundant fields, and produces a clean, apply-ready result.
-  </p>
-
   <FilePanel
     label="Kubernetes manifest"
     bind:value={input}
@@ -150,10 +144,6 @@
 </section>
 
 <style>
-  .intro {
-    margin: 0 0 16px;
-    max-width: 74ch;
-  }
   .bar {
     display: flex;
     align-items: center;

@@ -136,8 +136,11 @@ These workflows own quality and distribution:
 
 **Cutting a release.** Write notes under `## [Unreleased]` in `CHANGELOG.md`
 as you go. Respect the soak rule (below). To release, run **Actions →
-Prepare release → Run workflow** from `master` with the new version (e.g.
-`1.2.0`) — the preferred path over pushing a tag by hand: the version bump
+Prepare release → Run workflow** from `master` and pick what to raise —
+*patch* for fixes (1.1.0 → 1.1.1), *minor* for new features (→ 1.2.0),
+*major* for breaking changes (→ 2.0.0) — or type an exact version. The
+next number is worked out from `package.json`. This is the preferred path
+over pushing a tag by hand: the version bump
 goes through a reviewed pull request and CI, and the tag is created only
 after every gate passed. It bumps the version in
 `package.json`, `package-lock.json`, `Cargo.toml`, `tauri.conf.json` and

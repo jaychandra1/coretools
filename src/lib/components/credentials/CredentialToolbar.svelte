@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import { CREATED_RANGES, type CredentialFilter } from "../../core/credentials/search";
   import Icon from "./Icon.svelte";
 
@@ -10,6 +11,7 @@
     owners,
     trashCount,
     onadd,
+    actions,
   }: {
     filter: CredentialFilter;
     /** Showing the trash instead of the logins. */
@@ -18,6 +20,8 @@
     owners: readonly string[];
     trashCount: number;
     onadd: () => void;
+    /** Section-wide controls at the end of the row (backup status, activity, settings, lock). */
+    actions?: Snippet;
   } = $props();
 
   let searchInput: HTMLInputElement | undefined = $state();
@@ -63,6 +67,7 @@
   {#if !trash}
     <button class="primary" onclick={onadd}>+ Add credential</button>
   {/if}
+  {#if actions}<div class="actions">{@render actions()}</div>{/if}
 </div>
 
 <style>
@@ -71,6 +76,18 @@
     gap: 8px;
     flex-wrap: wrap;
     margin-bottom: 12px;
+  }
+  .actions {
+    display: flex;
+    align-items: stretch;
+    gap: 6px;
+    margin-left: auto;
+  }
+  /* As tall as the row's fields and buttons, and square. */
+  .actions :global(.icon-btn) {
+    width: auto;
+    height: auto;
+    aspect-ratio: 1;
   }
   .search {
     flex: 1 1 260px;

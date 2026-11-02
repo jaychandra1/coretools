@@ -361,25 +361,24 @@
   {:else if authStore.locked}
     <LockScreen title="Credential Manager locked" />
   {:else}
-    <!-- ------------------------------------ header ------------------------------------ -->
-    <header class="head">
-      <div class="title-block">
-        <h2>Credential Manager</h2>
-        <p class="muted">
-          {credentialStore.active.length} saved {credentialStore.active.length === 1 ? "login" : "logins"} · encrypted with your master password
-        </p>
-      </div>
-      <div class="head-actions">
-        {#if cloudChip}
-          <span class="cloud-chip tone-{cloudChip.tone}" title="Credentials are included in your end-to-end encrypted Google Drive backup">
-            <Icon name="cloud" /> {cloudChip.text}
-          </span>
-        {/if}
-        <IconButton icon="activity" tip="Activity log" onclick={() => (dialog = "audit")} outlined />
-        <IconButton icon="gear" tip="Settings" onclick={() => (dialog = "settings")} outlined />
-        <IconButton icon="lock" tip="Lock now" onclick={() => authStore.lock()} outlined />
-      </div>
-    </header>
+    <!-- Section controls sit at the end of the toolbar row, as in the Authenticator. -->
+    {#snippet headActions()}
+      {#if cloudChip}
+        <!-- Up to date: just the cloud (its words in the tooltip). Busy or failing: words too. -->
+        <span
+          class="cloud-chip tone-{cloudChip.tone}"
+          class:compact={cloudChip.tone === "ok"}
+          title="{cloudChip.text} — credentials are included in your end-to-end encrypted Google Drive backup"
+          role="status"
+          aria-label={cloudChip.text}
+        >
+          <Icon name="cloud" />{#if cloudChip.tone !== "ok"}<span>{cloudChip.text}</span>{/if}
+        </span>
+      {/if}
+      <IconButton icon="activity" tip="Activity log" onclick={() => (dialog = "audit")} outlined />
+      <IconButton icon="gear" tip="Settings" onclick={() => (dialog = "settings")} outlined />
+      <IconButton icon="lock" tip="Lock now" onclick={() => authStore.lock()} outlined />
+    {/snippet}
 
     {#if credentialStore.unreadable > 0}
       <p class="weak-password" role="status">
@@ -424,6 +423,7 @@
       owners={options.owners}
       trashCount={credentialStore.trash.length}
       onadd={openAdd}
+      actions={headActions}
     />
 
     {#if showTrash}
@@ -616,8 +616,7 @@
 
 <style>
   .cm {
-    max-width: 1120px;
-    margin: 0 auto;
+    width: 100%;
   }
   .load-error {
     margin: 40px auto;
@@ -667,38 +666,21 @@
     height: 22px;
   }
 
-  /* ---- header ---- */
-  .head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 14px;
-    margin-bottom: 14px;
-    flex-wrap: wrap;
-  }
-  .title-block h2 {
-    margin: 0;
-    font-size: 18px;
-    letter-spacing: -0.01em;
-  }
-  .title-block p {
-    margin: 2px 0 0;
-    font-size: 12.5px;
-  }
-  .head-actions {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
+  /* ---- section controls (end of the toolbar) ---- */
   .cloud-chip {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 10px;
+    padding: 0 12px;
     border-radius: 999px;
     font-size: 11.5px;
     font-weight: 600;
-    margin-right: 4px;
+    white-space: nowrap;
+  }
+  .cloud-chip.compact {
+    aspect-ratio: 1;
+    padding: 0;
+    justify-content: center;
   }
   .cloud-chip :global(svg) {
     width: 13px;
@@ -833,7 +815,7 @@
   }
 
   @media (max-width: 760px) {
-    .head-actions .cloud-chip {
+    .cloud-chip:not(.compact) span {
       display: none;
     }
   }

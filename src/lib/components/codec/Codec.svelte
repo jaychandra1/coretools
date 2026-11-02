@@ -265,18 +265,6 @@
 <svelte:window onkeydown={onKeydown} />
 
 <section class="codec">
-  <header class="intro">
-    <p class="muted">
-      Encode, decode, transform, inspect, and protect data securely. All operations run locally {where}.
-    </p>
-    <p class="privacy" role="note">
-      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" />
-      </svg>
-      All Codec operations run locally {where}. Your data never leaves your device.
-    </p>
-  </header>
-
   <div class="nav">
     <div class="tabs" role="tablist" aria-label="Codec categories">
       {#each TABS as tabDef, index (tabDef.id)}
@@ -307,30 +295,38 @@
   </div>
 
   <div class="layout">
-    <nav class="toollist" aria-label="Tools">
-      {#snippet item(id: ToolId)}
-        {@const def = toolById(id)}
-        <button class="tool" class:current={codec.tool === id} aria-current={codec.tool === id ? "true" : undefined} onclick={() => selectTool(id)}>
-          <span>{def.name}</span>
-          {#if codec.pinned.includes(id)}<span class="star" aria-label="pinned">★</span>{/if}
-        </button>
-      {/snippet}
-      {#if codec.query}
-        <h3>Results</h3>
-        {#each searchResults as def (def.id)}{@render item(def.id)}{:else}<p class="muted none">No tool matches.</p>{/each}
-      {:else}
-        {#if pinnedTools.length}
-          <h3>Pinned</h3>
-          {#each pinnedTools as def (def.id)}{@render item(def.id)}{/each}
+    <div class="side">
+      <nav class="toollist" aria-label="Tools">
+        {#snippet item(id: ToolId)}
+          {@const def = toolById(id)}
+          <button class="tool" class:current={codec.tool === id} aria-current={codec.tool === id ? "true" : undefined} onclick={() => selectTool(id)}>
+            <span>{def.name}</span>
+            {#if codec.pinned.includes(id)}<span class="star" aria-label="pinned">★</span>{/if}
+          </button>
+        {/snippet}
+        {#if codec.query}
+          <h3>Results</h3>
+          {#each searchResults as def (def.id)}{@render item(def.id)}{:else}<p class="muted none">No tool matches.</p>{/each}
+        {:else}
+          {#if pinnedTools.length}
+            <h3>Pinned</h3>
+            {#each pinnedTools as def (def.id)}{@render item(def.id)}{/each}
+          {/if}
+          <h3>{TABS.find((tabDef) => tabDef.id === codec.tab)?.label}</h3>
+          {#each toolsInTab(codec.tab) as def (def.id)}{@render item(def.id)}{/each}
+          {#if recentTools.length}
+            <h3>Recent</h3>
+            {#each recentTools as def (def.id)}{@render item(def.id)}{/each}
+          {/if}
         {/if}
-        <h3>{TABS.find((tabDef) => tabDef.id === codec.tab)?.label}</h3>
-        {#each toolsInTab(codec.tab) as def (def.id)}{@render item(def.id)}{/each}
-        {#if recentTools.length}
-          <h3>Recent</h3>
-          {#each recentTools as def (def.id)}{@render item(def.id)}{/each}
-        {/if}
-      {/if}
-    </nav>
+      </nav>
+      <p class="privacy" role="note">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="4" y="11" width="16" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" />
+        </svg>
+        <span>All Codec operations run locally {where}. Your data never leaves your device.</span>
+      </p>
+    </div>
 
     <div class="workspace">
       <div class="tool-head">
@@ -600,29 +596,23 @@
   .codec {
     position: relative;
   }
-  .intro {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px 20px;
-    flex-wrap: wrap;
-    margin-bottom: 14px;
-  }
-  .intro p {
-    margin: 0;
-    max-width: 70ch;
-  }
   .privacy {
-    display: inline-flex;
-    align-items: center;
+    display: flex;
+    align-items: flex-start;
     gap: 8px;
-    padding: 7px 12px;
-    border-radius: 999px;
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: var(--radius);
     background: var(--accent-soft);
     color: var(--accent);
     border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
-    font-size: 12.5px;
+    font-size: 12px;
     font-weight: 600;
+    line-height: 1.45;
+  }
+  .privacy svg {
+    flex: none;
+    margin-top: 1px;
   }
   .nav {
     display: flex;
@@ -672,12 +662,17 @@
     gap: 18px;
     align-items: start;
   }
+  .side {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    position: sticky;
+    top: 8px;
+  }
   .toollist {
     display: flex;
     flex-direction: column;
     gap: 2px;
-    position: sticky;
-    top: 8px;
   }
   .toollist h3 {
     margin: 10px 0 4px;
@@ -1099,8 +1094,11 @@
     .layout {
       grid-template-columns: minmax(0, 1fr);
     }
-    .toollist {
+    .side {
       position: static;
+      gap: 10px;
+    }
+    .toollist {
       flex-direction: row;
       overflow-x: auto;
       gap: 6px;
