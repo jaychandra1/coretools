@@ -45,7 +45,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 sha2 = "0.10"
 base64 = "0.22"
-getrandom = "0.2"
+getrandom = "0.4"
 
 # Copying passwords and 2FA codes without them landing in clipboard history
 # or the Windows cloud clipboard (src/secure_clipboard.rs, audit F-07).
