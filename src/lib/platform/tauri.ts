@@ -134,6 +134,10 @@ const tauriClipboard: SecureClipboardBridge = {
     const { invoke } = await import("@tauri-apps/api/core");
     return invoke<boolean>("clipboard_clear_if", { expected: text });
   },
+  async readText(): Promise<string> {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<string>("clipboard_read_text");
+  },
 };
 
 const tauriUpdates: UpdateBridge = {

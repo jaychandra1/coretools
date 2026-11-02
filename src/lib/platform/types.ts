@@ -127,6 +127,11 @@ export interface SecureClipboardBridge {
   copySecret(text: string): Promise<void>;
   /** Clear only if the clipboard still holds `text`; true when it cleared. */
   clearIfUnchanged(text: string): Promise<boolean>;
+  /**
+   * The clipboard's text, for an explicit Paste button (Codec) — natively, so
+   * WebView2 doesn't ask on behalf of "tauri.localhost".
+   */
+  readText?(): Promise<string>;
 }
 
 /** The newest release announced by the public index. */

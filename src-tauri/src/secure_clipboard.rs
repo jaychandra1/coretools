@@ -103,3 +103,20 @@ pub async fn clipboard_clear_if(
     })
     .await
 }
+
+/// Longest text Paste reads (Codec's own input limit is 10 million characters).
+const MAX_PASTE_BYTES: usize = 40 * 1024 * 1024;
+
+/// The clipboard's text, for Codec's Paste button — read only when the user
+/// clicks it. Natively, because WebView2 would otherwise ask "tauri.localhost
+/// wants to see text and images copied to the clipboard" (the internal origin
+/// reads like a foreign site; see webview_permissions.rs). The text goes
+/// straight back to the page; it is never stored or logged.
+#[tauri::command]
+pub async fn clipboard_read_text(state: State<'_, SecureClipboard>) -> Result<String, String> {
+    let text = with_clipboard(state.inner(), |clipboard| clipboard.get_text()).await?;
+    if text.len() > MAX_PASTE_BYTES {
+        return Err("clipboard_too_large".into());
+    }
+    Ok(text)
+}

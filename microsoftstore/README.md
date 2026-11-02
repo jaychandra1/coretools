@@ -1,5 +1,8 @@
 # Microsoft Store listing images
 
+The listing's text (description, features, keywords, the runFullTrust
+answer) is in [listing.md](listing.md).
+
 For Partner Center → the submission → **Store listings**. Everything here is
 generated; edit the scripts and run them again rather than editing files:
 
@@ -10,17 +13,23 @@ generated; edit the scripts and run them again rather than editing files:
 
 ## Screenshots
 
-Upload in this order (drag to reorder in Partner Center). All 1920 × 1080,
-dark theme. Captions (max 200 characters):
+Upload in this order (drag to reorder in Partner Center; the Store takes 10). All
+2560 × 1440: the app's window, with its Windows 11 title bar, on the brand
+backdrop — no added text or logos, as Microsoft's guidelines ask. Captions
+(max 200 characters):
 
 | File | Caption |
 | --- | --- |
-| `screenshots/1-diff-checker.png` | Compare two versions of a file, review every change and choose which side to keep. Everything runs on your PC. |
-| `screenshots/2-yml-validator.png` | Clean up Kubernetes manifests: strip server-managed and redundant fields and get an apply-ready file. |
-| `screenshots/3-grammar-polisher.png` | Spelling, grammar and tone suggestions as you type, plus email checks. The grammar engine runs on your device. |
-| `screenshots/4-authenticator.png` | Two-factor codes for all your accounts, encrypted with your master password and unlocked with Windows Hello. |
-| `screenshots/5-credential-manager.png` | Keep your logins in an encrypted vault with categories, owners, tags, search and trash. |
-| `screenshots/6-json-studio.png` | A full JSON workbench: format, query with JSONPath or JMESPath, validate schemas, diff, repair and convert. |
+| `screenshots/01-diff-checker.png` | Compare two versions of a file, review every change and choose which side to keep. Everything runs on your PC. |
+| `screenshots/02-yml-validator.png` | Clean up Kubernetes manifests: strip server-managed and redundant fields and get an apply-ready file. |
+| `screenshots/03-grammar-polisher.png` | Spelling, grammar and tone suggestions as you type, plus email checks. The grammar engine runs on your device. |
+| `screenshots/04-grammar-rewrite.png` | Rewrite any text in a professional, friendly or concise tone, and see every change before you use it. |
+| `screenshots/05-authenticator.png` | Two-factor codes for all your accounts, encrypted with your master password and unlocked with Windows Hello. |
+| `screenshots/06-credential-manager.png` | Keep your logins in an encrypted vault with categories, owners, tags, search and trash. |
+| `screenshots/07-json-studio-query.png` | A full JSON workbench: query with JSONPath or JMESPath and see the matches instantly beside the editor. |
+| `screenshots/08-json-studio-tree.png` | Browse and edit JSON as a tree, with the type of every value shown. Schema, diff, repair and conversion too. |
+| `screenshots/09-codec.png` | Codec: encode, decode, hash, encrypt and inspect data — here a JWT's expiry and claims at a glance. All on your device. |
+| `screenshots/10-light-theme.png` | Light and dark themes. Your logins stay encrypted with your master password, on your PC. |
 
 ## Store logos
 

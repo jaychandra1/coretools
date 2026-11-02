@@ -711,11 +711,49 @@ the release packs the same Windows binary into one with the Windows SDK's
    throwaway identity on every run (artifact `microsoft-store-msix`).
 4. **Every release.** With the variables set, the Windows build also packs
    `CoreTools_<version>_x64.msix` (package version `x.y.z.0`) and keeps it as
-   the run's `microsoft-store-msix` artifact for 30 days. Download it from
-   the Release run's summary page, unzip it, and upload the `.msix` in
-   Partner Center (*the submission → Packages*). It is never published to the
-   artifacts repository: unsigned, it installs only through the Store.
-5. **What differs in a Store copy.**
+   the run's `microsoft-store-msix` artifact for 30 days. The **first** time,
+   download it from the Release run's summary page, unzip it, and upload the
+   `.msix` in Partner Center (*the submission → Packages*) — Partner Center
+   requires the first publication to be done by hand. It is never published
+   to the artifacts repository: unsigned, it installs only through the Store.
+5. **Automatic Store updates (after the first publication).** Set this up
+   once and every release goes to the Store by itself: the release
+   workflow's `store` job submits the MSIX to Partner Center right after
+   the GitHub release is published, using Microsoft's Store CLI (`msstore`).
+   Once Microsoft certifies it (usually within a day, at most about three
+   business days), the Store updates installed copies automatically — the
+   Store's automatic app updates are on by default; anyone who turned them
+   off sees the update under *Library → Updates*.
+   1. Partner Center → *Account settings → Tenants*: associate a Microsoft
+      Entra ID tenant, or create one there (free).
+   2. [Microsoft Entra admin center](https://entra.microsoft.com) → *App
+      registrations → New registration* (e.g. "CoreTools releases"). Note its
+      *Application (client) ID* and *Directory (tenant) ID*. Under
+      *Certificates & secrets*, add a client secret and copy its value (it is
+      shown once). Secrets expire (at most 24 months): note the date and
+      replace it before then.
+   3. Partner Center → *Account settings → User management → Microsoft Entra
+      applications → Add Microsoft Entra application*: pick that app and give
+      it the **Manager** role. Note your *Seller ID* (*Account settings →
+      Legal info → Developer*).
+   4. GitHub → *Settings → Environments → release → Environment secrets*:
+      `MSSTORE_TENANT_ID`, `MSSTORE_CLIENT_ID`, `MSSTORE_CLIENT_SECRET`,
+      `MSSTORE_SELLER_ID`. Then *Settings → Secrets and variables → Actions →
+      Variables*: `MSSTORE_PRODUCT_ID` = the app's 12-character Store ID
+      (*Product identity*, starts with 9). Optional: `MSSTORE_ROLLOUT` = a
+      percentage (1–100) for Partner Center's gradual rollout; raise it, or
+      finish the rollout, in Partner Center.
+
+   The release's first job checks the variables (summary: "Microsoft Store
+   submission: on"); the `store` job checks the secrets. Things to know:
+   - Only the package changes; listing text, screenshots and "What's new"
+     stay as they are in Partner Center — edit them there.
+   - A submission still in certification blocks the next one: if two
+     releases land close together, the second `store` job fails. Re-run it
+     once the first is certified (the published release isn't affected).
+   - The MSIX version comes from `package.json` (`x.y.z.0`), so each release
+     is higher than the last, as the Store requires.
+6. **What differs in a Store copy.**
    - **Updates come from the Store.** When the app runs from its package it
      registers no updater and shows no update prompt, setting or banner
      (`src-tauri/src/updates.rs`). Submit each release's MSIX to keep Store
@@ -726,7 +764,7 @@ the release packs the same Windows binary into one with the Windows SDK's
    - **Uninstalling deletes the data.** Windows removes a package's data with
      it, so a Store copy's vault goes on uninstall. Say so in the listing;
      users should back up first.
-6. **Submission details.**
+7. **Submission details.**
    - Partner Center asks why the package uses the restricted capability
      `runFullTrust`: "CoreTools is a desktop (Win32) app packaged as MSIX;
      it needs full trust to run." It also declares `internetClient` (Google

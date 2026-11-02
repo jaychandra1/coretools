@@ -45,7 +45,7 @@ be audited rather than taken on faith.
     prompt, setting or banner, so it never reads the release repository.
 
   Every other tool — Diff-Checker, YML-Validator, Grammar-Polisher,
-  JSON-Studio — has no network path whatsoever.
+  JSON-Studio, Codec — has no network path whatsoever.
 - **That network code lives in Rust, not the webview.** All HTTP is made by
   `src-tauri/src/cloud.rs` (fixed Google endpoints) and
   `src-tauri/src/updates.rs` (one fixed URL, size-capped, and the release
@@ -168,6 +168,7 @@ focuses the first.
 | `cloud_delete(id)` | Delete one version | Id charset-restricted; already-gone counts as success |
 | `clipboard_copy_secret(text)` | Copy a password or 2FA code | Marked so clipboard history, the Windows cloud clipboard and clipboard managers skip it (Windows `ExcludeClipboardContentFromMonitorProcessing`, macOS `org.nspasteboard.ConcealedType`, Linux `x-kde-passwordManagerHint`); ≤ 4,096 characters; never stored or logged |
 | `clipboard_clear_if(expected)` | Auto-clear after 30 s | Clears only if the clipboard still holds exactly that text, so a later copy is never destroyed |
+| `clipboard_read_text()` | Codec's Paste button | Read only on that click (WebView2 would otherwise ask on behalf of `tauri.localhost`); ≤ 40 MiB; returned to the page, never stored or logged |
 | `check_for_update()` | Opt-in update check | One fixed public URL; response ≤ 64 KiB while reading; version must be `x.y.z`; links must stay inside the public release repository (parsed, no `..` segments) |
 | `install_update(onProgress)` | In-app update | Only after a native "Install and restart?" confirmation; the download must come from that version's own release, and its signature must name a file of that version — so an old signed build can't be offered as a new one |
 | `diagnostics_record(source, cause)` | Record a UI-side failure cause | Control characters stripped, length-capped, at most 30 per minute; callers pass error tokens only |
@@ -214,6 +215,34 @@ code: fixed word tables and regular expressions. No language-model calls, no
 external service, no `eval`. The text is checked in memory and never
 transmitted or written to disk; only the user's own dictionary of accepted
 words (names, product terms) is kept, in the browser storage of this device.
+
+### Codec runs entirely on the device
+
+Codec (`src/lib/core/codec/`, `src/lib/components/codec/`) encodes,
+decodes, hashes, encrypts and inspects data with no network path and no
+storage: input, options and results live in memory for the session only,
+the passphrase and raw key are cleared when you leave the tab, and nothing
+reaches the diagnostics log (error causes are fixed tokens, as everywhere).
+The only thing kept on the device is which tools you pinned (their ids).
+
+- **Primitives:** WebCrypto for SHA-256/512, AES-GCM, AES-CBC and PBKDF2;
+  `hash-wasm` (already used for the vault's Argon2id) for MD5 and bcrypt.
+  Randomness comes only from `crypto.getRandomValues`.
+- **Passphrase encryption:** AES-256-GCM with a key from PBKDF2-HMAC-SHA256,
+  600 000 iterations by default (OWASP's figure; 100 000 is the floor), a
+  random 16-byte salt and 12-byte IV per message. The output carries those
+  parameters, never the key; GCM's tag makes a wrong passphrase or a changed
+  message fail rather than decrypt to garbage. Raw-key mode takes the user's
+  own 256-bit key; its CBC mode (no integrity check) is labelled as such and
+  exists for interoperability (`openssl enc -aes-256-cbc -K … -iv …`).
+- **bcrypt** refuses input over its 72-byte limit instead of silently
+  truncating it; **MD5** is labelled as unfit for security.
+- **JWTs are decoded, never verified**, and the UI says so on every token;
+  unsigned (`alg: none`) tokens are flagged.
+- Results are shown as text (`<textarea>`, `<pre>`), never as markup;
+  decoded binary is shown as a hex dump and only saved when asked. Copying
+  uses the secret clipboard path (kept out of clipboard history), and Paste
+  reads the clipboard only when its button is clicked.
 
 ### JSON Studio is interpreter-only
 
@@ -325,6 +354,12 @@ reading a small number of well-isolated files.
   caches — signs version-named copies of the finished installers and checks
   each signature against the public key before anything is published. The
   app then refuses any update whose signature names another version.
+- **Microsoft Store submissions run last, with their own credentials.** The
+  release's `store` job submits the MSIX to Partner Center only after the
+  release is published, with an Entra ID app's client secret kept in the
+  `release` environment (behind its approval rules), never in the build
+  jobs. Microsoft certifies and signs every submission before Store copies
+  update; the secret expires and is rotated (DEPLOYMENT.md).
 - **Workflow and code scanning.** Every change runs actionlint and zizmor
   over the workflows; CodeQL and dependency review run when the source
   repository is public (they need a paid plan on a private one).

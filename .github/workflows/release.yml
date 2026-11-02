@@ -67,8 +67,12 @@ name: Release
 # Microsoft Store: once the MSIX_IDENTITY_NAME, MSIX_PUBLISHER and
 # MSIX_PUBLISHER_DISPLAY_NAME repository variables hold Partner Center's
 # identity for CoreTools, the Windows build also packs an MSIX, kept as the
-# run's `microsoft-store-msix` artifact (30 days) for uploading in Partner
-# Center. It is never published here (DEPLOYMENT.md, "Microsoft Store").
+# run's `microsoft-store-msix` artifact (30 days). It is never published
+# here. With MSSTORE_PRODUCT_ID set as well (and the Partner Center
+# credentials in the `release` environment), the store job submits it to
+# the Store after publishing, so Store installs update by themselves once
+# it is certified; without it, it is uploaded in Partner Center by hand
+# (DEPLOYMENT.md, "Microsoft Store").
 #
 # Code signing (audit F-01) switches on per platform once all of that
 # platform's credentials exist (DEPLOYMENT.md §3); without them the
@@ -153,6 +157,7 @@ jobs:
       sign-macos: ${{ steps.signing.outputs.macos }}
       code-signed: ${{ steps.signing.outputs.platforms }}
       updater: ${{ steps.updater.outputs.enabled }}
+      store: ${{ steps.store.outputs.enabled }}
     steps:
       - name: Release ref is a v* tag or master
         run: |
@@ -365,6 +370,39 @@ jobs:
           result=$(node scripts/msix.mjs check)
           echo "$result"
           echo "- $result" >> "$GITHUB_STEP_SUMMARY"
+
+      # Automatic Store updates: with MSSTORE_PRODUCT_ID set, the store job
+      # submits the MSIX to Partner Center after publishing (DEPLOYMENT.md,
+      # "Microsoft Store"). Settings are checked here, in seconds; the
+      # credentials themselves live in the `release` environment and are
+      # checked by the store job.
+      - name: Microsoft Store submission
+        id: store
+        env:
+          PRODUCT_ID: ${{ vars.MSSTORE_PRODUCT_ID }}
+          ROLLOUT: ${{ vars.MSSTORE_ROLLOUT }}
+          HAS_MSIX: ${{ vars.MSIX_IDENTITY_NAME != '' }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PRODUCT_ID" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "- Microsoft Store submission: off (no MSSTORE_PRODUCT_ID) — upload the MSIX in Partner Center by hand" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if ! printf '%s' "$PRODUCT_ID" | grep -Eq '^9[0-9A-Z]{11}$'; then
+            echo "::error::MSSTORE_PRODUCT_ID must be the app's 12-character Store ID from Partner Center (Product identity), e.g. 9NBLGGH4NNS1 (got \"$PRODUCT_ID\")."
+            exit 1
+          fi
+          if [ "$HAS_MSIX" != "true" ]; then
+            echo "::error::MSSTORE_PRODUCT_ID is set but no MSIX is built: set the MSIX_* repository variables too (DEPLOYMENT.md, Microsoft Store)."
+            exit 1
+          fi
+          if [ -n "$ROLLOUT" ] && ! printf '%s' "$ROLLOUT" | grep -Eq '^([1-9][0-9]?|100)$'; then
+            echo "::error::MSSTORE_ROLLOUT must be a whole percentage from 1 to 100, or unset (got \"$ROLLOUT\")."
+            exit 1
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "- Microsoft Store submission: **on** — product $PRODUCT_ID${ROLLOUT:+, gradual rollout to ${ROLLOUT}%}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Install dependencies (lockfile-exact)
         run: npm ci
@@ -1129,3 +1167,82 @@ jobs:
           check-after-hours: ${{ inputs.check-after-hours }}
           # A published coretools-v<version> is replaced only on request.
           allow-overwrite: ${{ inputs.overwrite-versioned-release && 'true' || 'false' }}
+
+  store:
+    # Automatic Microsoft Store updates. After the release is published,
+    # this release's MSIX (the build job's microsoft-store-msix artifact) is
+    # submitted to Partner Center with Microsoft's Store CLI (msstore): a new
+    # submission with this package, committed for certification. Once it is
+    # certified, the Store updates installed copies by itself. Runs only with
+    # MSSTORE_PRODUCT_ID set (checked by the quality job) and after the app's
+    # first publication, which Partner Center requires to be done by hand.
+    # The Entra ID app credentials live in the `release` environment, behind
+    # its approval rules (DEPLOYMENT.md, "Microsoft Store"). A failure here
+    # leaves the published release as it is; re-run this job to retry.
+    name: Submit to the Microsoft Store
+    needs: [quality, build, publish]
+    if: needs.publish.result == 'success' && needs.quality.outputs.store == 'true' && !cancelled()
+    # Windows: where Microsoft documents the CLI's sign-in for CI.
+    runs-on: windows-latest
+    environment:
+      name: release
+    permissions:
+      contents: read
+    steps:
+      - name: Download the Microsoft Store package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: microsoft-store-msix
+          path: store
+
+      - name: Partner Center credentials are set
+        shell: bash
+        env:
+          HAS_TENANT: ${{ secrets.MSSTORE_TENANT_ID != '' }}
+          HAS_CLIENT: ${{ secrets.MSSTORE_CLIENT_ID != '' }}
+          HAS_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET != '' }}
+          HAS_SELLER: ${{ secrets.MSSTORE_SELLER_ID != '' }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [ "$HAS_TENANT" = "true" ] || missing+=(MSSTORE_TENANT_ID)
+          [ "$HAS_CLIENT" = "true" ] || missing+=(MSSTORE_CLIENT_ID)
+          [ "$HAS_SECRET" = "true" ] || missing+=(MSSTORE_CLIENT_SECRET)
+          [ "$HAS_SELLER" = "true" ] || missing+=(MSSTORE_SELLER_ID)
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Store submission is on (MSSTORE_PRODUCT_ID) but these secrets are missing from the release environment: ${missing[*]} (DEPLOYMENT.md, Microsoft Store)."
+            exit 1
+          fi
+
+      - name: Set up the Microsoft Store CLI
+        uses: microsoft/setup-msstore-cli@cc9910a8d59f2eb55cbb83df0a3800cf3b5300e0 # v1.4
+        with:
+          version: v0.4.3
+
+      - name: Sign in to Partner Center
+        shell: pwsh
+        env:
+          TENANT_ID: ${{ secrets.MSSTORE_TENANT_ID }}
+          SELLER_ID: ${{ secrets.MSSTORE_SELLER_ID }}
+          CLIENT_ID: ${{ secrets.MSSTORE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.MSSTORE_CLIENT_SECRET }}
+        run: |
+          msstore reconfigure --tenantId $env:TENANT_ID --sellerId $env:SELLER_ID --clientId $env:CLIENT_ID --clientSecret $env:CLIENT_SECRET
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Submit the package for certification
+        shell: pwsh
+        env:
+          PRODUCT_ID: ${{ vars.MSSTORE_PRODUCT_ID }}
+          ROLLOUT: ${{ vars.MSSTORE_ROLLOUT }}
+        run: |
+          $packages = @(Get-ChildItem store -Filter *.msix)
+          if ($packages.Count -ne 1) {
+            Write-Host "::error::Expected one .msix in the microsoft-store-msix artifact, found $($packages.Count)."
+            exit 1
+          }
+          $cliArgs = @("publish", $packages[0].FullName, "-id", $env:PRODUCT_ID)
+          if ($env:ROLLOUT) { $cliArgs += @("--packageRolloutPercentage", $env:ROLLOUT) }
+          & msstore @cliArgs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "- Microsoft Store: $($packages[0].Name) submitted for certification (product $env:PRODUCT_ID)." >> $env:GITHUB_STEP_SUMMARY

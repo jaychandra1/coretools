@@ -26,6 +26,7 @@ test("every tool opens, including the lazily loaded ones", async ({ page }) => {
     ["YML-Validator", /Kubernetes manifest/],
     ["Grammar-Polisher", /./],
     ["JSON-Studio", /local only/],
+    ["Codec", /never leaves your device/],
     ["Diff-Checker", /Original/],
   ] as const) {
     await openTab(page, tab);
@@ -283,4 +284,24 @@ test("Grammar-Polisher: rewrites in another tone, links untouched", async ({ pag
   await page.getByRole("radio", { name: "Concise" }).click();
   await page.getByRole("button", { name: "Use this version" }).click();
   await expect(editor).toHaveValue("We need to meet to decide. See https://example.com/basically");
+});
+
+test("Codec: encodes as you type, swaps back, and encrypts round-trip", async ({ page }) => {
+  await openTab(page, "Codec");
+  const input = page.getByRole("textbox", { name: "Input text" });
+  const output = page.getByRole("textbox", { name: "Output text" });
+  await input.fill("Hello, Codec! 👋");
+  await expect(output).toHaveValue("SGVsbG8sIENvZGVjISDwn5GL");
+  await page.getByRole("button", { name: /Swap/ }).click();
+  await expect(page.getByRole("heading", { name: "Base64 Decoder" })).toBeVisible();
+  await expect(output).toHaveValue("Hello, Codec! 👋");
+
+  await page.getByRole("tab", { name: "Encrypt" }).click();
+  await input.fill("meet at nine");
+  await page.getByPlaceholder("A long, unique passphrase").fill("correct horse battery staple");
+  await page.getByRole("button", { name: "Encrypt", exact: true }).click();
+  await expect(output).toHaveValue(/^aes-256-gcm\.pbkdf2-sha256\.600000\./);
+  await expect(page.getByText("Encryption parameters")).toBeVisible();
+  await page.getByRole("button", { name: /Swap/ }).click();
+  await expect(output).toHaveValue("meet at nine");
 });

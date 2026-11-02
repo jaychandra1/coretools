@@ -125,6 +125,7 @@ pub fn run() {
             cloud::cloud_delete,
             secure_clipboard::clipboard_copy_secret,
             secure_clipboard::clipboard_clear_if,
+            secure_clipboard::clipboard_read_text,
             updates::check_for_update,
             updates::install_update,
             diagnostics::diagnostics_record,

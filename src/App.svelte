@@ -12,11 +12,12 @@
   const loadYaml = () => import("./lib/components/YamlOptimizer.svelte");
   const loadPolisher = () => import("./lib/components/GrammarPolisher.svelte");
   const loadJsonStudio = () => import("./lib/components/json-studio/JsonStudio.svelte");
+  const loadCodec = () => import("./lib/components/codec/Codec.svelte");
 
   let about = $state(false);
   updates.start();
 
-  type Tab = "diff" | "yaml" | "polish" | "authenticator" | "credentials" | "json";
+  type Tab = "diff" | "yaml" | "polish" | "authenticator" | "credentials" | "json" | "codec";
   let tab = $state<Tab>("diff");
 
   const platform = getPlatform();
@@ -97,6 +98,9 @@
       </button>
       <button class:active={tab === "json"} onclick={() => (tab = "json")}>
         JSON-Studio
+      </button>
+      <button class:active={tab === "codec"} onclick={() => (tab = "codec")}>
+        Codec
       </button>
     </nav>
     <div class="header-right">
@@ -200,6 +204,8 @@
           <Authenticator />
         {:else if tab === "credentials"}
           <CredentialManager />
+        {:else if tab === "codec"}
+          {#await loadCodec() then module}<module.default />{/await}
         {:else}
           {#await loadJsonStudio()}
             <p class="loading muted">Loading JSON-Studio…</p>

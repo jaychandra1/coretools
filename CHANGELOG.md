@@ -15,6 +15,20 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+### Added
+
+- **Codec, a new tool for encoding, decoding, hashing, encryption and
+  inspection.** Base64, URL, hex and Unicode encoders and decoders; JSON
+  minify and format that keep every digit of big numbers; SHA-256, SHA-512,
+  MD5 and bcrypt (make a hash or check a password); AES-256 encryption with
+  a passphrase or your own key, with every parameter shown; and inspectors
+  for JWTs (decoded, never verified), JSON as a tree, hex dumps and Base64
+  (which recognizes images, PDFs and archives). Results appear as you type,
+  Swap turns an encoder into its decoder, and you can paste, open or drop
+  files, search tools, pin favorites and use keyboard shortcuts. It all
+  runs on your device: nothing you put in is sent or saved, and the
+  passphrase and key are forgotten when you leave Codec.
+
 ### Changed
 
 - **Windows installer on Tauri 2.12.3.** Before replacing an installed

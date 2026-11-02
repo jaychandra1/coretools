@@ -3,7 +3,7 @@
 A lightweight, **offline-first** desktop toolkit by **JDG Initiates**, built
 with **Tauri v2 + Svelte 5 + TypeScript**.
 
-It bundles six focused utilities:
+It bundles seven focused utilities:
 
 1. **Diff-Checker** — compare two versions of a file, review each difference,
    choose which side to keep per-change, and export a merged file.
@@ -40,6 +40,14 @@ It bundles six focused utilities:
    (TypeScript, C#, Java, Python, Go), an analytics dashboard, Web-Worker
    support for large files, and IndexedDB session recovery. See
    [src/lib/core/json-studio/README.md](./src/lib/core/json-studio/README.md).
+7. **Codec** — encode, decode, hash, encrypt and inspect data:
+   Base64, URL, hex and Unicode encoders and decoders, JSON minify/format
+   (numbers kept exactly), SHA-256 / SHA-512 / MD5 / bcrypt, AES-256 with a
+   passphrase (GCM, PBKDF2 600 000 rounds) or a raw key (GCM or CBC, with
+   the parameters shown), a JWT decoder (no verification), a JSON tree
+   viewer, hex dumps and a Base64 inspector that recognizes file types.
+   Live output, Swap between encode and decode, files by drop or picker,
+   tool search, pins and keyboard shortcuts. Everything runs on the device.
 
 The app ships with a premium dark/light theme (toggle in the header; the
 choice is kept in memory only — never persisted) and self-hosted Inter
@@ -82,6 +90,7 @@ coretools/
 │       │   │   ├── email-checks.ts     # greeting / sign-off / tone suggestions
 │       │   │   ├── rewrite.ts          # Professional / Friendly / Concise tones
 │       │   │   └── *.test.ts           # incl. the real Harper engine
+│       │   ├── codec/              # Codec engine: bytes, text, hash, AES, inspectors, tools
 │       │   ├── authenticator/      # 2FA engine (see its README.md)
 │       │   │   ├── base32.ts           # RFC 4648 encode/decode
 │       │   │   ├── otp.ts              # TOTP/HOTP/Steam/Blizzard (WebCrypto HMAC)
@@ -115,6 +124,7 @@ coretools/
 │           ├── YamlOptimizer.svelte
 │           ├── GrammarPolisher.svelte
 │           ├── authenticator/      # Authenticator UI (list, dialogs, lock)
+│           ├── codec/              # Codec UI (tabs, tool list, panes, JSON tree)
 │           └── json-studio/        # JSON Studio UI (Monaco, panels, store)
 ├── src-tauri/                  # Native shell (Rust)
 │   ├── src/lib.rs              # Two minimal, guarded I/O commands
