@@ -16,6 +16,8 @@ changing anything when `## [Unreleased]` is empty.
 
 ## [Unreleased]
 
+## [1.6.0] — 2026-11-02
+
 ### Added
 
 - **Codec, a new tool for encoding, decoding, hashing, encryption and
